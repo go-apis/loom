@@ -65,6 +65,13 @@ process raiseOnOrder {
   on orders.OrderPlaced -> RaiseInvoice
 }
 
+// capturing the payment is an external call: journaled so reaction retries
+// and redeliveries can never charge twice
+process captureOnPaid {
+  on InvoicePaid
+  effect gateway_capture
+}
+
 consume orders.OrderPlaced {
   customer_id: uuid
   total_cents: int

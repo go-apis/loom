@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -255,6 +256,7 @@ func (c *Client) reactWithRetry(ctx context.Context, p *ReactorDef, evt *Event) 
 }
 
 func (c *Client) react(ctx context.Context, p *ReactorDef, evt *Event) error {
+	ctx = withEffectScope(ctx, c, p, evt)
 	cmds, err := p.React(ctx, evt)
 	if err != nil {
 		return err
@@ -358,6 +360,120 @@ func (c *Client) park(ctx context.Context, runner string, evt *Event, cause erro
 		VALUES ($1,$2,$3,$4,$5)`,
 		c.reg.Service, runner, raw, cause.Error(), processRetries)
 	return err
+}
+
+// DeadLetter is one parked delivery, as listed by DeadLetters and the
+// /dead_letters endpoint.
+type DeadLetter struct {
+	ID       int64           `json:"id"`
+	Runner   string          `json:"runner"`
+	Envelope json.RawMessage `json:"envelope"`
+	Error    string          `json:"error"`
+	Attempts int             `json:"attempts"`
+	ParkedAt time.Time       `json:"parked_at"`
+}
+
+// DeadLetters lists parked deliveries, oldest first.
+func (c *Client) DeadLetters(ctx context.Context, limit int) ([]DeadLetter, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := c.db.Query(ctx, `
+		SELECT id, runner, envelope, error, attempts, parked_at
+		FROM loom_dead_letters
+		WHERE service=$1
+		ORDER BY id ASC
+		LIMIT $2`,
+		c.reg.Service, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeadLetter
+	for rows.Next() {
+		var d DeadLetter
+		if err := rows.Scan(&d.ID, &d.Runner, &d.Envelope, &d.Error, &d.Attempts, &d.ParkedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// RedriveDeadLetter re-runs one parked delivery: the process reacts to the
+// parked event again (journaled effects replay, resolved-as-failed ones
+// re-run), or a parked timer command re-dispatches. The row is deleted on
+// success and kept on failure.
+func (c *Client) RedriveDeadLetter(ctx context.Context, id int64) error {
+	var runner string
+	var raw []byte
+	err := c.db.QueryRow(ctx, `
+		SELECT runner, envelope FROM loom_dead_letters WHERE service=$1 AND id=$2`,
+		c.reg.Service, id).Scan(&runner, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("loom: no dead letter %d", id)
+	}
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case strings.HasPrefix(runner, "process:"):
+		if err := c.redriveProcess(ctx, strings.TrimPrefix(runner, "process:"), raw); err != nil {
+			return err
+		}
+	case runner == "timer":
+		var parked struct {
+			Key         string          `json:"timer_key"`
+			CommandType string          `json:"command_type"`
+			Command     json.RawMessage `json:"command"`
+		}
+		if err := json.Unmarshal(raw, &parked); err != nil {
+			return err
+		}
+		if err := c.fireTimer(ctx, parked.Key, parked.CommandType, parked.Command, nil); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("loom: dead letter %d belongs to %s, which has no redrive", id, runner)
+	}
+
+	_, err = c.db.Exec(ctx, `DELETE FROM loom_dead_letters WHERE service=$1 AND id=$2`, c.reg.Service, id)
+	return err
+}
+
+func (c *Client) redriveProcess(ctx context.Context, process string, raw []byte) error {
+	var p *ReactorDef
+	for _, cand := range c.reg.Processes {
+		if cand.Name == process {
+			p = cand
+		}
+	}
+	if p == nil {
+		return fmt.Errorf("loom: dead letter belongs to unknown process %s", process)
+	}
+	var parked struct {
+		Event
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &parked); err != nil {
+		return err
+	}
+	evt := parked.Event
+	payload, err := c.decode(evt.Type, parked.Data)
+	if err != nil {
+		return err
+	}
+	evt.Data = payload
+	if err := c.react(ctx, p, &evt); err != nil {
+		return err
+	}
+	// foreign events parked instead of being marked processed; mark now so a
+	// later redelivery no-ops
+	if evt.Service != c.reg.Service {
+		return c.markProcessed(ctx, p.Name, fmt.Sprintf("%s:%d", evt.Service, evt.GlobalSeq))
+	}
+	return nil
 }
 
 func (c *Client) readCheckpoint(ctx context.Context, runner string) (int64, error) {

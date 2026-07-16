@@ -10,9 +10,10 @@ import (
 // to edit.
 func NewRegistry() *loom.Registry {
 	return loomgen.NewRegistry(loomgen.Impl{
-		Invoice:      &Invoice{},
-		LedgerEntry:  &LedgerEntry{},
-		RaiseOnOrder: &RaiseOnOrder{},
-		PostLedger:   &PostLedger{},
+		Invoice:       &Invoice{},
+		LedgerEntry:   &LedgerEntry{},
+		RaiseOnOrder:  &RaiseOnOrder{},
+		CaptureOnPaid: &CaptureOnPaid{},
+		PostLedger:    &PostLedger{},
 	})
 }

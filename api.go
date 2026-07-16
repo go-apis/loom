@@ -30,7 +30,11 @@ import (
 //	GET  /aggregates/{Aggregate}/{id}   folded state + version
 //	GET  /events                        log browser (type, aggregate_id, correlation_id, since, until, after_seq)
 //	GET  /events/stats?since=           counts by event type
-//	GET  /stats                         ops health: outbox, dead letters, timers
+//	GET  /effects?status=               effect journal (running = in doubt if sustained)
+//	POST /effects/resolve               settle an in-doubt effect (body: scope, key, result?)
+//	GET  /dead_letters                  parked deliveries
+//	POST /dead_letters/{id}/redrive     re-run one parked delivery
+//	GET  /stats                         ops health: outbox, dead letters, timers, effects
 func (c *Client) HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /commands/{name}", c.apiDispatch)
@@ -45,6 +49,10 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("GET /entities/{name}/{id}/stream", c.apiEntityStream)
 	mux.HandleFunc("GET /aggregates/{name}/{id}/stream", c.apiAggregateStream)
 	mux.HandleFunc("GET /stats", c.apiStats)
+	mux.HandleFunc("GET /effects", c.apiEffects)
+	mux.HandleFunc("POST /effects/resolve", c.apiResolveEffect)
+	mux.HandleFunc("GET /dead_letters", c.apiDeadLetters)
+	mux.HandleFunc("POST /dead_letters/{id}/redrive", c.apiRedrive)
 	mux.HandleFunc("POST /batches", c.apiEnqueueBatch)
 	mux.HandleFunc("GET /batches/{id}", c.apiGetBatch)
 	mux.HandleFunc("GET /batches/{id}/failures", c.apiBatchFailures)
@@ -303,21 +311,78 @@ func (c *Client) apiEventStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"counts": stats})
 }
 
+func (c *Client) apiEffects(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	effects, err := c.Effects(r.Context(), r.URL.Query().Get("status"), limit)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(effects)})
+}
+
+func (c *Client) apiResolveEffect(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Scope  string          `json:"scope"`
+		Key    string          `json:"key"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Scope == "" || body.Key == "" {
+		apiError(w, http.StatusBadRequest, "scope and key are required")
+		return
+	}
+	if err := c.ResolveEffect(r.Context(), body.Scope, body.Key, body.Result); err != nil {
+		apiError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+}
+
+func (c *Client) apiDeadLetters(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	letters, err := c.DeadLetters(r.Context(), limit)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(letters)})
+}
+
+func (c *Client) apiRedrive(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := c.RedriveDeadLetter(r.Context(), id); err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "redriven"})
+}
+
 func (c *Client) apiStats(w http.ResponseWriter, r *http.Request) {
 	depth, age, err := c.OutboxDepth(r.Context())
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var deadLetters, timers int64
+	var deadLetters, timers, effectsRunning, effectsFailed int64
 	_ = c.db.QueryRow(r.Context(), `SELECT count(*) FROM loom_dead_letters WHERE service=$1`, c.reg.Service).Scan(&deadLetters)
 	_ = c.db.QueryRow(r.Context(), `SELECT count(*) FROM loom_timers WHERE service=$1`, c.reg.Service).Scan(&timers)
+	_ = c.db.QueryRow(r.Context(), `SELECT count(*) FILTER (WHERE status='running'), count(*) FILTER (WHERE status='failed') FROM loom_effects WHERE service=$1`, c.reg.Service).Scan(&effectsRunning, &effectsFailed)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service":            c.reg.Service,
 		"outbox_depth":       depth,
 		"outbox_oldest_secs": int64(age.Seconds()),
 		"dead_letters":       deadLetters,
 		"timers_pending":     timers,
+		"effects_running":    effectsRunning,
+		"effects_failed":     effectsFailed,
 	})
 }
 

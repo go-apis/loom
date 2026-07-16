@@ -136,6 +136,20 @@ CREATE TABLE IF NOT EXISTS loom_batch_items (
 );
 CREATE INDEX IF NOT EXISTS loom_batch_items_pending ON loom_batch_items (service, batch_id, seq) WHERE status IN ('pending','working');
 
+CREATE TABLE IF NOT EXISTS loom_effects (
+	service    text NOT NULL,
+	scope      text NOT NULL,
+	key        text NOT NULL,
+	status     text NOT NULL,
+	result     jsonb,
+	error      text NOT NULL DEFAULT '',
+	attempts   int NOT NULL DEFAULT 1,
+	started_at timestamptz NOT NULL DEFAULT now(),
+	settled_at timestamptz,
+	PRIMARY KEY (service, scope, key)
+);
+CREATE INDEX IF NOT EXISTS loom_effects_unsettled ON loom_effects (service, status) WHERE status <> 'done';
+
 CREATE TABLE IF NOT EXISTS loom_dead_letters (
 	id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	service   text NOT NULL,

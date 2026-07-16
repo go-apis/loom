@@ -87,9 +87,9 @@ func (p *parser) schema() error {
 		case "consume":
 			err = p.consume()
 		case "policy":
-			err = p.reactor(&p.out.Policies)
+			err = p.reactor(&p.out.Policies, "policy")
 		case "process":
-			err = p.reactor(&p.out.Processes)
+			err = p.reactor(&p.out.Processes, "process")
 		case "projection":
 			err = p.projection()
 		case "type":
@@ -318,7 +318,7 @@ func (p *parser) entity() error {
 	return nil
 }
 
-func (p *parser) reactor(into *[]*schema.Reactor) error {
+func (p *parser) reactor(into *[]*schema.Reactor, kind string) error {
 	p.next()
 	name, err := p.ident()
 	if err != nil {
@@ -329,6 +329,18 @@ func (p *parser) reactor(into *[]*schema.Reactor) error {
 		return err
 	}
 	for !p.accept("}") {
+		if p.peek().text == "effect" {
+			t := p.next()
+			if kind != "process" {
+				return p.errf(t, "%s %s cannot declare effects — external calls belong in a process", kind, name)
+			}
+			effect, err := p.ident()
+			if err != nil {
+				return err
+			}
+			r.Effects = append(r.Effects, effect)
+			continue
+		}
 		if err := p.expect("on"); err != nil {
 			return err
 		}

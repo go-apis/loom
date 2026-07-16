@@ -66,6 +66,10 @@ type Entity struct {
 type Reactor struct {
 	Name          string          `yaml:"name" json:"name"`
 	Subscriptions []*Subscription `yaml:"on" json:"on"`
+	// Effects declares the journaled external calls a process may perform
+	// (loom.Once keys). Processes only — policies run in the producing
+	// transaction and must not touch the outside world.
+	Effects []string `yaml:"effects,omitempty" json:"effects,omitempty"`
 }
 
 type Subscription struct {
@@ -175,6 +179,7 @@ func (s *Schema) Sort() {
 	}
 	for _, r := range s.Processes {
 		sort.Slice(r.Subscriptions, func(i, j int) bool { return r.Subscriptions[i].Event < r.Subscriptions[j].Event })
+		sort.Strings(r.Effects)
 	}
 	for _, p := range s.Projections {
 		sort.Slice(p.Subscriptions, func(i, j int) bool { return p.Subscriptions[i].Event < p.Subscriptions[j].Event })
@@ -236,6 +241,9 @@ func (s *Schema) Validate() error {
 		}
 	}
 	for _, p := range s.Policies {
+		if len(p.Effects) > 0 {
+			fail("policy %s declares effects — policies run in the producing transaction; external calls belong in a process", p.Name)
+		}
 		for _, sub := range p.Subscriptions {
 			evt := s.FindEvent(sub.Event)
 			if evt == nil {
@@ -251,6 +259,13 @@ func (s *Schema) Validate() error {
 		}
 	}
 	for _, p := range s.Processes {
+		seenEffects := map[string]bool{}
+		for _, e := range p.Effects {
+			if seenEffects[e] {
+				fail("process %s declares effect %s twice", p.Name, e)
+			}
+			seenEffects[e] = true
+		}
 		for _, sub := range p.Subscriptions {
 			evt := s.FindEvent(sub.Event)
 			if evt == nil {

@@ -75,6 +75,43 @@ Commands declare what they emit (`-> OrderPlaced`) and reactions declare
 what they dispatch — both are runtime-enforced contracts, so the schema can
 never lie about the topology.
 
+## Effects: calling the outside world
+
+Everything above is safe to retry — which is exactly what makes an external
+call (a tax filing, a payment capture) dangerous inside a process. Declare
+the effect on the process and wrap the call in `loom.Once`:
+
+```
+process captureOnPaid {
+  on InvoicePaid
+  effect gateway_capture
+}
+```
+
+```go
+receipt, err := loom.Once(ctx, "gateway_capture", func(ctx context.Context) (string, error) {
+    return gateway.Capture(ctx, invoice)
+})
+```
+
+The claim commits before the call runs; the result is journaled; retries
+and redeliveries replay the journaled result instead of calling again. If
+the process crashes between call and record, the effect is *in doubt* —
+the runtime refuses to guess, parks the reaction to dead letters, and an
+operator settles it (`POST /effects/resolve` with what actually happened)
+and redrives (`POST /dead_letters/{id}/redrive`). At-most-once, with loud
+ambiguity instead of silent duplicates. Undeclared effect keys are runtime
+errors — a typo must not mint a fresh journal identity.
+
+## Batches
+
+`loom.AsBatch(cmds...)` from a reaction (enqueued atomically with the
+triggering event), `cli.EnqueueBatch`, or `POST /batches` fan out thousands
+of commands durably: chunked SKIP LOCKED claims, per-item outcomes, live
+progress on the batch row (`GET /batches/{id}`, streamable). Delivery is
+at-least-once per item — deterministic aggregate ids make redeliveries
+converge.
+
 ## The service is the API
 
 `cli.HTTPHandler()` mounts the whole service over HTTP, driven entirely by
@@ -88,7 +125,13 @@ GET  /records/LedgerEntry/{id}                 state-of-record reads
 GET  /aggregates/Order/{id}                    folded state + version
 GET  /events?correlation_id=...                log browser
 GET  /events/stats?since=...                   counts by type
-GET  /stats                                    outbox / dead letters / timers health
+POST /batches                                  durable command fan-out
+GET  /batches/{id}                             batch progress (+ /failures, /stream)
+GET  /effects?status=running                   the effect journal
+POST /effects/resolve                          settle an in-doubt effect
+GET  /dead_letters                             parked deliveries
+POST /dead_letters/{id}/redrive                re-run one parked delivery
+GET  /stats                                    outbox / dead letters / timers / effects health
 ```
 
 Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,

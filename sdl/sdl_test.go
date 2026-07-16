@@ -57,6 +57,8 @@ policy noteLocally {
 
 process shipOnPayment {
   on billing.InvoicePaid -> PlaceOrder
+  effect carrier_pickup
+  effect notify_customer
 }
 
 consume billing.InvoicePaid {
@@ -90,6 +92,10 @@ func TestParse(t *testing.T) {
 	}
 	if len(s.Records) != 1 || len(s.Records[0].Commands) != 2 {
 		t.Fatalf("record misparsed: %+v", s.Records)
+	}
+	// effects sort alphabetically on the process
+	if fx := s.Processes[0].Effects; len(fx) != 2 || fx[0] != "carrier_pickup" || fx[1] != "notify_customer" {
+		t.Fatalf("effects misparsed: %+v", fx)
 	}
 	// record commands may emit nothing (AdjustLedger): the state write is
 	// the effect
@@ -146,6 +152,37 @@ aggregate A {
 }
 `,
 			wantErr: "emits nothing",
+		},
+		"effect on a policy": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+policy p {
+  on E -> C
+  effect callout
+}
+`,
+			wantErr: "cannot declare effects",
+		},
+		"duplicate effect": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p {
+  on E -> C
+  effect callout
+  effect callout
+}
+`,
+			wantErr: "declares effect callout twice",
 		},
 	}
 	for name, tc := range cases {

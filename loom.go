@@ -177,7 +177,10 @@ type EventDef struct {
 type ReactorDef struct {
 	Name   string
 	Events []string
-	React  func(ctx context.Context, evt *Event) ([]Command, error)
+	// Effects are the declared journaled external calls this process may
+	// perform via loom.Once (processes only).
+	Effects []string
+	React   func(ctx context.Context, evt *Event) ([]Command, error)
 }
 
 type ProjectionDef struct {

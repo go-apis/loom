@@ -447,6 +447,9 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 			events = append(events, sub.Event)
 		}
 		fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEvents: %s,\n", r.Name, stringSlice(events))
+		if len(r.Effects) > 0 {
+			fmt.Fprintf(b, "\t\t\t\tEffects: %s,\n", stringSlice(r.Effects))
+		}
 		fmt.Fprintf(b, "\t\t\t\tReact: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
 		for _, sub := range r.Subscriptions {
 			fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n", sub.Event)

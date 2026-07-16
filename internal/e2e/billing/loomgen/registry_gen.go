@@ -29,15 +29,20 @@ type PostLedgerReactions interface {
 	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
 }
 
+type CaptureOnPaidReactions interface {
+	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
+}
+
 type RaiseOnOrderReactions interface {
 	OnOrderPlaced(ctx context.Context, evt *loom.Event, data *OrderPlaced) ([]loom.Command, error)
 }
 
 type Impl struct {
-	Invoice      InvoiceHandlers
-	LedgerEntry  LedgerEntryHandlers
-	PostLedger   PostLedgerReactions
-	RaiseOnOrder RaiseOnOrderReactions
+	Invoice       InvoiceHandlers
+	LedgerEntry   LedgerEntryHandlers
+	PostLedger    PostLedgerReactions
+	CaptureOnPaid CaptureOnPaidReactions
+	RaiseOnOrder  RaiseOnOrderReactions
 }
 
 func NewRegistry(impl Impl) *loom.Registry {
@@ -111,6 +116,22 @@ func NewRegistry(impl Impl) *loom.Registry {
 			},
 		},
 		Processes: []*loom.ReactorDef{
+			{
+				Name:    "captureOnPaid",
+				Events:  []string{"InvoicePaid"},
+				Effects: []string{"gateway_capture"},
+				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+					switch data := evt.Data.(type) {
+					case *InvoicePaid:
+						cmds, err := impl.CaptureOnPaid.OnInvoicePaid(ctx, evt, data)
+						if err != nil {
+							return nil, err
+						}
+						return cmds, checkDispatches("captureOnPaid", "InvoicePaid", nil, cmds)
+					}
+					return nil, fmt.Errorf("unroutable event %s", evt.Type)
+				},
+			},
 			{
 				Name:   "raiseOnOrder",
 				Events: []string{"OrderPlaced"},

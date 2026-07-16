@@ -16,7 +16,8 @@ command     := "command" IDENT fields? "->" identList
 event       := "event" IDENT directives? fields?
 consume     := "consume" IDENT "." IDENT fields?
 policy      := "policy" IDENT "{" on* "}"
-process     := "process" IDENT "{" on* "}"
+process     := "process" IDENT "{" (on | effect)* "}"
+effect      := "effect" IDENT
 projection  := "projection" IDENT "->" IDENT "{" ("on" eventRef)* "}"
 on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
@@ -38,6 +39,10 @@ Rules enforced at parse/validate time:
   code flat and contracts referencable across languages)
 - foreign events (`consume`/qualified refs) are implicitly published
   contracts
+- effects are declared on processes only (a policy runs in the producing
+  transaction and must not touch the outside world); `loom.Once` refuses
+  undeclared keys — a typo'd key would be a fresh journal identity and a
+  repeated call, so declaration is the safety net, not ceremony
 
 ## Generated code
 
@@ -82,6 +87,21 @@ generated switches, folds from generated assignments.
   scheduling unit's transaction. Keyed idempotently (default: command type
   + target) so redelivered reactions overwrite; `loom.CancelTimer` deletes
   by the same key. SKIP LOCKED claims, retry then park.
+- **Batches** (`loom_batches`/`loom_batch_items`): durable chunked fan-out
+  of many commands (CopyFrom insert, SKIP LOCKED chunk claims, stale-claim
+  reclaim). Per-item outcomes are recorded (at-least-once per item — use
+  deterministic ids); the batch row is live progress, streamable over SSE.
+  Reactions enqueue atomically via `loom.AsBatch`.
+- **Effects** (`loom_effects`): journaled external calls — the outbox's
+  cousin for the request/response direction. `loom.Once(ctx, key, fn)` in a
+  process reaction claims a row (committed before fn runs), settles it with
+  the JSON result or the error, and replays `done` results on every retry
+  or redelivery. An unsettled claim (crash between call and record) is *in
+  doubt*: the runtime refuses to re-run it and parks the reaction — an
+  operator resolves it (recording what actually happened on the other side)
+  and redrives the dead letter. At-most-once with loud ambiguity, the
+  strongest guarantee non-idempotent APIs admit. Failed settles re-run on
+  retry: an error return is the handler asserting the call did not happen.
 - **The log as a timeseries**: `global_seq` is monotonic and rows are
   append-only, so time queries are sequence-range queries. A BRIN index on
   `at` makes time-window scans cheap at ~zero write cost, and
