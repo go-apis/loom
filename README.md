@@ -52,6 +52,25 @@ regenerates on every run.
 | `process` | async | local events: checkpointed off the log (no bus); foreign events: bus + dedup; retries then loud parking to dead letters |
 | `projection` | async | checkpointed catch-up over the global sequence; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
 
+Plus two persistence shapes: `aggregate` (event-sourced: handlers return
+events, state folds) and `record` (state-of-record: ledgers, balances —
+handlers mutate state directly; emitted events are announcements into the
+log, never a rebuild source).
+
+## Timers
+
+Durable scheduled commands, written in the same transaction that decided
+them. Reactions return them through the ordinary command channel:
+
+```go
+loom.After(&CancelOrder{...}, 5*time.Second)   // schedule (keyed, idempotent)
+loom.CancelTimer(&CancelOrder{...})            // delete the pending timer
+```
+
+A runner fires due timers; a firing that keeps failing parks to dead
+letters. Three-year W-8 expiries and 200ms test timers use the same
+mechanism.
+
 Commands declare what they emit (`-> OrderPlaced`) and reactions declare
 what they dispatch — both are runtime-enforced contracts, so the schema can
 never lie about the topology.

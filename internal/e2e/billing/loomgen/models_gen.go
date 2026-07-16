@@ -16,8 +16,11 @@ var (
 )
 
 type InvoicePaid struct {
-	PaidAt time.Time `json:"paid_at"`
-	Status string    `json:"status"`
+	AmountCents int64     `json:"amount_cents"`
+	Currency    string    `json:"currency"`
+	CustomerId  uuid.UUID `json:"customer_id"`
+	PaidAt      time.Time `json:"paid_at"`
+	Status      string    `json:"status"`
 }
 
 func (*InvoicePaid) LoomEvent() string { return "InvoicePaid" }
@@ -30,6 +33,13 @@ type InvoiceRaised struct {
 }
 
 func (*InvoiceRaised) LoomEvent() string { return "InvoiceRaised" }
+
+type LedgerEntryPosted struct {
+	AmountCents int64  `json:"amount_cents"`
+	Currency    string `json:"currency"`
+}
+
+func (*LedgerEntryPosted) LoomEvent() string { return "LedgerEntryPosted" }
 
 type OrderPlaced struct {
 	Currency   string    `json:"currency"`
@@ -55,6 +65,16 @@ type RaiseInvoice struct {
 
 func (*RaiseInvoice) LoomCommand() string { return "RaiseInvoice" }
 
+type PostLedgerEntry struct {
+	loom.CommandBase
+
+	AmountCents int64     `json:"amount_cents"`
+	Currency    string    `json:"currency"`
+	CustomerId  uuid.UUID `json:"customer_id"`
+}
+
+func (*PostLedgerEntry) LoomCommand() string { return "PostLedgerEntry" }
+
 type Invoice struct {
 	AmountCents int64      `json:"amount_cents"`
 	Currency    string     `json:"currency"`
@@ -66,6 +86,9 @@ type Invoice struct {
 func (s *Invoice) Fold(eventType string, data any) error {
 	switch e := data.(type) {
 	case *InvoicePaid:
+		s.AmountCents = e.AmountCents
+		s.Currency = e.Currency
+		s.CustomerId = e.CustomerId
 		vPaidAt := e.PaidAt
 		s.PaidAt = &vPaidAt
 		s.Status = e.Status
@@ -79,4 +102,11 @@ func (s *Invoice) Fold(eventType string, data any) error {
 		return loomErrNilEvent(eventType)
 	}
 	return nil
+}
+
+type LedgerEntry struct {
+	AmountCents int64     `json:"amount_cents"`
+	Currency    string    `json:"currency"`
+	CustomerId  uuid.UUID `json:"customer_id"`
+	PostedAt    time.Time `json:"posted_at"`
 }

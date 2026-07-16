@@ -78,6 +78,8 @@ func (p *parser) schema() error {
 		switch t.text {
 		case "aggregate":
 			err = p.aggregate()
+		case "record":
+			err = p.record()
 		case "entity":
 			err = p.entity()
 		case "event":
@@ -177,6 +179,46 @@ func (p *parser) aggregate() error {
 		}
 	}
 	p.out.Aggregates = append(p.out.Aggregates, agg)
+	return nil
+}
+
+// record parses state-of-record declarations: like an aggregate but with
+// no snapshot directive (the row is the source of truth).
+func (p *parser) record() error {
+	p.next()
+	name, err := p.ident()
+	if err != nil {
+		return err
+	}
+	rec := &schema.Record{Name: name}
+	if err := p.expect("{"); err != nil {
+		return err
+	}
+	for !p.accept("}") {
+		t := p.peek()
+		switch t.text {
+		case "state":
+			p.next()
+			pl, err := p.fieldBlock()
+			if err != nil {
+				return err
+			}
+			rec.State = pl
+		case "command":
+			cmd, err := p.command()
+			if err != nil {
+				return err
+			}
+			rec.Commands = append(rec.Commands, cmd)
+		case "event":
+			if _, err := p.event(); err != nil {
+				return err
+			}
+		default:
+			return p.errf(t, "unexpected %q in record %s", t.text, name)
+		}
+	}
+	p.out.Records = append(p.out.Records, rec)
 	return nil
 }
 

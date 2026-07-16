@@ -10,7 +10,9 @@ import (
 // to edit.
 func NewRegistry() *loom.Registry {
 	return loomgen.NewRegistry(loomgen.Impl{
-		Order:         &Order{},
-		ShipOnPayment: &ShipOnPayment{},
+		Order:              &Order{},
+		ShipOnPayment:      &ShipOnPayment{},
+		ScheduleAutoCancel: &ScheduleAutoCancel{},
+		DropAutoCancel:     &DropAutoCancel{},
 	})
 }

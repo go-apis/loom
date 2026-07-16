@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -111,11 +112,25 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 		queue = nil
 
 		for _, q := range batch {
-			newEvents, err := c.handleCommand(ctx, tx, q.cmd, Metadata{
+			cmdMeta := Metadata{
 				CorrelationID: meta.CorrelationID,
 				CausationID:   q.cause,
 				Actor:         meta.Actor,
-			})
+			}
+			// timer wrappers join the transaction instead of executing
+			switch w := q.cmd.(type) {
+			case *scheduledCommand:
+				if err := c.writeTimer(ctx, tx, w, cmdMeta); err != nil {
+					return err
+				}
+				continue
+			case *cancelTimer:
+				if err := c.deleteTimer(ctx, tx, w); err != nil {
+					return err
+				}
+				continue
+			}
+			newEvents, err := c.handleCommand(ctx, tx, q.cmd, cmdMeta)
 			if err != nil {
 				return err
 			}
@@ -152,7 +167,10 @@ func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta
 	cmdName := cmd.LoomCommand()
 	agg, def := c.reg.aggregateForCommand(cmdName)
 	if def == nil {
-		return nil, fmt.Errorf("loom: no aggregate handles command %s", cmdName)
+		if rec, rdef := c.reg.recordForCommand(cmdName); rdef != nil {
+			return c.handleRecordCommand(ctx, tx, rec, rdef, cmd, meta)
+		}
+		return nil, fmt.Errorf("loom: nothing handles command %s", cmdName)
 	}
 	namespace, id := cmd.CommandTarget()
 	if namespace == "" {
@@ -213,6 +231,122 @@ func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta
 		}
 	}
 	return events, nil
+}
+
+// handleRecordCommand runs a command against a state-of-record object: the
+// row (not the log) is the source of truth. The row lock serializes
+// writers; emitted events land in the log as announcements with the
+// record's stream identity.
+func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *RecordDef, def *RecordCommandDef, cmd Command, meta Metadata) ([]*Event, error) {
+	namespace, id := cmd.CommandTarget()
+	if namespace == "" {
+		return nil, fmt.Errorf("loom: command %s has no namespace", def.Name)
+	}
+
+	state := rec.NewState()
+	version := 0
+	var data []byte
+	err := tx.QueryRow(ctx, `
+		SELECT version, data FROM loom_records
+		WHERE service=$1 AND namespace=$2 AND record_type=$3 AND id=$4
+		FOR UPDATE`,
+		c.reg.Service, namespace, rec.Name, id).Scan(&version, &data)
+	existed := true
+	if errors.Is(err, pgx.ErrNoRows) {
+		existed = false
+	} else if err != nil {
+		return nil, err
+	} else if err := json.Unmarshal(data, state); err != nil {
+		return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
+	}
+
+	payloads, err := def.Handle(ctx, state, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", def.Name, err)
+	}
+
+	events := make([]*Event, 0, len(payloads))
+	v := version
+	for _, payload := range payloads {
+		name, sv, err := c.eventNameOf(payload)
+		if err != nil {
+			return nil, err
+		}
+		if !contains(def.Emits, name) {
+			return nil, &ContractError{Command: def.Name, Emitted: name}
+		}
+		v++
+		events = append(events, &Event{
+			Service:       c.reg.Service,
+			Namespace:     namespace,
+			AggregateType: rec.Name,
+			AggregateID:   id,
+			Version:       v,
+			Type:          name,
+			SchemaVersion: sv,
+			At:            nowUTC(),
+			Meta:          meta,
+			Data:          payload,
+		})
+	}
+	if len(events) > 0 {
+		if err := c.appendEvents(ctx, tx, events); err != nil {
+			return nil, err
+		}
+	} else {
+		v = version + 1 // state-only write still advances the row version
+	}
+
+	out, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	if existed {
+		_, err = tx.Exec(ctx, `
+			UPDATE loom_records SET version=$5, data=$6, updated_at=now()
+			WHERE service=$1 AND namespace=$2 AND record_type=$3 AND id=$4`,
+			c.reg.Service, namespace, rec.Name, id, v, out)
+	} else {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO loom_records (service, namespace, record_type, id, version, data)
+			VALUES ($1,$2,$3,$4,$5,$6)`,
+			c.reg.Service, namespace, rec.Name, id, v, out)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, &ConflictError{AggregateType: rec.Name, AggregateID: id, Version: v}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// Record reads a state-of-record object (nil if absent), decoded into the
+// generated state type.
+func (c *Client) Record(ctx context.Context, record, namespace string, id uuid.UUID) (any, error) {
+	for _, rec := range c.reg.Records {
+		if rec.Name != record {
+			continue
+		}
+		var data []byte
+		err := c.db.QueryRow(ctx, `
+			SELECT data FROM loom_records
+			WHERE service=$1 AND namespace=$2 AND record_type=$3 AND id=$4`,
+			c.reg.Service, namespace, record, id).Scan(&data)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		state := rec.NewState()
+		if err := json.Unmarshal(data, state); err != nil {
+			return nil, err
+		}
+		return state, nil
+	}
+	return nil, fmt.Errorf("loom: unknown record %s", record)
 }
 
 // runPolicies reacts to one new event with every subscribed policy, inside

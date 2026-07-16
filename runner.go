@@ -34,6 +34,7 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 		poll = 5 * time.Second
 	}
 	c.StartRelay(ctx, poll)
+	c.startTimerRunner(ctx, poll)
 
 	for _, p := range c.reg.Projections {
 		go c.runLogLoop(ctx, "projection:"+p.Name, poll, c.projectionStep(p))

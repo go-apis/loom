@@ -127,6 +127,28 @@ func TestOrderBillingLoop(t *testing.T) {
 		t.Fatalf("expected invoice at version 2 after duplicate delivery, got %d", version)
 	}
 
+	// the ledger record was posted in the payment's transaction
+	rec, err := billingCli.Record(ctx, "LedgerEntry", "default", orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec == nil {
+		t.Fatal("ledger entry record missing")
+	}
+	ledger := rec.(*billinggen.LedgerEntry)
+	if ledger.AmountCents != 4000 || ledger.PostedAt.IsZero() {
+		t.Fatalf("ledger entry wrong: %+v", ledger)
+	}
+
+	// shipping cancelled the auto-cancel timer
+	var timers int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loom_timers WHERE service='orders'`).Scan(&timers); err != nil {
+		t.Fatal(err)
+	}
+	if timers != 0 {
+		t.Fatalf("expected the auto-cancel timer to be cancelled, %d timers remain", timers)
+	}
+
 	// nothing got parked anywhere
 	var parked int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loom_dead_letters`).Scan(&parked); err != nil {
@@ -135,6 +157,48 @@ func TestOrderBillingLoop(t *testing.T) {
 	if parked != 0 {
 		t.Fatalf("expected no dead letters, got %d", parked)
 	}
+}
+
+// TestAutoCancelTimer proves durable timers fire: an order placed and never
+// paid cancels itself.
+func TestAutoCancelTimer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	old := orders.AutoCancelAfter
+	orders.AutoCancelAfter = 400 * time.Millisecond
+	t.Cleanup(func() { orders.AutoCancelAfter = old })
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+
+	orderID := uuid.New()
+	err = cli.Dispatch(ctx, &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: orderID, Namespace: "default"},
+		CustomerId:  uuid.New(),
+		Currency:    "USD",
+		Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 1, PriceCents: 100}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, ctx, "unpaid order to auto-cancel", func() bool {
+		state, _, err := cli.Load(ctx, "Order", "default", orderID)
+		if err != nil {
+			return false
+		}
+		return state.(*ordersgen.Order).Status == "cancelled"
+	})
 }
 
 // TestProjectionRebuild wipes and refolds the read model from the log.

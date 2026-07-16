@@ -31,7 +31,10 @@ func (h *Invoice) MarkInvoicePaid(ctx context.Context, state *loomgen.Invoice, c
 		return nil, fmt.Errorf("cannot pay invoice in status %q", state.Status)
 	}
 	return []loom.DomainEvent{&loomgen.InvoicePaid{
-		Status: "paid",
-		PaidAt: time.Now().UTC(),
+		Status:      "paid",
+		PaidAt:      time.Now().UTC(),
+		CustomerId:  state.CustomerId,
+		AmountCents: state.AmountCents,
+		Currency:    state.Currency,
 	}}, nil
 }

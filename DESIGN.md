@@ -7,9 +7,10 @@ covers what's implemented and the decisions embedded in the code.
 
 ```
 schema      := "service" IDENT decl*
-decl        := aggregate | entity | event | consume | policy | process
-             | projection | type
+decl        := aggregate | record | entity | event | consume | policy
+             | process | projection | type
 aggregate   := "aggregate" IDENT directives? "{" (state | command | event)* "}"
+record      := "record" IDENT "{" (state | command | event)* "}"
 state       := "state" fields
 command     := "command" IDENT fields? "->" identList
 event       := "event" IDENT directives? fields?
@@ -29,7 +30,8 @@ directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
 
 Rules enforced at parse/validate time:
 
-- commands must emit; emits/dispatches must name declared things
+- aggregate commands must emit (records' may not: the state write is the
+  effect); emits/dispatches must name declared things
 - policies cannot subscribe to foreign events (they run in the producing
   transaction — use a process)
 - nested object literals are forbidden: declare a `type` (keeps generated
@@ -70,6 +72,16 @@ generated switches, folds from generated assignments.
   causation records the triggering event. Both are columns, not folklore.
 - **Read models**: one `loom_entities` jsonb doc table (typed per-entity
   tables are a perf milestone, not a semantic change).
+- **Records** (`loom_records`): state-of-record persistence for the
+  ledger/balance class. Row-locked writes, version per write; emitted
+  events enter the log with the record's stream identity (projections and
+  processes see them) but never rebuild the record. Deliberately a separate
+  table from `loom_entities`: projection Rebuild truncates entities and
+  must never touch records.
+- **Timers** (`loom_timers`): durable scheduled commands, written in the
+  scheduling unit's transaction. Keyed idempotently (default: command type
+  + target) so redelivered reactions overwrite; `loom.CancelTimer` deletes
+  by the same key. SKIP LOCKED claims, retry then park.
 
 ## Not yet built (tracked on the issue)
 

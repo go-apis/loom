@@ -24,6 +24,25 @@ aggregate Order @snapshot(5) {
   }
 }
 
+record Ledger {
+  state {
+    total_cents: int
+  }
+  command PostLedger {
+    amount_cents: int!
+  } -> LedgerPosted
+  command AdjustLedger {
+    amount_cents: int!
+  }
+  event LedgerPosted {
+    amount_cents: int!
+  }
+}
+
+policy postOnPlace {
+  on OrderPlaced -> PostLedger
+}
+
 entity OrderSummary {
   status: string
 }
@@ -66,8 +85,16 @@ func TestParse(t *testing.T) {
 	if foreign == nil || foreign.Service != "billing" || !foreign.Publish {
 		t.Fatalf("foreign event misparsed: %+v", foreign)
 	}
-	if len(s.Policies) != 1 || len(s.Processes) != 1 || len(s.Projections) != 1 {
+	if len(s.Policies) != 2 || len(s.Processes) != 1 || len(s.Projections) != 1 {
 		t.Fatalf("reactors misparsed")
+	}
+	if len(s.Records) != 1 || len(s.Records[0].Commands) != 2 {
+		t.Fatalf("record misparsed: %+v", s.Records)
+	}
+	// record commands may emit nothing (AdjustLedger): the state write is
+	// the effect
+	if _, c := s.FindRecordCommand("AdjustLedger"); c == nil || len(c.Emits) != 0 {
+		t.Fatalf("record command emit rules misparsed")
 	}
 }
 

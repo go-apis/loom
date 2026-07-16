@@ -124,6 +124,7 @@ type EntityState interface {
 type Registry struct {
 	Service     string
 	Aggregates  []*AggregateDef
+	Records     []*RecordDef
 	Events      []*EventDef
 	Policies    []*ReactorDef
 	Processes   []*ReactorDef
@@ -142,6 +143,24 @@ type CommandDef struct {
 	New    func() Command
 	Emits  []string // the contract: the only event types Handle may return
 	Handle func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
+}
+
+// RecordDef backs state-of-record objects that are NOT event-sourced
+// (ledgers, balances, accumulators): commands mutate state directly and the
+// state row is the source of truth. Handlers may still emit events — they
+// land in the log as announcements (projections, processes, outbox all see
+// them) but never rebuild the record.
+type RecordDef struct {
+	Name     string
+	NewState func() any
+	Commands []*RecordCommandDef
+}
+
+type RecordCommandDef struct {
+	Name   string
+	New    func() Command
+	Emits  []string
+	Handle func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 
 type EventDef struct {
@@ -176,6 +195,17 @@ func (r *Registry) aggregateForCommand(cmdName string) (*AggregateDef, *CommandD
 		for _, c := range agg.Commands {
 			if c.Name == cmdName {
 				return agg, c
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (r *Registry) recordForCommand(cmdName string) (*RecordDef, *RecordCommandDef) {
+	for _, rec := range r.Records {
+		for _, c := range rec.Commands {
+			if c.Name == cmdName {
+				return rec, c
 			}
 		}
 	}

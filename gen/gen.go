@@ -131,9 +131,18 @@ var (
 			g.commandDef(&b, c)
 		}
 	}
+	for _, r := range g.s.Records {
+		for _, c := range r.Commands {
+			g.commandDef(&b, c)
+		}
+	}
 	for _, a := range g.s.Aggregates {
 		g.structDef(&b, a.Name, a.State)
 		g.foldDef(&b, a.Name, g.aggregateEvents(a))
+	}
+	for _, r := range g.s.Records {
+		// records don't fold: the state row is the source of truth
+		g.structDef(&b, r.Name, r.State)
 	}
 	for _, e := range g.s.Entities {
 		g.structDef(&b, e.Name, e.State)
@@ -323,6 +332,13 @@ func loomErrNilEvent(eventType string) error {
 		}
 		b.WriteString("}\n\n")
 	}
+	for _, r := range g.s.Records {
+		fmt.Fprintf(&b, "type %sHandlers interface {\n", r.Name)
+		for _, c := range r.Commands {
+			fmt.Fprintf(&b, "\t%s(ctx context.Context, state *%s, cmd *%s) ([]loom.DomainEvent, error)\n", c.Name, r.Name, c.Name)
+		}
+		b.WriteString("}\n\n")
+	}
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		fmt.Fprintf(&b, "type %sReactions interface {\n", exported(r.Name))
 		for _, sub := range r.Subscriptions {
@@ -335,6 +351,9 @@ func loomErrNilEvent(eventType string) error {
 	b.WriteString("type Impl struct {\n")
 	for _, a := range g.s.Aggregates {
 		fmt.Fprintf(&b, "\t%s %sHandlers\n", a.Name, a.Name)
+	}
+	for _, r := range g.s.Records {
+		fmt.Fprintf(&b, "\t%s %sHandlers\n", r.Name, r.Name)
 	}
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		fmt.Fprintf(&b, "\t%s %sReactions\n", exported(r.Name), exported(r.Name))
@@ -351,6 +370,20 @@ func loomErrNilEvent(eventType string) error {
 			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
 			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {\n")
 			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", a.Name, c.Name, a.Name, c.Name)
+			b.WriteString("\t\t\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n")
+		}
+		b.WriteString("\t\t\t\t},\n\t\t\t},\n")
+	}
+	b.WriteString("\t\t},\n")
+
+	b.WriteString("\t\tRecords: []*loom.RecordDef{\n")
+	for _, r := range g.s.Records {
+		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tNewState: func() any { return &%s{} },\n", r.Name, r.Name)
+		b.WriteString("\t\t\t\tCommands: []*loom.RecordCommandDef{\n")
+		for _, c := range r.Commands {
+			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
+			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {\n")
+			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", r.Name, c.Name, r.Name, c.Name)
 			b.WriteString("\t\t\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n")
 		}
 		b.WriteString("\t\t\t\t},\n\t\t\t},\n")
@@ -445,6 +478,19 @@ func (g *generator) stubs() map[string]string {
 		out[strings.ToLower(a.Name)+".go"] = b.String()
 	}
 
+	for _, r := range g.s.Records {
+		var b strings.Builder
+		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "import (\n\t\"context\"\n\n\t\"github.com/go-apis/loom\"\n\n\t%q\n)\n\n", genImport)
+		fmt.Fprintf(&b, "// %s implements %s.%sHandlers (a record: mutate state, optionally\n// announce events). Yours to edit.\n", r.Name, g.genPkg, r.Name)
+		fmt.Fprintf(&b, "type %s struct{}\n\n", r.Name)
+		for _, c := range r.Commands {
+			fmt.Fprintf(&b, "func (h *%s) %s(ctx context.Context, state *%s.%s, cmd *%s.%s) ([]loom.DomainEvent, error) {\n\tpanic(\"not implemented\")\n}\n\n",
+				r.Name, c.Name, g.genPkg, r.Name, g.genPkg, c.Name)
+		}
+		out[strings.ToLower(r.Name)+".go"] = b.String()
+	}
+
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		var b strings.Builder
 		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
@@ -465,6 +511,9 @@ func (g *generator) stubs() map[string]string {
 	fmt.Fprintf(&b, "// NewRegistry wires implementations into the generated registry. Yours\n// to edit.\nfunc NewRegistry() *loom.Registry {\n\treturn %s.NewRegistry(%s.Impl{\n", g.genPkg, g.genPkg)
 	for _, a := range g.s.Aggregates {
 		fmt.Fprintf(&b, "\t\t%s: &%s{},\n", a.Name, a.Name)
+	}
+	for _, r := range g.s.Records {
+		fmt.Fprintf(&b, "\t\t%s: &%s{},\n", r.Name, r.Name)
 	}
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		fmt.Fprintf(&b, "\t\t%s: &%s{},\n", exported(r.Name), exported(r.Name))

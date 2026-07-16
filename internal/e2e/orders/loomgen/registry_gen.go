@@ -22,13 +22,23 @@ type OrderHandlers interface {
 	ShipOrder(ctx context.Context, state *Order, cmd *ShipOrder) ([]loom.DomainEvent, error)
 }
 
+type DropAutoCancelReactions interface {
+	OnOrderShipped(ctx context.Context, evt *loom.Event, data *OrderShipped) ([]loom.Command, error)
+}
+
+type ScheduleAutoCancelReactions interface {
+	OnOrderPlaced(ctx context.Context, evt *loom.Event, data *OrderPlaced) ([]loom.Command, error)
+}
+
 type ShipOnPaymentReactions interface {
 	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
 }
 
 type Impl struct {
-	Order         OrderHandlers
-	ShipOnPayment ShipOnPaymentReactions
+	Order              OrderHandlers
+	DropAutoCancel     DropAutoCancelReactions
+	ScheduleAutoCancel ScheduleAutoCancelReactions
+	ShipOnPayment      ShipOnPaymentReactions
 }
 
 func NewRegistry(impl Impl) *loom.Registry {
@@ -70,13 +80,45 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 			},
 		},
+		Records: []*loom.RecordDef{},
 		Events: []*loom.EventDef{
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},
 			{Name: "OrderCancelled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderCancelled{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &OrderPlaced{} }},
 			{Name: "OrderShipped", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderShipped{} }},
 		},
-		Policies: []*loom.ReactorDef{},
+		Policies: []*loom.ReactorDef{
+			{
+				Name:   "dropAutoCancel",
+				Events: []string{"OrderShipped"},
+				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+					switch data := evt.Data.(type) {
+					case *OrderShipped:
+						cmds, err := impl.DropAutoCancel.OnOrderShipped(ctx, evt, data)
+						if err != nil {
+							return nil, err
+						}
+						return cmds, checkDispatches("dropAutoCancel", "OrderShipped", []string{"CancelOrder"}, cmds)
+					}
+					return nil, fmt.Errorf("unroutable event %s", evt.Type)
+				},
+			},
+			{
+				Name:   "scheduleAutoCancel",
+				Events: []string{"OrderPlaced"},
+				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+					switch data := evt.Data.(type) {
+					case *OrderPlaced:
+						cmds, err := impl.ScheduleAutoCancel.OnOrderPlaced(ctx, evt, data)
+						if err != nil {
+							return nil, err
+						}
+						return cmds, checkDispatches("scheduleAutoCancel", "OrderPlaced", []string{"CancelOrder"}, cmds)
+					}
+					return nil, fmt.Errorf("unroutable event %s", evt.Type)
+				},
+			},
+		},
 		Processes: []*loom.ReactorDef{
 			{
 				Name:   "shipOnPayment",

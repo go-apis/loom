@@ -14,6 +14,7 @@ type Schema struct {
 	Loom        int           `yaml:"loom" json:"loom"`
 	Service     string        `yaml:"service" json:"service"`
 	Aggregates  []*Aggregate  `yaml:"aggregates,omitempty" json:"aggregates,omitempty"`
+	Records     []*Record     `yaml:"records,omitempty" json:"records,omitempty"`
 	Entities    []*Entity     `yaml:"entities,omitempty" json:"entities,omitempty"`
 	Events      []*Event      `yaml:"events,omitempty" json:"events,omitempty"`
 	Policies    []*Reactor    `yaml:"policies,omitempty" json:"policies,omitempty"`
@@ -43,6 +44,15 @@ type Event struct {
 	Version int      `yaml:"version,omitempty" json:"version,omitempty"` // schema version, default 1
 	Aliases []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Payload *Payload `yaml:"payload,omitempty" json:"payload,omitempty"`
+}
+
+// Record is state-of-record persistence without event sourcing (ledgers,
+// balances): commands mutate state directly; emitted events are
+// announcements into the log, never a rebuild source.
+type Record struct {
+	Name     string     `yaml:"name" json:"name"`
+	State    *Payload   `yaml:"state" json:"state"`
+	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 }
 
 // Entity is a read model maintained by a projection.
@@ -134,10 +144,25 @@ func (s *Schema) FindCommand(name string) (*Aggregate, *Command) {
 	return nil, nil
 }
 
+func (s *Schema) FindRecordCommand(name string) (*Record, *Command) {
+	for _, r := range s.Records {
+		for _, c := range r.Commands {
+			if c.Name == name {
+				return r, c
+			}
+		}
+	}
+	return nil, nil
+}
+
 func (s *Schema) Sort() {
 	sort.Slice(s.Aggregates, func(i, j int) bool { return s.Aggregates[i].Name < s.Aggregates[j].Name })
 	for _, a := range s.Aggregates {
 		sort.Slice(a.Commands, func(i, j int) bool { return a.Commands[i].Name < a.Commands[j].Name })
+	}
+	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Name < s.Records[j].Name })
+	for _, r := range s.Records {
+		sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].Name < r.Commands[j].Name })
 	}
 	sort.Slice(s.Entities, func(i, j int) bool { return s.Entities[i].Name < s.Entities[j].Name })
 	sort.Slice(s.Events, func(i, j int) bool { return s.Events[i].Name < s.Events[j].Name })
@@ -167,7 +192,13 @@ func (s *Schema) Validate() error {
 	var errs []string
 	fail := func(format string, args ...any) { errs = append(errs, fmt.Sprintf(format, args...)) }
 
-	commandExists := func(name string) bool { _, c := s.FindCommand(name); return c != nil }
+	commandExists := func(name string) bool {
+		if _, c := s.FindCommand(name); c != nil {
+			return true
+		}
+		_, c := s.FindRecordCommand(name)
+		return c != nil
+	}
 
 	for _, a := range s.Aggregates {
 		if a.State == nil || len(a.State.Properties) == 0 {
@@ -183,6 +214,23 @@ func (s *Schema) Validate() error {
 					fail("command %s emits undeclared event %s", c.Name, e)
 				} else if evt.Service != "" {
 					fail("command %s emits foreign event %s (only %s can emit it)", c.Name, e, evt.Service)
+				}
+			}
+		}
+	}
+	for _, r := range s.Records {
+		if r.State == nil || len(r.State.Properties) == 0 {
+			fail("record %s has no state", r.Name)
+		}
+		for _, c := range r.Commands {
+			// unlike aggregate commands, record commands may emit nothing:
+			// the state write is the effect
+			for _, e := range c.Emits {
+				evt := s.FindEvent(e)
+				if evt == nil {
+					fail("record command %s emits undeclared event %s", c.Name, e)
+				} else if evt.Service != "" {
+					fail("record command %s emits foreign event %s", c.Name, e)
 				}
 			}
 		}
@@ -254,6 +302,12 @@ func (s *Schema) Validate() error {
 	for _, a := range s.Aggregates {
 		walk(a.State, true, "aggregate "+a.Name)
 		for _, c := range a.Commands {
+			walk(c.Payload, true, "command "+c.Name)
+		}
+	}
+	for _, r := range s.Records {
+		walk(r.State, true, "record "+r.Name)
+		for _, c := range r.Commands {
 			walk(c.Payload, true, "command "+c.Name)
 		}
 	}

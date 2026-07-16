@@ -21,12 +21,22 @@ type InvoiceHandlers interface {
 	RaiseInvoice(ctx context.Context, state *Invoice, cmd *RaiseInvoice) ([]loom.DomainEvent, error)
 }
 
+type LedgerEntryHandlers interface {
+	PostLedgerEntry(ctx context.Context, state *LedgerEntry, cmd *PostLedgerEntry) ([]loom.DomainEvent, error)
+}
+
+type PostLedgerReactions interface {
+	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
+}
+
 type RaiseOnOrderReactions interface {
 	OnOrderPlaced(ctx context.Context, evt *loom.Event, data *OrderPlaced) ([]loom.Command, error)
 }
 
 type Impl struct {
 	Invoice      InvoiceHandlers
+	LedgerEntry  LedgerEntryHandlers
+	PostLedger   PostLedgerReactions
 	RaiseOnOrder RaiseOnOrderReactions
 }
 
@@ -60,12 +70,46 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 			},
 		},
+		Records: []*loom.RecordDef{
+			{
+				Name:     "LedgerEntry",
+				NewState: func() any { return &LedgerEntry{} },
+				Commands: []*loom.RecordCommandDef{
+					{
+						Name:  "PostLedgerEntry",
+						New:   func() loom.Command { return &PostLedgerEntry{} },
+						Emits: []string{"LedgerEntryPosted"},
+						Handle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {
+							evts, err := impl.LedgerEntry.PostLedgerEntry(ctx, state.(*LedgerEntry), cmd.(*PostLedgerEntry))
+							return asAny(evts), err
+						},
+					},
+				},
+			},
+		},
 		Events: []*loom.EventDef{
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &InvoicePaid{} }},
 			{Name: "InvoiceRaised", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &InvoiceRaised{} }},
+			{Name: "LedgerEntryPosted", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &LedgerEntryPosted{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "orders", Aliases: nil, New: func() any { return &OrderPlaced{} }},
 		},
-		Policies: []*loom.ReactorDef{},
+		Policies: []*loom.ReactorDef{
+			{
+				Name:   "postLedger",
+				Events: []string{"InvoicePaid"},
+				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+					switch data := evt.Data.(type) {
+					case *InvoicePaid:
+						cmds, err := impl.PostLedger.OnInvoicePaid(ctx, evt, data)
+						if err != nil {
+							return nil, err
+						}
+						return cmds, checkDispatches("postLedger", "InvoicePaid", []string{"PostLedgerEntry"}, cmds)
+					}
+					return nil, fmt.Errorf("unroutable event %s", evt.Type)
+				},
+			},
+		},
 		Processes: []*loom.ReactorDef{
 			{
 				Name:   "raiseOnOrder",

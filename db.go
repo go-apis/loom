@@ -80,6 +80,30 @@ CREATE TABLE IF NOT EXISTS loom_dedup (
 	PRIMARY KEY (service, process, event_key)
 );
 
+CREATE TABLE IF NOT EXISTS loom_records (
+	service     text NOT NULL,
+	namespace   text NOT NULL,
+	record_type text NOT NULL,
+	id          uuid NOT NULL,
+	version     int NOT NULL,
+	data        jsonb NOT NULL,
+	updated_at  timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, record_type, id)
+);
+
+CREATE TABLE IF NOT EXISTS loom_timers (
+	service      text NOT NULL,
+	namespace    text NOT NULL,
+	key          text NOT NULL,
+	command_type text NOT NULL,
+	command      jsonb NOT NULL,
+	meta         jsonb NOT NULL,
+	fire_at      timestamptz NOT NULL,
+	created_at   timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, key)
+);
+CREATE INDEX IF NOT EXISTS loom_timers_due ON loom_timers (service, fire_at);
+
 CREATE TABLE IF NOT EXISTS loom_dead_letters (
 	id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	service   text NOT NULL,

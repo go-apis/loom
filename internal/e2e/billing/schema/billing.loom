@@ -27,7 +27,36 @@ aggregate Invoice {
   event InvoicePaid @publish {
     status: string!
     paid_at: timestamp!
+    customer_id: uuid!
+    amount_cents: int!
+    currency: string!
   }
+}
+
+// the ledger is state-of-record, not event-sourced: a bookkeeping row
+// posted in the same transaction as the payment
+record LedgerEntry {
+  state {
+    customer_id: uuid
+    amount_cents: int
+    currency: string
+    posted_at: timestamp
+  }
+
+  command PostLedgerEntry {
+    customer_id: uuid!
+    amount_cents: int!
+    currency: string!
+  } -> LedgerEntryPosted
+
+  event LedgerEntryPosted {
+    amount_cents: int!
+    currency: string!
+  }
+}
+
+policy postLedger {
+  on InvoicePaid -> PostLedgerEntry
 }
 
 // every placed order gets an invoice; the invoice reuses the order's
