@@ -40,6 +40,12 @@ textarea { flex:1; resize:none; border:none; outline:none; background:var(--pane
 #docs .f { font-family:var(--mono); font-size:12px; padding:2px 0; cursor:pointer; }
 #docs .f:hover { color:var(--accent); }
 #docs .t { color:var(--muted); }
+#docs .tl { color:var(--accent); cursor:pointer; }
+#docs details { margin:2px 0; }
+#docs summary { font-family:var(--mono); font-size:12px; cursor:pointer; color:var(--ink); }
+#docs details .fields { padding:2px 0 4px 14px; border-left:1px solid var(--line); margin-left:3px; }
+#docs details .f { cursor:default; }
+#docs details .f:hover { color:inherit; }
 </style>
 </head>
 <body>
@@ -101,9 +107,13 @@ const render = (t) => t.kind === "LIST" ? "[" + typeName(t.ofType) + "]" : typeN
 async function loadDocs() {
   const q = `{ __schema {
     queryType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } }
-                type { kind name ofType { kind name ofType { kind name } } } } }
+                type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
     mutationType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } }
                    type { kind name } } }
+    types { name kind
+      fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+      inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+      enumValues { name } }
   } }`;
   try {
     const r = await fetch(endpoint, {method:"POST", headers:{"Content-Type":"application/json"},
@@ -128,19 +138,47 @@ async function loadDocs() {
       const body = `  ${f.name}${args ? `(${args})` : ""} {\n    ${sel}\n  }`;
       return kind === "mutation" ? `mutation {\n${body}\n}` : `{\n${body}\n}`;
     };
+    const bare = (t) => typeName(t).replace(/[[\]!]/g, "");
+    const typeLink = (t) => {
+      const n = bare(t || {});
+      return `<span class="tl" data-jump="${n}">${render(t || {})}</span>`;
+    };
     const fill = (fields, kind) => (fields || []).map(f => {
       fieldsByKey[kind + ":" + f.name] = f;
       const args = (f.args || []).map(a => a.name).join(", ");
       return `<div class="f" data-name="${f.name}" data-kind="${kind}">${f.name}` +
              (args ? `<span class="t">(${args})</span>` : "") +
-             ` <span class="t">→ ${render(f.type || {})}</span></div>`;
+             ` <span class="t">→ </span>${typeLink(f.type)}</div>`;
     }).join("");
+
+    // every non-builtin type, expandable to its fields
+    const userTypes = (data.__schema.types || []).filter(t =>
+      !t.name.startsWith("__") &&
+      !["String","Int","Float","Boolean","ID","Query","Mutation"].includes(t.name) &&
+      (t.fields || t.inputFields || t.enumValues));
+    userTypes.sort((a,b) => a.name.localeCompare(b.name));
+    const typesHTML = userTypes.map(t => {
+      const rows = (t.fields || t.inputFields || []).map(f =>
+        `<div class="f">${f.name}<span class="t">: </span>${typeLink(f.type)}</div>`).join("") ||
+        (t.enumValues || []).map(v => `<div class="f">${v.name}</div>`).join("");
+      const kind = t.kind === "INPUT_OBJECT" ? " input" : t.kind === "ENUM" ? " enum" : "";
+      return `<details id="type-${t.name}"><summary>${t.name}<span class="t">${kind}</span></summary>
+        <div class="fields">${rows}</div></details>`;
+    }).join("");
+
     $("docBody").innerHTML =
       "<h3>Queries</h3>" + fill(data.__schema.queryType?.fields, "query") +
-      "<h3>Mutations</h3>" + fill(data.__schema.mutationType?.fields, "mutation");
-    document.querySelectorAll("#docs .f").forEach(el => el.onclick = () => {
+      "<h3>Mutations</h3>" + fill(data.__schema.mutationType?.fields, "mutation") +
+      "<h3>Types</h3>" + typesHTML;
+    document.querySelectorAll("#docs .f[data-kind]").forEach(el => el.onclick = (e) => {
+      if (e.target.dataset.jump) return; // type links win
       const f = fieldsByKey[el.dataset.kind + ":" + el.dataset.name];
       if (f) $("q").value = scaffold(f, el.dataset.kind);
+    });
+    document.querySelectorAll("#docs .tl").forEach(el => el.onclick = (e) => {
+      e.stopPropagation();
+      const d = document.getElementById("type-" + el.dataset.jump);
+      if (d) { d.open = true; d.scrollIntoView({block: "nearest"}); }
     });
   } catch { $("docBody").textContent = "introspection failed"; }
 }
