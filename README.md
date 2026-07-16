@@ -294,6 +294,7 @@ correlation intact across the bus, dedup, rebuild) runs as the E2E suite.
 The M1 extraction/topology tooling lives at tag `m1-extraction` and returns
 as the legacy migration on-ramp.
 
-See [DESIGN.md](DESIGN.md) for the SDL grammar and runtime semantics, and
+See [DESIGN.md](DESIGN.md) for the SDL grammar and runtime semantics,
+[TODO.md](TODO.md) for what comes next, and
 [go-apis/loom-example](https://github.com/go-apis/loom-example) for the
 example as a standalone repo.
