@@ -102,13 +102,34 @@ async function loadDocs() {
   const q = `{ __schema {
     queryType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } }
                 type { kind name ofType { kind name ofType { kind name } } } } }
-    mutationType { fields { name type { kind name } } }
+    mutationType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } }
+                   type { kind name } } }
   } }`;
   try {
     const r = await fetch(endpoint, {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({query: q})});
     const {data} = await r.json();
+    const fieldsByKey = {};
+    const placeholder = (arg) => {
+      const t = typeName(arg.type || {});
+      if (arg.name === "namespace") return '"default"';
+      if (t.startsWith("UUID")) return '"00000000-0000-0000-0000-000000000000"';
+      if (t.startsWith("String")) return '""';
+      if (t.startsWith("Int")) return "0";
+      if (t.startsWith("Boolean")) return "false";
+      if (t.endsWith("Input!")) return "{}";
+      return "null";
+    };
+    const scaffold = (f, kind) => {
+      // required args get placeholders so the scaffold actually runs
+      const args = (f.args || []).filter(a => (a.type || {}).kind === "NON_NULL")
+        .map(a => `${a.name}: ${placeholder(a)}`).join(", ");
+      const sel = kind === "mutation" ? "status" : "id";
+      const body = `  ${f.name}${args ? `(${args})` : ""} {\n    ${sel}\n  }`;
+      return kind === "mutation" ? `mutation {\n${body}\n}` : `{\n${body}\n}`;
+    };
     const fill = (fields, kind) => (fields || []).map(f => {
+      fieldsByKey[kind + ":" + f.name] = f;
       const args = (f.args || []).map(a => a.name).join(", ");
       return `<div class="f" data-name="${f.name}" data-kind="${kind}">${f.name}` +
              (args ? `<span class="t">(${args})</span>` : "") +
@@ -118,10 +139,8 @@ async function loadDocs() {
       "<h3>Queries</h3>" + fill(data.__schema.queryType?.fields, "query") +
       "<h3>Mutations</h3>" + fill(data.__schema.mutationType?.fields, "mutation");
     document.querySelectorAll("#docs .f").forEach(el => el.onclick = () => {
-      const n = el.dataset.name;
-      $("q").value = el.dataset.kind === "mutation"
-        ? `mutation {\n  ${n}(input: {}) {\n    status\n  }\n}`
-        : `{\n  ${n}(namespace: "default") {\n    id\n  }\n}`;
+      const f = fieldsByKey[el.dataset.kind + ":" + el.dataset.name];
+      if (f) $("q").value = scaffold(f, el.dataset.kind);
     });
   } catch { $("docBody").textContent = "introspection failed"; }
 }
