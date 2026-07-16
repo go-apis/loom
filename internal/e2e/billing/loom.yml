@@ -1,0 +1,3 @@
+schema: schema/billing.loom
+module: github.com/go-apis/loom/internal/e2e/billing
+package: billing

@@ -1,0 +1,43 @@
+service billing
+
+aggregate Invoice {
+  state {
+    status: string
+    customer_id: uuid
+    amount_cents: int
+    currency: string
+    paid_at: timestamp?
+  }
+
+  command RaiseInvoice {
+    customer_id: uuid!
+    amount_cents: int!
+    currency: string!
+  } -> InvoiceRaised
+
+  command MarkInvoicePaid -> InvoicePaid
+
+  event InvoiceRaised {
+    status: string!
+    customer_id: uuid!
+    amount_cents: int!
+    currency: string!
+  }
+
+  event InvoicePaid @publish {
+    status: string!
+    paid_at: timestamp!
+  }
+}
+
+// every placed order gets an invoice; the invoice reuses the order's
+// aggregate id so bus redeliveries converge on the same invoice.
+process raiseOnOrder {
+  on orders.OrderPlaced -> RaiseInvoice
+}
+
+consume orders.OrderPlaced {
+  customer_id: uuid
+  total_cents: int
+  currency: string
+}

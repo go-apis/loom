@@ -1,0 +1,67 @@
+service orders
+
+aggregate Order @snapshot(5) {
+  state {
+    status: string
+    customer_id: uuid
+    items: [OrderItem]
+    total_cents: int
+    currency: string
+    shipped_at: timestamp?
+  }
+
+  command PlaceOrder {
+    customer_id: uuid!
+    items: [OrderItem]!
+    currency: string!
+  } -> OrderPlaced
+
+  command ShipOrder -> OrderShipped
+  command CancelOrder -> OrderCancelled
+
+  event OrderPlaced @publish {
+    status: string!
+    customer_id: uuid!
+    items: [OrderItem]!
+    total_cents: int!
+    currency: string!
+  }
+
+  event OrderShipped {
+    status: string!
+    shipped_at: timestamp!
+  }
+
+  event OrderCancelled {
+    status: string!
+  }
+}
+
+entity OrderSummary {
+  status: string
+  customer_id: uuid
+  total_cents: int
+  currency: string
+}
+
+projection orderSummary -> OrderSummary {
+  on OrderPlaced
+  on OrderShipped
+  on OrderCancelled
+}
+
+// billing's InvoicePaid arrives off the bus; the invoice shares the order's
+// aggregate id, so the reaction ships that order.
+process shipOnPayment {
+  on billing.InvoicePaid -> ShipOrder
+}
+
+consume billing.InvoicePaid {
+  paid_at: timestamp
+}
+
+type OrderItem {
+  sku: string!
+  quantity: int!
+  price_cents: int!
+}

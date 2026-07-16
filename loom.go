@@ -162,10 +162,10 @@ type ReactorDef struct {
 }
 
 type ProjectionDef struct {
-	Name      string
-	Events    []string
-	Entity    string
-	NewState  func() EntityState
+	Name     string
+	Events   []string
+	Entity   string
+	NewState func() EntityState
 	// EntityID picks the read-model row an event lands in; generated code
 	// defaults to the event's aggregate id.
 	EntityID func(evt *Event) uuid.UUID

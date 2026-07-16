@@ -1,0 +1,3 @@
+schema: schema/orders.loom
+module: github.com/go-apis/loom/internal/e2e/orders
+package: orders

@@ -9,16 +9,16 @@ import (
 // Envelope is the wire form of a published integration event. Ordering key
 // = aggregate identity, so per-aggregate order survives the bus.
 type Envelope struct {
-	Service       string    `json:"service"`
-	Namespace     string    `json:"namespace"`
-	AggregateType string    `json:"aggregate_type"`
-	AggregateID   string    `json:"aggregate_id"`
-	Version       int       `json:"version"`
-	GlobalSeq     int64     `json:"global_seq"`
-	Type          string    `json:"type"`
-	SchemaVersion int       `json:"schema_version"`
-	At            string    `json:"at"`
-	Meta          Metadata  `json:"meta"`
+	Service       string          `json:"service"`
+	Namespace     string          `json:"namespace"`
+	AggregateType string          `json:"aggregate_type"`
+	AggregateID   string          `json:"aggregate_id"`
+	Version       int             `json:"version"`
+	GlobalSeq     int64           `json:"global_seq"`
+	Type          string          `json:"type"`
+	SchemaVersion int             `json:"schema_version"`
+	At            string          `json:"at"`
+	Meta          Metadata        `json:"meta"`
 	Data          json.RawMessage `json:"data"`
 }
 
