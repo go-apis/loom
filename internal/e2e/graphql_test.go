@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -160,4 +162,47 @@ func TestGraphQLGateway(t *testing.T) {
 func toJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
+}
+
+// TestGraphQLPlayground: a browser GET serves the embedded IDE; curl GET
+// with ?query= still executes.
+func TestGraphQLPlayground(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := loomgql.New(loomgql.Config{Services: []*loom.Client{cli}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(gateway)
+	defer srv.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL, nil)
+	req.Header.Set("Accept", "text/html")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(page), "loom graphql") || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("playground: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	resp, err = http.Get(srv.URL + "?query=" + url.QueryEscape(`{ __schema { queryType { name } } }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), `"Query"`) {
+		t.Fatalf("GET query: %s", body)
+	}
 }

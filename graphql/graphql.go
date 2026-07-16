@@ -11,6 +11,7 @@ package graphql
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -390,6 +391,9 @@ func lowerFirst(s string) string {
 
 // --- http ---
 
+//go:embed playground.html
+var playgroundHTML []byte
+
 type handler struct{ schema gql.Schema }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +410,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case http.MethodGet:
 		req.Query = r.URL.Query().Get("query")
+		// a browser landing here gets the playground; ?query= still works
+		// for quick curl checks
+		if req.Query == "" && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(playgroundHTML)
+			return
+		}
 	default:
 		http.Error(w, `{"errors":[{"message":"POST a query"}]}`, http.StatusMethodNotAllowed)
 		return

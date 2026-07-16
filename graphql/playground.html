@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loom graphql</title>
+<style>
+:root {
+  --bg:#f6f7f9; --panel:#fff; --ink:#1a2233; --muted:#6b7280; --line:#e3e6ea;
+  --accent:#2856c9; --bad:#b3261e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#101418; --panel:#171c22; --ink:#e6e9ee; --muted:#8b95a3;
+          --line:#2a323c; --accent:#7aa2ff; --bad:#ff6b61; }
+}
+* { box-sizing:border-box; }
+body { margin:0; height:100vh; display:flex; flex-direction:column;
+       background:var(--bg); color:var(--ink);
+       font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display:flex; align-items:center; gap:12px; padding:10px 16px;
+         border-bottom:1px solid var(--line); background:var(--panel); }
+header h1 { font-size:15px; margin:0; font-weight:650; }
+header button { background:var(--accent); color:#fff; border:none; border-radius:6px;
+                padding:6px 16px; font:inherit; cursor:pointer; }
+header .hint { color:var(--muted); font-size:12px; margin-left:auto; }
+main { flex:1; display:grid; grid-template-columns: 1fr 1fr 260px; min-height:0; }
+.pane { display:flex; flex-direction:column; border-right:1px solid var(--line); min-width:0; }
+.pane h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+           margin:0; padding:8px 12px 4px; }
+textarea { flex:1; resize:none; border:none; outline:none; background:var(--panel);
+           color:var(--ink); font:13px/1.5 var(--mono); padding:10px 12px; }
+#vars { flex:0 0 130px; border-top:1px solid var(--line); }
+#out { flex:1; margin:0; padding:10px 12px; overflow:auto; background:var(--panel);
+       font:13px/1.5 var(--mono); white-space:pre; }
+#out.err { color:var(--bad); }
+#docs { overflow:auto; background:var(--panel); border-right:none; padding:8px 12px; }
+#docs h3 { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+           color:var(--muted); margin:12px 0 4px; }
+#docs .f { font-family:var(--mono); font-size:12px; padding:2px 0; cursor:pointer; }
+#docs .f:hover { color:var(--accent); }
+#docs .t { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>loom graphql</h1>
+  <button id="run">Run ▷</button>
+  <span class="hint">Ctrl/Cmd+Enter runs · docs from introspection</span>
+</header>
+<main>
+  <div class="pane">
+    <h2>Query</h2>
+    <textarea id="q" spellcheck="false">{
+  __schema { queryType { name } }
+}</textarea>
+    <h2>Variables (JSON)</h2>
+    <textarea id="vars" spellcheck="false">{}</textarea>
+  </div>
+  <div class="pane">
+    <h2>Response</h2>
+    <pre id="out"></pre>
+  </div>
+  <div id="docs"><h3>Schema</h3><div id="docBody">loading…</div></div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const endpoint = location.pathname; // same URL: GET = this page, POST = execute
+
+async function run() {
+  let vars = {};
+  try { vars = JSON.parse($("vars").value || "{}"); }
+  catch { $("out").className = "err"; $("out").textContent = "variables are not valid JSON"; return; }
+  $("out").className = ""; $("out").textContent = "…";
+  try {
+    const r = await fetch(endpoint, {method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({query: $("q").value, variables: vars})});
+    const body = await r.json();
+    $("out").className = body.errors ? "err" : "";
+    $("out").textContent = JSON.stringify(body, null, 2);
+  } catch (e) { $("out").className = "err"; $("out").textContent = String(e); }
+}
+$("run").onclick = run;
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); }
+});
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Tab") { e.preventDefault();
+    const t = e.target, s = t.selectionStart;
+    t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd);
+    t.selectionStart = t.selectionEnd = s + 2;
+  }
+});
+
+const typeName = (t) => t.ofType ? typeName(t.ofType) + (t.kind === "NON_NULL" ? "!" : "")
+                                  : (t.name || "");
+const render = (t) => t.kind === "LIST" ? "[" + typeName(t.ofType) + "]" : typeName(t);
+
+async function loadDocs() {
+  const q = `{ __schema {
+    queryType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } }
+                type { kind name ofType { kind name ofType { kind name } } } } }
+    mutationType { fields { name type { kind name } } }
+  } }`;
+  try {
+    const r = await fetch(endpoint, {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({query: q})});
+    const {data} = await r.json();
+    const fill = (fields, kind) => (fields || []).map(f => {
+      const args = (f.args || []).map(a => a.name).join(", ");
+      return `<div class="f" data-name="${f.name}" data-kind="${kind}">${f.name}` +
+             (args ? `<span class="t">(${args})</span>` : "") +
+             ` <span class="t">→ ${render(f.type || {})}</span></div>`;
+    }).join("");
+    $("docBody").innerHTML =
+      "<h3>Queries</h3>" + fill(data.__schema.queryType?.fields, "query") +
+      "<h3>Mutations</h3>" + fill(data.__schema.mutationType?.fields, "mutation");
+    document.querySelectorAll("#docs .f").forEach(el => el.onclick = () => {
+      const n = el.dataset.name;
+      $("q").value = el.dataset.kind === "mutation"
+        ? `mutation {\n  ${n}(input: {}) {\n    status\n  }\n}`
+        : `{\n  ${n}(namespace: "default") {\n    id\n  }\n}`;
+    });
+  } catch { $("docBody").textContent = "introspection failed"; }
+}
+loadDocs();
+</script>
+</body>
+</html>
