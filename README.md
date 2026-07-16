@@ -29,6 +29,9 @@ go run github.com/go-apis/loom/cmd/loom compile --in payouts.loom   # lower to Y
 | `cmd/loom` | the CLI |
 | `vscode` | VS Code language support for `.loom` |
 
-See [DESIGN.md](DESIGN.md) for the SDL grammar and extraction rules.
+See [DESIGN.md](DESIGN.md) for the SDL grammar and extraction rules, and
+[go-apis/loom-example](https://github.com/go-apis/loom-example) for a
+browsable two-service demo (extracted schemas, rendered topology, and the
+drift-detection exercise).
 `testdata/users` is a copy of the es library's example service, pinned to
 the published lib, used by the round-trip and extraction tests.
