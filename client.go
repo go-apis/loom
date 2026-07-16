@@ -1,0 +1,298 @@
+package loom
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Config struct {
+	DB       *pgxpool.Pool
+	Bus      Bus
+	Registry *Registry
+	Logger   *slog.Logger
+
+	// ConflictRetries re-runs a Dispatch that lost an optimistic-concurrency
+	// race, against fresh state. Default 3.
+	ConflictRetries int
+}
+
+type Client struct {
+	db         *pgxpool.Pool
+	bus        Bus
+	reg        *Registry
+	log        *slog.Logger
+	nudge      chan struct{} // log advanced: wake projection/process runners
+	relayNudge chan struct{} // outbox rows written: wake the relay
+
+	retries int
+}
+
+func New(cfg Config) (*Client, error) {
+	if cfg.DB == nil || cfg.Registry == nil {
+		return nil, fmt.Errorf("loom: Config.DB and Config.Registry are required")
+	}
+	if cfg.Bus == nil {
+		cfg.Bus = NewMemoryBus()
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.ConflictRetries == 0 {
+		cfg.ConflictRetries = 3
+	}
+	return &Client{
+		db:         cfg.DB,
+		bus:        cfg.Bus,
+		reg:        cfg.Registry,
+		log:        cfg.Logger.With("service", cfg.Registry.Service),
+		nudge:      make(chan struct{}, 1),
+		relayNudge: make(chan struct{}, 1),
+		retries:    cfg.ConflictRetries,
+	}, nil
+}
+
+func (c *Client) Registry() *Registry { return c.reg }
+
+// maxPolicyDepth bounds policy → command → event → policy chains inside one
+// unit of work; hitting it is always a schema design error (a cycle).
+const maxPolicyDepth = 10
+
+// Dispatch runs commands in one unit of work: load state, handle, append
+// events (checked against each command's emit contract), run subscribed
+// policies in the same transaction, write outbox rows for published events,
+// snapshot, commit. Conflicts retry the whole unit against fresh state.
+func (c *Client) Dispatch(ctx context.Context, cmds ...Command) error {
+	var err error
+	for attempt := 0; attempt <= c.retries; attempt++ {
+		err = c.dispatchOnce(ctx, cmds)
+		var conflict *ConflictError
+		if !errors.As(err, &conflict) {
+			return err
+		}
+		c.log.WarnContext(ctx, "dispatch conflict, retrying", "attempt", attempt+1, "error", err)
+	}
+	return err
+}
+
+func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
+	meta := MetaFrom(ctx)
+	if meta.CorrelationID == "" {
+		meta.CorrelationID = uuid.NewString()
+	}
+
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	published := false
+	type queued struct {
+		cmd   Command
+		cause string
+	}
+	queue := make([]queued, 0, len(cmds))
+	for _, cmd := range cmds {
+		queue = append(queue, queued{cmd: cmd, cause: meta.CausationID})
+	}
+
+	for depth := 0; len(queue) > 0; depth++ {
+		if depth > maxPolicyDepth {
+			return fmt.Errorf("loom: policy chain exceeded depth %d — schema cycle?", maxPolicyDepth)
+		}
+		batch := queue
+		queue = nil
+
+		for _, q := range batch {
+			newEvents, err := c.handleCommand(ctx, tx, q.cmd, Metadata{
+				CorrelationID: meta.CorrelationID,
+				CausationID:   q.cause,
+				Actor:         meta.Actor,
+			})
+			if err != nil {
+				return err
+			}
+			for _, evt := range newEvents {
+				def := c.reg.eventDef(evt.Type)
+				if def != nil && def.Publish {
+					if err := c.enqueueOutbox(ctx, tx, evt); err != nil {
+						return err
+					}
+					published = true
+				}
+				followups, err := c.runPolicies(ctx, evt)
+				if err != nil {
+					return err
+				}
+				for _, f := range followups {
+					queue = append(queue, queued{cmd: f, cause: fmt.Sprintf("evt:%d", evt.GlobalSeq)})
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	c.notifyLog(ctx)
+	if published {
+		c.nudgeRelay()
+	}
+	return nil
+}
+
+func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta Metadata) ([]*Event, error) {
+	cmdName := cmd.LoomCommand()
+	agg, def := c.reg.aggregateForCommand(cmdName)
+	if def == nil {
+		return nil, fmt.Errorf("loom: no aggregate handles command %s", cmdName)
+	}
+	namespace, id := cmd.CommandTarget()
+	if namespace == "" {
+		return nil, fmt.Errorf("loom: command %s has no namespace", cmdName)
+	}
+
+	state, version, err := c.loadState(ctx, tx, agg, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+
+	payloads, err := def.Handle(ctx, state, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cmdName, err)
+	}
+
+	events := make([]*Event, 0, len(payloads))
+	for _, payload := range payloads {
+		name, sv, err := c.eventNameOf(payload)
+		if err != nil {
+			return nil, err
+		}
+		if !contains(def.Emits, name) {
+			return nil, &ContractError{Command: cmdName, Emitted: name}
+		}
+		version++
+		evt := &Event{
+			Service:       c.reg.Service,
+			Namespace:     namespace,
+			AggregateType: agg.Name,
+			AggregateID:   id,
+			Version:       version,
+			Type:          name,
+			SchemaVersion: sv,
+			At:            nowUTC(),
+			Meta:          meta,
+			Data:          payload,
+		}
+		if err := state.Fold(name, payload); err != nil {
+			return nil, err
+		}
+		events = append(events, evt)
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+
+	if err := c.appendEvents(ctx, tx, events); err != nil {
+		return nil, err
+	}
+
+	if agg.SnapshotEvery > 0 {
+		first := events[0].Version - 1
+		if version/agg.SnapshotEvery > first/agg.SnapshotEvery {
+			if err := c.saveSnapshot(ctx, tx, agg, namespace, id, state, version); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return events, nil
+}
+
+// runPolicies reacts to one new event with every subscribed policy, inside
+// the same transaction. Policies see committed-with-us state and their
+// commands join the unit atomically.
+func (c *Client) runPolicies(ctx context.Context, evt *Event) ([]Command, error) {
+	var out []Command
+	for _, p := range c.reg.Policies {
+		if !contains(p.Events, evt.Type) {
+			continue
+		}
+		cmds, err := p.React(ctx, evt)
+		if err != nil {
+			return nil, fmt.Errorf("policy %s on %s: %w", p.Name, evt.Type, err)
+		}
+		out = append(out, cmds...)
+	}
+	return out, nil
+}
+
+// Load folds and returns an aggregate's current state and version, outside
+// any unit of work (for queries and the console).
+func (c *Client) Load(ctx context.Context, aggregate, namespace string, id uuid.UUID) (AggregateState, int, error) {
+	for _, agg := range c.reg.Aggregates {
+		if agg.Name == aggregate {
+			return c.loadState(ctx, c.db, agg, namespace, id)
+		}
+	}
+	return nil, 0, fmt.Errorf("loom: unknown aggregate %s", aggregate)
+}
+
+// Entity returns a read-model row (nil if absent), decoded into the
+// projection's generated state type.
+func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.UUID) (EntityState, error) {
+	var proj *ProjectionDef
+	for _, p := range c.reg.Projections {
+		if p.Entity == entity {
+			proj = p
+			break
+		}
+	}
+	if proj == nil {
+		return nil, fmt.Errorf("loom: no projection maintains entity %s", entity)
+	}
+	var data []byte
+	err := c.db.QueryRow(ctx, `
+		SELECT data FROM loom_entities
+		WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id=$4`,
+		c.reg.Service, namespace, entity, id).Scan(&data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	state := proj.NewState()
+	if err := json.Unmarshal(data, state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func (c *Client) eventNameOf(payload any) (string, int, error) {
+	de, ok := payload.(DomainEvent)
+	if !ok {
+		return "", 0, fmt.Errorf("loom: handler returned %T, which is not a generated event", payload)
+	}
+	name := de.LoomEvent()
+	def := c.reg.eventDef(name)
+	if def == nil {
+		return "", 0, &UnknownEventError{Type: name}
+	}
+	return def.Name, def.SchemaVersion, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
