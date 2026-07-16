@@ -30,6 +30,10 @@ func main() {
 		err = runGenerate(os.Args[2:])
 	case "check":
 		err = runCheck(os.Args[2:])
+	case "openapi":
+		err = runEmit(os.Args[2:], "openapi.json", gen.OpenAPI)
+	case "graphql":
+		err = runEmit(os.Args[2:], "", gen.GraphQL)
 	default:
 		usage()
 	}
@@ -43,7 +47,50 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: loom init <service>")
 	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>]")
 	fmt.Fprintln(os.Stderr, "       loom check <schema.loom ...>")
+	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json]")
+	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls]")
 	os.Exit(2)
+}
+
+// runEmit powers the schema projections (OpenAPI, GraphQL SDL): load the
+// service's schema via loom.yml, run the emitter, write the artifact.
+func runEmit(args []string, defaultOut string, emit func(*schema.Schema) ([]byte, error)) error {
+	fs := flag.NewFlagSet("emit", flag.ExitOnError)
+	dir := fs.String("dir", ".", "service directory (where loom.yml lives)")
+	out := fs.String("out", "", "output file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(*dir, "loom.yml"))
+	if err != nil {
+		return fmt.Errorf("no loom.yml in %s: %w", *dir, err)
+	}
+	var cfg config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("loom.yml: %w", err)
+	}
+	s, err := loadSchemas(*dir, cfg.Schema)
+	if err != nil {
+		return err
+	}
+	data, err := emit(s)
+	if err != nil {
+		return err
+	}
+	name := defaultOut
+	if name == "" {
+		name = s.Service + ".graphqls"
+	}
+	if *out != "" {
+		name = *out
+	} else {
+		name = filepath.Join(*dir, name)
+	}
+	if err := os.WriteFile(name, data, 0o644); err != nil {
+		return err
+	}
+	fmt.Println("wrote", name)
+	return nil
 }
 
 // runCheck parses and validates schemas without generating anything — for
