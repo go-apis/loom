@@ -183,17 +183,6 @@ aggregate A {
 `,
 			wantErr: "@publish and @pii are incompatible",
 		},
-		"pii on command": {
-			src: `
-service s
-aggregate A {
-  state { x: string }
-  command C { tin: string @pii } -> E
-  event E { x: string }
-}
-`,
-			wantErr: "only valid on local unpublished events",
-		},
 		"pii inside named type": {
 			src: `
 service s
@@ -204,7 +193,7 @@ aggregate A {
 }
 type T { tin: string @pii }
 `,
-			wantErr: "only valid on local unpublished events",
+			wantErr: "only valid on commands, local unpublished events",
 		},
 		"duplicate effect": {
 			src: `

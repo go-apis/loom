@@ -274,10 +274,63 @@ func (c *Client) Shred(ctx context.Context, namespace string, id uuid.UUID) erro
 	return nil
 }
 
+// piiForCommand names a command's sealed payload fields.
+func (r *Registry) piiForCommand(name string) []string {
+	if _, def := r.aggregateForCommand(name); def != nil {
+		return def.PII
+	}
+	if _, def := r.recordForCommand(name); def != nil {
+		return def.PII
+	}
+	return nil
+}
+
+// sealCommand encrypts a command's @pii fields under its target stream's
+// key — commands rest in timers and batch items.
+func (c *Client) sealCommand(ctx context.Context, cmd Command, raw []byte) ([]byte, error) {
+	fields := c.reg.piiForCommand(cmd.LoomCommand())
+	if len(fields) == 0 {
+		return raw, nil
+	}
+	ns, id := cmd.CommandTarget()
+	return c.encryptFields(ctx, ns, id, raw, fields)
+}
+
+// openCommand decrypts a stored command's @pii fields; the target rides
+// plaintext inside the JSON.
+func (c *Client) openCommand(ctx context.Context, cmdType string, raw []byte) ([]byte, error) {
+	fields := c.reg.piiForCommand(cmdType)
+	if len(fields) == 0 {
+		return raw, nil
+	}
+	var target struct {
+		Namespace   string    `json:"namespace"`
+		AggregateID uuid.UUID `json:"aggregate_id"`
+	}
+	if err := json.Unmarshal(raw, &target); err != nil {
+		return nil, err
+	}
+	return c.decryptFields(ctx, target.Namespace, target.AggregateID, raw, fields)
+}
+
 func (r *Registry) hasPII() bool {
 	for _, e := range r.Events {
 		if len(e.PII) > 0 {
 			return true
+		}
+	}
+	for _, a := range r.Aggregates {
+		for _, def := range a.Commands {
+			if len(def.PII) > 0 {
+				return true
+			}
+		}
+	}
+	for _, rec := range r.Records {
+		for _, def := range rec.Commands {
+			if len(def.PII) > 0 {
+				return true
+			}
 		}
 	}
 	for _, a := range r.Aggregates {

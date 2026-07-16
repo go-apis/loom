@@ -113,6 +113,9 @@ func (c *Client) enqueueBatchTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, na
 		if err != nil {
 			return fmt.Errorf("batch item %d (%s): %w", i, cmd.LoomCommand(), err)
 		}
+		if raw, err = c.sealCommand(ctx, cmd, raw); err != nil {
+			return fmt.Errorf("batch item %d (%s): %w", i, cmd.LoomCommand(), err)
+		}
 		rows = append(rows, []any{c.reg.Service, id, i, cmd.LoomCommand(), raw})
 	}
 	_, err = tx.CopyFrom(ctx,
@@ -258,7 +261,11 @@ func (c *Client) batchStep(ctx context.Context) (int, error) {
 	for _, it := range chunk {
 		touched[it.batchID] = true
 		var dispatchErr error
-		cmd, err := c.decodeCommand(it.cmdType, it.raw)
+		raw, err := c.openCommand(ctx, it.cmdType, it.raw)
+		var cmd Command
+		if err == nil {
+			cmd, err = c.decodeCommand(it.cmdType, raw)
+		}
 		if err != nil {
 			dispatchErr = err
 		} else {

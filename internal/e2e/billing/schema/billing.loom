@@ -45,7 +45,7 @@ aggregate Payee @snapshot(1) {
 
   command RegisterPayee {
     name: string!
-    tin: string!
+    tin: string! @pii
     tin_last4: string!
   } -> PayeeRegistered
 

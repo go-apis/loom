@@ -313,24 +313,16 @@ func (s *Schema) Validate() error {
 	}
 
 	// @pii placement: encrypt-at-rest applies to what the runtime persists
-	// under a stream's data key. Commands are transient inputs, published
-	// events cross the bus in plaintext, foreign events belong to another
-	// service's keys, and named types would smuggle PII anywhere.
+	// under a stream's data key — states, local unpublished events, and
+	// command payloads (commands rest in timers and batch items).
+	// Published events cross the bus in plaintext, foreign events belong
+	// to another service's keys, and named types would smuggle PII
+	// anywhere.
 	noPII := func(pl *Payload, what string) {
 		for name, f := range payloadProps(pl) {
 			if f.PII {
-				fail("%s field %s: %s", what, name, "@pii is only valid on local unpublished events and aggregate/record/entity states")
+				fail("%s field %s: %s", what, name, "@pii is only valid on commands, local unpublished events and aggregate/record/entity states")
 			}
-		}
-	}
-	for _, a := range s.Aggregates {
-		for _, c := range a.Commands {
-			noPII(c.Payload, "command "+c.Name)
-		}
-	}
-	for _, r := range s.Records {
-		for _, c := range r.Commands {
-			noPII(c.Payload, "command "+c.Name)
 		}
 	}
 	for _, t := range s.Types {

@@ -89,6 +89,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 						Name:  "RegisterPayee",
 						New:   func() loom.Command { return &RegisterPayee{} },
 						Emits: []string{"PayeeRegistered"},
+						PII:   []string{"tin"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Payee.RegisterPayee(ctx, state.(*Payee), cmd.(*RegisterPayee))
 							return asAny(evts), err

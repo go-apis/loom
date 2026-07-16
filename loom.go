@@ -141,9 +141,12 @@ type AggregateDef struct {
 }
 
 type CommandDef struct {
-	Name   string
-	New    func() Command
-	Emits  []string // the contract: the only event types Handle may return
+	Name  string
+	New   func() Command
+	Emits []string // the contract: the only event types Handle may return
+	// PII names payload fields sealed wherever the command rests (timers,
+	// batch items).
+	PII    []string
 	Handle func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
 }
 
@@ -164,6 +167,7 @@ type RecordCommandDef struct {
 	Name   string
 	New    func() Command
 	Emits  []string
+	PII    []string
 	Handle func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 

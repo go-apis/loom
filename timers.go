@@ -77,6 +77,9 @@ func (c *Client) writeTimer(ctx context.Context, tx pgx.Tx, sc *scheduledCommand
 	if err != nil {
 		return err
 	}
+	if data, err = c.sealCommand(ctx, sc.Command, data); err != nil {
+		return err
+	}
 	metaRaw, err := json.Marshal(meta)
 	if err != nil {
 		return err
@@ -185,6 +188,10 @@ func (c *Client) fireDueTimers(ctx context.Context, limit int) (int, error) {
 }
 
 func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, metaRaw []byte) error {
+	cmdRaw, err := c.openCommand(ctx, cmdType, cmdRaw)
+	if err != nil {
+		return err
+	}
 	cmd, err := c.decodeCommand(cmdType, cmdRaw)
 	if err != nil {
 		return err

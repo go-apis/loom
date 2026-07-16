@@ -145,9 +145,10 @@ async function loadDocs() {
     };
     const fill = (fields, kind) => (fields || []).map(f => {
       fieldsByKey[kind + ":" + f.name] = f;
-      const args = (f.args || []).map(a => a.name).join(", ");
+      // arg types are links too, so a mutation points at its Input type
+      const args = (f.args || []).map(a => `${a.name}: ` + typeLink(a.type)).join(", ");
       return `<div class="f" data-name="${f.name}" data-kind="${kind}">${f.name}` +
-             (args ? `<span class="t">(${args})</span>` : "") +
+             (args ? `<span class="t">(</span>${args}<span class="t">)</span>` : "") +
              ` <span class="t">→ </span>${typeLink(f.type)}</div>`;
     }).join("");
 
