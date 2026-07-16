@@ -50,6 +50,19 @@ dependencies, and there's no client to plumb into the registry. Reads are
 the only injected capability: dispatching from inside a handler would nest
 units of work, so reactions return commands instead.
 
+Stubs land flat in the service root by default; `layout: folders` in
+loom.yml gives each kind its own package instead —
+
+```
+myservice/
+  loomgen/         # generated, regenerated every run
+  aggregates/      # yours, generated once
+  records/
+  policies/
+  processes/
+  registry.go      # wires &aggregates.X{}, &processes.Y{}, …
+```
+
 ## Execution semantics (there are exactly three)
 
 | declaration | runs | guarantees |

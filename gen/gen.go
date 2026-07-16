@@ -35,6 +35,11 @@ type Config struct {
 	GenDir string
 	// Module is the service module path, used for the generated import.
 	Module string
+	// Layout picks where stubs land: "flat" (default) puts them in the
+	// service root; "folders" gives each kind its own package —
+	// aggregates/, records/, policies/, processes/ — with registry.go at
+	// the root wiring them.
+	Layout string
 }
 
 type Result struct {
@@ -79,6 +84,9 @@ func Generate(s *schema.Schema, cfg Config) (*Result, error) {
 		if _, err := os.Stat(path); err == nil {
 			res.Skipped = append(res.Skipped, path)
 			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
 		}
 		if err := os.WriteFile(path, gofmt(path, content), 0o644); err != nil {
 			return nil, err
@@ -481,13 +489,42 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 
 // --- stubs ---
 
+// stubKinds maps schema kinds to their folder/package when Layout is
+// "folders". Projections generate no stubs, so they have no folder.
+const (
+	kindAggregates = "aggregates"
+	kindRecords    = "records"
+	kindPolicies   = "policies"
+	kindProcesses  = "processes"
+)
+
+func (g *generator) folders() bool { return g.cfg.Layout == "folders" }
+
+// place returns the stub file path and its package name for a kind.
+func (g *generator) place(kind, file string) (path, pkg string) {
+	if g.folders() {
+		return filepath.Join(kind, file), kind
+	}
+	return file, g.cfg.Package
+}
+
+// qualify renders a stub constructor for registry.go: kind-qualified
+// under the folders layout, bare when flat.
+func (g *generator) qualify(kind, typeName string) string {
+	if g.folders() {
+		return "&" + kind + "." + typeName + "{}"
+	}
+	return "&" + typeName + "{}"
+}
+
 func (g *generator) stubs() map[string]string {
 	genImport := g.cfg.Module + "/" + filepath.ToSlash(g.cfg.GenDir)
 	out := map[string]string{}
 
 	for _, a := range g.s.Aggregates {
+		path, pkg := g.place(kindAggregates, strings.ToLower(a.Name)+".go")
 		var b strings.Builder
-		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "package %s\n\n", pkg)
 		fmt.Fprintf(&b, "import (\n\t\"context\"\n\n\t\"github.com/go-apis/loom\"\n\n\t%q\n)\n\n", genImport)
 		fmt.Fprintf(&b, "// %s implements %s.%sHandlers. Yours to edit — loom generate never\n// rewrites this file.\n", a.Name, g.genPkg, a.Name)
 		fmt.Fprintf(&b, "type %s struct{}\n\n", a.Name)
@@ -495,12 +532,13 @@ func (g *generator) stubs() map[string]string {
 			fmt.Fprintf(&b, "func (h *%s) %s(ctx context.Context, state *%s.%s, cmd *%s.%s) ([]loom.DomainEvent, error) {\n\tpanic(\"not implemented\")\n}\n\n",
 				a.Name, c.Name, g.genPkg, a.Name, g.genPkg, c.Name)
 		}
-		out[strings.ToLower(a.Name)+".go"] = b.String()
+		out[path] = b.String()
 	}
 
 	for _, r := range g.s.Records {
+		path, pkg := g.place(kindRecords, strings.ToLower(r.Name)+".go")
 		var b strings.Builder
-		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "package %s\n\n", pkg)
 		fmt.Fprintf(&b, "import (\n\t\"context\"\n\n\t\"github.com/go-apis/loom\"\n\n\t%q\n)\n\n", genImport)
 		fmt.Fprintf(&b, "// %s implements %s.%sHandlers (a record: mutate state, optionally\n// announce events). Yours to edit.\n", r.Name, g.genPkg, r.Name)
 		fmt.Fprintf(&b, "type %s struct{}\n\n", r.Name)
@@ -508,12 +546,13 @@ func (g *generator) stubs() map[string]string {
 			fmt.Fprintf(&b, "func (h *%s) %s(ctx context.Context, state *%s.%s, cmd *%s.%s) ([]loom.DomainEvent, error) {\n\tpanic(\"not implemented\")\n}\n\n",
 				r.Name, c.Name, g.genPkg, r.Name, g.genPkg, c.Name)
 		}
-		out[strings.ToLower(r.Name)+".go"] = b.String()
+		out[path] = b.String()
 	}
 
-	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
+	reactorStub := func(kind string, r *schema.Reactor) {
+		path, pkg := g.place(kind, strings.ToLower(r.Name)+".go")
 		var b strings.Builder
-		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "package %s\n\n", pkg)
 		fmt.Fprintf(&b, "import (\n\t\"context\"\n\n\t\"github.com/go-apis/loom\"\n\n\t%q\n)\n\n", genImport)
 		fmt.Fprintf(&b, "// %s implements %s.%sReactions. Yours to edit.\n", exported(r.Name), g.genPkg, exported(r.Name))
 		fmt.Fprintf(&b, "type %s struct{}\n\n", exported(r.Name))
@@ -521,22 +560,48 @@ func (g *generator) stubs() map[string]string {
 			fmt.Fprintf(&b, "func (h *%s) On%s(ctx context.Context, evt *loom.Event, data *%s.%s) ([]loom.Command, error) {\n\tpanic(\"not implemented\")\n}\n\n",
 				exported(r.Name), sub.Event, g.genPkg, sub.Event)
 		}
-		out[strings.ToLower(r.Name)+".go"] = b.String()
+		out[path] = b.String()
+	}
+	for _, r := range g.s.Policies {
+		reactorStub(kindPolicies, r)
+	}
+	for _, r := range g.s.Processes {
+		reactorStub(kindProcesses, r)
 	}
 
 	// wiring, generated once so additions appear as compile errors on Impl
 	var b strings.Builder
 	fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
-	fmt.Fprintf(&b, "import (\n\t\"github.com/go-apis/loom\"\n\n\t%q\n)\n\n", genImport)
+	b.WriteString("import (\n\t\"github.com/go-apis/loom\"\n\n")
+	if g.folders() {
+		for _, kind := range []struct {
+			name string
+			used bool
+		}{
+			{kindAggregates, len(g.s.Aggregates) > 0},
+			{kindPolicies, len(g.s.Policies) > 0},
+			{kindProcesses, len(g.s.Processes) > 0},
+			{kindRecords, len(g.s.Records) > 0},
+		} {
+			if kind.used {
+				fmt.Fprintf(&b, "\t%q\n", g.cfg.Module+"/"+kind.name)
+			}
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "\t%q\n)\n\n", genImport)
 	fmt.Fprintf(&b, "// NewRegistry wires implementations into the generated registry. Yours\n// to edit.\nfunc NewRegistry() *loom.Registry {\n\treturn %s.NewRegistry(%s.Impl{\n", g.genPkg, g.genPkg)
 	for _, a := range g.s.Aggregates {
-		fmt.Fprintf(&b, "\t\t%s: &%s{},\n", a.Name, a.Name)
+		fmt.Fprintf(&b, "\t\t%s: %s,\n", a.Name, g.qualify(kindAggregates, a.Name))
 	}
 	for _, r := range g.s.Records {
-		fmt.Fprintf(&b, "\t\t%s: &%s{},\n", r.Name, r.Name)
+		fmt.Fprintf(&b, "\t\t%s: %s,\n", r.Name, g.qualify(kindRecords, r.Name))
 	}
-	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
-		fmt.Fprintf(&b, "\t\t%s: &%s{},\n", exported(r.Name), exported(r.Name))
+	for _, r := range g.s.Policies {
+		fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(r.Name), g.qualify(kindPolicies, exported(r.Name)))
+	}
+	for _, r := range g.s.Processes {
+		fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(r.Name), g.qualify(kindProcesses, exported(r.Name)))
 	}
 	b.WriteString("\t})\n}\n")
 	out["registry.go"] = b.String()

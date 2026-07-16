@@ -57,6 +57,11 @@ aggregate/entity states with `Fold` (field-name merge between event and
 state, optionality-bridged), and `NewRegistry(Impl)` wiring everything into
 `loom.Registry`. Stubs (once, then yours): one file per aggregate and
 reactor implementing the generated interfaces, plus `registry.go`.
+`layout: folders` puts stubs in per-kind packages (aggregates/, records/,
+policies/, processes/) with registry.go at the root; flat stays the
+default. Dependency structs are the user's to place — a leaf package like
+processes/ is the natural home, since registry.go (root) imports the kind
+packages, never the reverse.
 
 No reflection anywhere: names come from generated methods, routing from
 generated switches, folds from generated assignments.

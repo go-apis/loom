@@ -120,6 +120,9 @@ type config struct {
 	Module    string `yaml:"module,omitempty"`
 	Package   string `yaml:"package,omitempty"`
 	Generated string `yaml:"generated,omitempty"`
+	// Layout: "flat" (default) or "folders" (stubs in aggregates/,
+	// records/, policies/, processes/ packages).
+	Layout string `yaml:"layout,omitempty"`
 }
 
 func runInit(args []string) error {
@@ -192,11 +195,15 @@ func runGenerate(args []string) error {
 		return err
 	}
 
+	if cfg.Layout != "" && cfg.Layout != "flat" && cfg.Layout != "folders" {
+		return fmt.Errorf("loom.yml: layout must be flat or folders, got %q", cfg.Layout)
+	}
 	res, err := gen.Generate(s, gen.Config{
 		Dir:     *dir,
 		Package: cfg.Package,
 		GenDir:  cfg.Generated,
 		Module:  cfg.Module,
+		Layout:  cfg.Layout,
 	})
 	if err != nil {
 		return err

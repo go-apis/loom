@@ -75,3 +75,48 @@ func TestGraphQL(t *testing.T) {
 		}
 	}
 }
+
+func TestFoldersLayout(t *testing.T) {
+	s, err := sdl.Parse(string(ordersSchema(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	res, err := gen.Generate(s, gen.Config{Dir: dir, Package: "orders", Module: "example.com/orders", Layout: "folders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// stubs land in per-kind packages, registry at the root
+	for _, want := range []string{
+		"aggregates/order.go",
+		"policies/scheduleautocancel.go",
+		"processes/shiponpayment.go",
+		"registry.go",
+	} {
+		found := false
+		for _, w := range res.Written {
+			if strings.HasSuffix(w, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in %v", want, res.Written)
+		}
+	}
+	stub, err := os.ReadFile(dir + "/aggregates/order.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stub), "package aggregates") {
+		t.Fatalf("stub package: %s", stub)
+	}
+	reg, err := os.ReadFile(dir + "/registry.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"package orders", `"example.com/orders/aggregates"`, "&aggregates.Order{}", "&processes.ShipOnPayment{}", "&policies.ScheduleAutoCancel{}"} {
+		if !strings.Contains(string(reg), want) {
+			t.Fatalf("registry missing %q:\n%s", want, reg)
+		}
+	}
+}
