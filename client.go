@@ -32,6 +32,7 @@ type Client struct {
 	log        *slog.Logger
 	nudge      chan struct{} // log advanced: wake projection/process runners
 	relayNudge chan struct{} // outbox rows written: wake the relay
+	batchNudge chan struct{} // batch enqueued: wake the batch runner
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
@@ -59,6 +60,7 @@ func New(cfg Config) (*Client, error) {
 		log:        cfg.Logger.With("service", cfg.Registry.Service),
 		nudge:      make(chan struct{}, 1),
 		relayNudge: make(chan struct{}, 1),
+		batchNudge: make(chan struct{}, 1),
 		watchers:   map[chan struct{}]bool{},
 		retries:    cfg.ConflictRetries,
 	}, nil
@@ -100,6 +102,7 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 	defer tx.Rollback(ctx)
 
 	published := false
+	batched := false
 	type queued struct {
 		cmd   Command
 		cause string
@@ -122,7 +125,8 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 				CausationID:   q.cause,
 				Actor:         meta.Actor,
 			}
-			// timer wrappers join the transaction instead of executing
+			// timer and batch wrappers join the transaction instead of
+			// executing
 			switch w := q.cmd.(type) {
 			case *scheduledCommand:
 				if err := c.writeTimer(ctx, tx, w, cmdMeta); err != nil {
@@ -133,6 +137,13 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 				if err := c.deleteTimer(ctx, tx, w); err != nil {
 					return err
 				}
+				continue
+			case *asBatch:
+				ns, _ := w.CommandTarget()
+				if err := c.enqueueBatchTx(ctx, tx, uuid.New(), ns, w.cmds); err != nil {
+					return err
+				}
+				batched = true
 				continue
 			}
 			newEvents, err := c.handleCommand(ctx, tx, q.cmd, cmdMeta)
@@ -164,6 +175,9 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 	c.notifyLog(ctx)
 	if published {
 		c.nudgeRelay()
+	}
+	if batched {
+		c.nudgeBatches()
 	}
 	return nil
 }

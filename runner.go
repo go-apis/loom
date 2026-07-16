@@ -35,6 +35,7 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	}
 	c.StartRelay(ctx, poll)
 	c.startTimerRunner(ctx, poll)
+	c.startBatchRunner(ctx, poll)
 	go c.listenLoop(ctx)
 
 	for _, p := range c.reg.Projections {

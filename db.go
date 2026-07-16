@@ -110,6 +110,32 @@ CREATE TABLE IF NOT EXISTS loom_timers (
 );
 CREATE INDEX IF NOT EXISTS loom_timers_due ON loom_timers (service, fire_at);
 
+CREATE TABLE IF NOT EXISTS loom_batches (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	id         uuid NOT NULL,
+	status     text NOT NULL,
+	total      int NOT NULL,
+	done       int NOT NULL DEFAULT 0,
+	failed     int NOT NULL DEFAULT 0,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, id)
+);
+
+CREATE TABLE IF NOT EXISTS loom_batch_items (
+	service      text NOT NULL,
+	batch_id     uuid NOT NULL,
+	seq          int NOT NULL,
+	command_type text NOT NULL,
+	command      jsonb NOT NULL,
+	status       text NOT NULL DEFAULT 'pending',
+	error        text NOT NULL DEFAULT '',
+	claimed_at   timestamptz,
+	PRIMARY KEY (service, batch_id, seq)
+);
+CREATE INDEX IF NOT EXISTS loom_batch_items_pending ON loom_batch_items (service, batch_id, seq) WHERE status IN ('pending','working');
+
 CREATE TABLE IF NOT EXISTS loom_dead_letters (
 	id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	service   text NOT NULL,

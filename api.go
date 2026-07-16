@@ -1,6 +1,7 @@
 package loom
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,7 +45,105 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("GET /entities/{name}/{id}/stream", c.apiEntityStream)
 	mux.HandleFunc("GET /aggregates/{name}/{id}/stream", c.apiAggregateStream)
 	mux.HandleFunc("GET /stats", c.apiStats)
+	mux.HandleFunc("POST /batches", c.apiEnqueueBatch)
+	mux.HandleFunc("GET /batches/{id}", c.apiGetBatch)
+	mux.HandleFunc("GET /batches/{id}/failures", c.apiBatchFailures)
+	mux.HandleFunc("GET /batches/{id}/stream", c.apiBatchStream)
 	return mux
+}
+
+func (c *Client) apiEnqueueBatch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Namespace string `json:"namespace"`
+		Commands  []struct {
+			Command string          `json:"command"`
+			Body    json.RawMessage `json:"body"`
+		} `json:"commands"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Namespace == "" || len(body.Commands) == 0 {
+		apiError(w, http.StatusBadRequest, "namespace and commands are required")
+		return
+	}
+	cmds := make([]Command, 0, len(body.Commands))
+	for i, item := range body.Commands {
+		cmd, err := c.decodeCommand(item.Command, item.Body)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, fmt.Sprintf("item %d: %v", i, err))
+			return
+		}
+		cmds = append(cmds, cmd)
+	}
+	id, err := c.EnqueueBatch(r.Context(), body.Namespace, cmds)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": id, "total": len(cmds)})
+}
+
+func (c *Client) apiGetBatch(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	b, err := c.GetBatch(r.Context(), id)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if b == nil {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (c *Client) apiBatchFailures(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	failures, err := c.BatchFailures(r.Context(), id)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(failures)})
+}
+
+func (c *Client) apiBatchStream(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	sse, ok := newSSE(w)
+	if !ok {
+		apiError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	var last []byte
+	c.streamLoop(r.Context(), sse, func() error {
+		b, err := c.GetBatch(r.Context(), id)
+		if err != nil || b == nil {
+			return err
+		}
+		raw, err := json.Marshal(b)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(raw, last) {
+			return nil
+		}
+		last = raw
+		return sse.event("", "progress", json.RawMessage(raw))
+	})
 }
 
 func (c *Client) apiDispatch(w http.ResponseWriter, r *http.Request) {

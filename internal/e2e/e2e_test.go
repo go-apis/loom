@@ -398,6 +398,101 @@ func TestSSEStreams(t *testing.T) {
 	}
 }
 
+// TestBatchDispatch enqueues 200 PlaceOrders (4 deliberately duplicated →
+// business failures), watches progress over SSE, and verifies durable
+// per-item outcomes.
+func TestBatchDispatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	old := orders.AutoCancelAfter
+	orders.AutoCancelAfter = time.Hour
+	t.Cleanup(func() { orders.AutoCancelAfter = old })
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(cli.HTTPHandler())
+	t.Cleanup(srv.Close)
+
+	customer := uuid.New()
+	dupe := uuid.New()
+	cmds := make([]loom.Command, 0, 200)
+	for i := 0; i < 200; i++ {
+		id := uuid.New()
+		if i%50 == 10 { // seqs 10, 60, 110, 160 collide with an existing order
+			id = dupe
+		}
+		cmds = append(cmds, &ordersgen.PlaceOrder{
+			CommandBase: loom.CommandBase{AggregateID: id, Namespace: "default"},
+			CustomerId:  customer,
+			Currency:    "USD",
+			Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 1, PriceCents: 100}},
+		})
+	}
+
+	batchID, err := cli.EnqueueBatch(ctx, "default", cmds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress := sseEvents(t, ctx, srv.URL+"/batches/"+batchID.String()+"/stream")
+
+	waitFor(t, ctx, "batch completion", func() bool {
+		b, err := cli.GetBatch(ctx, batchID)
+		return err == nil && b != nil && b.Status == "completed"
+	})
+	b, err := cli.GetBatch(ctx, batchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// first dupe placement succeeds; the other 3 fail "already exists"
+	if b.Total != 200 || b.Done != 197 || b.Failed != 3 {
+		t.Fatalf("batch outcome: %+v", b)
+	}
+	failures, err := cli.BatchFailures(ctx, batchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 3 || !strings.Contains(failures[0].Error, "already exists") {
+		t.Fatalf("failures: %+v", failures)
+	}
+
+	// progress stream saw movement and the terminal state
+	sawProgress, sawDone := false, false
+	timeout := time.After(5 * time.Second)
+	for !sawDone {
+		select {
+		case evt := <-progress:
+			if evt.name == "progress" {
+				sawProgress = true
+				if strings.Contains(evt.data, `"status":"completed"`) {
+					sawDone = true
+				}
+			}
+		case <-timeout:
+			t.Fatalf("stream: sawProgress=%v sawDone=%v", sawProgress, sawDone)
+		}
+	}
+
+	// the read model agrees: 197 distinct orders
+	summaries, err := cli.QueryEntities(ctx, "OrderSummary", loom.Query{Namespace: "default", Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "projection catch-up", func() bool {
+		summaries, err = cli.QueryEntities(ctx, "OrderSummary", loom.Query{Namespace: "default", Limit: 500})
+		return err == nil && len(summaries) == 197
+	})
+}
+
 type sseEvent struct {
 	id, name, data string
 }
