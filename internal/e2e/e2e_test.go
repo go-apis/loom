@@ -43,7 +43,7 @@ func TestOrderBillingLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	billingCli, err := loom.New(loom.Config{DB: pool, Bus: bus, Registry: billing.NewRegistry()})
+	billingCli, err := loom.New(loom.Config{DB: pool, Bus: bus, Registry: billing.NewRegistry(), Keys: testKeys(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

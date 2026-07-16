@@ -27,6 +27,7 @@ aggregate Order @snapshot(5) {
 record Ledger {
   state {
     total_cents: int
+    account_ref: string @pii
   }
   command PostLedger {
     amount_cents: int!
@@ -96,6 +97,9 @@ func TestParse(t *testing.T) {
 	// effects sort alphabetically on the process
 	if fx := s.Processes[0].Effects; len(fx) != 2 || fx[0] != "carrier_pickup" || fx[1] != "notify_customer" {
 		t.Fatalf("effects misparsed: %+v", fx)
+	}
+	if pii := s.Records[0].State.PIIFields(); len(pii) != 1 || pii[0] != "account_ref" {
+		t.Fatalf("@pii misparsed: %+v", pii)
 	}
 	// record commands may emit nothing (AdjustLedger): the state write is
 	// the effect
@@ -167,6 +171,40 @@ policy p {
 }
 `,
 			wantErr: "cannot declare effects",
+		},
+		"pii on published event": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E @publish { tin: string @pii }
+}
+`,
+			wantErr: "@publish and @pii are incompatible",
+		},
+		"pii on command": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C { tin: string @pii } -> E
+  event E { x: string }
+}
+`,
+			wantErr: "only valid on local unpublished events",
+		},
+		"pii inside named type": {
+			src: `
+service s
+aggregate A {
+  state { x: T }
+  command C -> E
+  event E { x: string }
+}
+type T { tin: string @pii }
+`,
+			wantErr: "only valid on local unpublished events",
 		},
 		"duplicate effect": {
 			src: `

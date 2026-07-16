@@ -134,8 +134,10 @@ type Registry struct {
 type AggregateDef struct {
 	Name          string
 	SnapshotEvery int // 0 = disabled
-	NewState      func() AggregateState
-	Commands      []*CommandDef
+	// StatePII names state fields encrypted at rest in snapshots.
+	StatePII []string
+	NewState func() AggregateState
+	Commands []*CommandDef
 }
 
 type CommandDef struct {
@@ -151,7 +153,9 @@ type CommandDef struct {
 // land in the log as announcements (projections, processes, outbox all see
 // them) but never rebuild the record.
 type RecordDef struct {
-	Name     string
+	Name string
+	// StatePII names state fields encrypted at rest in the record row.
+	StatePII []string
 	NewState func() any
 	Commands []*RecordCommandDef
 }
@@ -169,7 +173,9 @@ type EventDef struct {
 	Publish       bool
 	Service       string // owning service; empty = local
 	Aliases       []string
-	New           func() any
+	// PII names payload fields encrypted at rest in the log.
+	PII []string
+	New func() any
 }
 
 // ReactorDef backs both policies (in-transaction, local events only) and
@@ -184,9 +190,11 @@ type ReactorDef struct {
 }
 
 type ProjectionDef struct {
-	Name     string
-	Events   []string
-	Entity   string
+	Name   string
+	Events []string
+	Entity string
+	// PII names entity state fields encrypted at rest in the read model.
+	PII      []string
 	NewState func() EntityState
 	// EntityID picks the read-model row an event lands in; generated code
 	// defaults to the event's aggregate id.

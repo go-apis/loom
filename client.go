@@ -20,6 +20,10 @@ type Config struct {
 	Registry *Registry
 	Logger   *slog.Logger
 
+	// Keys wraps per-stream data keys for @pii fields. Required when the
+	// schema declares any @pii field; see LocalKeys.
+	Keys KeyWrapper
+
 	// ConflictRetries re-runs a Dispatch that lost an optimistic-concurrency
 	// race, against fresh state. Default 3.
 	ConflictRetries int
@@ -37,6 +41,10 @@ type Client struct {
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
 
+	keys  KeyWrapper
+	dekMu sync.Mutex
+	deks  map[string][]byte // unwrapped per-stream data keys
+
 	retries int
 }
 
@@ -53,6 +61,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ConflictRetries == 0 {
 		cfg.ConflictRetries = 3
 	}
+	if cfg.Registry.hasPII() && cfg.Keys == nil {
+		return nil, fmt.Errorf("loom: the schema declares @pii fields — Config.Keys is required (see loom.LocalKeys)")
+	}
 	return &Client{
 		db:         cfg.DB,
 		bus:        cfg.Bus,
@@ -62,6 +73,8 @@ func New(cfg Config) (*Client, error) {
 		relayNudge: make(chan struct{}, 1),
 		batchNudge: make(chan struct{}, 1),
 		watchers:   map[chan struct{}]bool{},
+		keys:       cfg.Keys,
+		deks:       map[string][]byte{},
 		retries:    cfg.ConflictRetries,
 	}, nil
 }
@@ -275,8 +288,13 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 		existed = false
 	} else if err != nil {
 		return nil, err
-	} else if err := json.Unmarshal(data, state); err != nil {
-		return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
+	} else {
+		if data, err = c.decryptFields(ctx, namespace, id, data, rec.StatePII); err != nil {
+			return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
+		}
+		if err := json.Unmarshal(data, state); err != nil {
+			return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
+		}
 	}
 
 	payloads, err := def.Handle(ctx, state, cmd)
@@ -320,6 +338,9 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 	if err != nil {
 		return nil, err
 	}
+	if out, err = c.encryptFields(ctx, namespace, id, out, rec.StatePII); err != nil {
+		return nil, err
+	}
 	if existed {
 		_, err = tx.Exec(ctx, `
 			UPDATE loom_records SET version=$5, data=$6, updated_at=now()
@@ -357,6 +378,9 @@ func (c *Client) Record(ctx context.Context, record, namespace string, id uuid.U
 			return nil, nil
 		}
 		if err != nil {
+			return nil, err
+		}
+		if data, err = c.decryptFields(ctx, namespace, id, data, rec.StatePII); err != nil {
 			return nil, err
 		}
 		state := rec.NewState()
@@ -419,6 +443,9 @@ func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.U
 		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if data, err = c.decryptFields(ctx, namespace, id, data, proj.PII); err != nil {
 		return nil, err
 	}
 	state := proj.NewState()

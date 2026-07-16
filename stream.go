@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,8 +75,16 @@ func (c *Client) listenOnce(ctx context.Context, channel string) error {
 		return err
 	}
 	for {
-		if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+		n, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
 			return err
+		}
+		// shred notifications evict cached data keys on every instance
+		if rest, ok := strings.CutPrefix(n.Payload, "shred:"); ok {
+			if ns, id, ok := strings.Cut(rest, ":"); ok {
+				c.dropDEK(ns, id)
+			}
+			continue
 		}
 		c.broadcastLog()
 	}

@@ -141,6 +141,9 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 				FOR UPDATE`,
 				c.reg.Service, evt.Namespace, p.Entity, id).Scan(&data)
 			if err == nil {
+				if data, err = c.decryptFields(ctx, evt.Namespace, id, data, p.PII); err != nil {
+					return 0, fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
+				}
 				if err := json.Unmarshal(data, state); err != nil {
 					return 0, fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
 				}
@@ -150,6 +153,9 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			}
 			out, err := json.Marshal(state)
 			if err != nil {
+				return 0, err
+			}
+			if out, err = c.encryptFields(ctx, evt.Namespace, id, out, p.PII); err != nil {
 				return 0, err
 			}
 			if _, err := tx.Exec(ctx, `
@@ -348,9 +354,20 @@ func (c *Client) markProcessed(ctx context.Context, process, key string) error {
 }
 
 // park writes a dead letter. Parked events are queryable (and re-drivable)
-// via the console; parking is loud, dropping is impossible.
+// via the console; parking is loud, dropping is impossible. @pii payload
+// fields are re-sealed — dead letters are at rest too.
 func (c *Client) park(ctx context.Context, runner string, evt *Event, cause error) error {
-	raw, err := json.Marshal(evt)
+	parked := evt
+	if def := c.reg.eventDef(evt.Type); def != nil && len(def.PII) > 0 && evt.Data != nil {
+		if dataRaw, err := json.Marshal(evt.Data); err == nil {
+			if dataRaw, err = c.encryptFields(ctx, evt.Namespace, evt.AggregateID, dataRaw, def.PII); err == nil {
+				copied := *evt
+				copied.Data = json.RawMessage(dataRaw)
+				parked = &copied
+			}
+		}
+	}
+	raw, err := json.Marshal(parked)
 	if err != nil {
 		raw = []byte(fmt.Sprintf(`{"type":%q}`, evt.Type))
 	}
@@ -460,7 +477,11 @@ func (c *Client) redriveProcess(ctx context.Context, process string, raw []byte)
 		return err
 	}
 	evt := parked.Event
-	payload, err := c.decode(evt.Type, parked.Data)
+	data, err := c.decryptEventData(ctx, evt.Namespace, evt.AggregateID, evt.Type, parked.Data)
+	if err != nil {
+		return err
+	}
+	payload, err := c.decode(evt.Type, data)
 	if err != nil {
 		return err
 	}

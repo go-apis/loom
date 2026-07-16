@@ -136,6 +136,15 @@ CREATE TABLE IF NOT EXISTS loom_batch_items (
 );
 CREATE INDEX IF NOT EXISTS loom_batch_items_pending ON loom_batch_items (service, batch_id, seq) WHERE status IN ('pending','working');
 
+CREATE TABLE IF NOT EXISTS loom_keys (
+	service     text NOT NULL,
+	namespace   text NOT NULL,
+	stream_id   uuid NOT NULL,
+	wrapped_dek bytea NOT NULL,
+	created_at  timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, stream_id)
+);
+
 CREATE TABLE IF NOT EXISTS loom_effects (
 	service    text NOT NULL,
 	scope      text NOT NULL,
@@ -182,6 +191,11 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 		if err != nil {
 			return fmt.Errorf("marshal %s: %w", e.Type, err)
 		}
+		if def := c.reg.eventDef(e.Type); def != nil && len(def.PII) > 0 {
+			if data, err = c.encryptFields(ctx, e.Namespace, e.AggregateID, data, def.PII); err != nil {
+				return err
+			}
+		}
 		err = tx.QueryRow(ctx, `
 			INSERT INTO loom_events (service, namespace, aggregate_type, aggregate_id, version, type, schema_version, at, correlation_id, causation_id, actor, data)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
@@ -214,6 +228,9 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 	).Scan(&snapVersion, &snap)
 	switch {
 	case err == nil:
+		if snap, err = c.decryptFields(ctx, namespace, id, snap, agg.StatePII); err != nil {
+			return nil, 0, fmt.Errorf("snapshot %s/%s: %w", agg.Name, id, err)
+		}
 		if err := json.Unmarshal(snap, state); err != nil {
 			return nil, 0, fmt.Errorf("snapshot %s/%s: %w", agg.Name, id, err)
 		}
@@ -238,6 +255,9 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 		var typ string
 		var data []byte
 		if err := rows.Scan(&v, &typ, &sv, &data); err != nil {
+			return nil, 0, err
+		}
+		if data, err = c.decryptEventData(ctx, namespace, id, typ, data); err != nil {
 			return nil, 0, err
 		}
 		payload, err := c.decode(typ, data)
@@ -269,6 +289,9 @@ func (c *Client) saveSnapshot(ctx context.Context, tx pgx.Tx, agg *AggregateDef,
 	if err != nil {
 		return err
 	}
+	if data, err = c.encryptFields(ctx, namespace, id, data, agg.StatePII); err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO loom_snapshots (service, namespace, aggregate_type, aggregate_id, version, state)
 		VALUES ($1,$2,$3,$4,$5,$6)
@@ -298,6 +321,9 @@ func (c *Client) readLog(ctx context.Context, afterSeq int64, limit int) ([]*Eve
 		e := &Event{Service: c.reg.Service}
 		var data []byte
 		if err := rows.Scan(&e.GlobalSeq, &e.Namespace, &e.AggregateType, &e.AggregateID, &e.Version, &e.Type, &e.SchemaVersion, &e.At, &e.Meta.CorrelationID, &e.Meta.CausationID, &e.Meta.Actor, &data); err != nil {
+			return nil, err
+		}
+		if data, err = c.decryptEventData(ctx, e.Namespace, e.AggregateID, e.Type, data); err != nil {
 			return nil, err
 		}
 		payload, err := c.decode(e.Type, data)

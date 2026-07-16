@@ -103,6 +103,25 @@ type Payload struct {
 	Items      *Payload            `yaml:"items,omitempty" json:"items,omitempty"`
 	Required   []string            `yaml:"required,omitempty" json:"required,omitempty"`
 	Nullable   bool                `yaml:"nullable,omitempty" json:"nullable,omitempty"`
+	// PII marks a field encrypted at rest with the stream's data key
+	// (crypto-shreddable). Only valid on top-level fields of local
+	// unpublished events and aggregate/record/entity states.
+	PII bool `yaml:"pii,omitempty" json:"pii,omitempty"`
+}
+
+// PIIFields lists a payload's @pii field names, sorted.
+func (pl *Payload) PIIFields() []string {
+	if pl == nil {
+		return nil
+	}
+	var out []string
+	for name, f := range pl.Properties {
+		if f.PII {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Schema) FindEvent(name string) *Event {
@@ -293,6 +312,44 @@ func (s *Schema) Validate() error {
 		}
 	}
 
+	// @pii placement: encrypt-at-rest applies to what the runtime persists
+	// under a stream's data key. Commands are transient inputs, published
+	// events cross the bus in plaintext, foreign events belong to another
+	// service's keys, and named types would smuggle PII anywhere.
+	noPII := func(pl *Payload, what string) {
+		for name, f := range payloadProps(pl) {
+			if f.PII {
+				fail("%s field %s: %s", what, name, "@pii is only valid on local unpublished events and aggregate/record/entity states")
+			}
+		}
+	}
+	for _, a := range s.Aggregates {
+		for _, c := range a.Commands {
+			noPII(c.Payload, "command "+c.Name)
+		}
+	}
+	for _, r := range s.Records {
+		for _, c := range r.Commands {
+			noPII(c.Payload, "command "+c.Name)
+		}
+	}
+	for _, t := range s.Types {
+		noPII(t.Payload, "type "+t.Name)
+	}
+	for _, e := range s.Events {
+		if e.Service != "" {
+			noPII(e.Payload, "consumed event "+e.Name)
+			continue
+		}
+		if e.Publish {
+			for name, f := range payloadProps(e.Payload) {
+				if f.PII {
+					fail("event %s field %s: @publish and @pii are incompatible — published events cross the bus in plaintext; keep PII on a private event", e.Name, name)
+				}
+			}
+		}
+	}
+
 	var missing []string
 	seen := map[string]bool{}
 	var walk func(pl *Payload, root bool, at string)
@@ -344,6 +401,13 @@ func (s *Schema) Validate() error {
 		return fmt.Errorf("schema %s:\n  - %s", s.Service, joinLines(errs))
 	}
 	return nil
+}
+
+func payloadProps(pl *Payload) map[string]*Payload {
+	if pl == nil {
+		return nil
+	}
+	return pl.Properties
 }
 
 func joinLines(lines []string) string {

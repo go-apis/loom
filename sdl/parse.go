@@ -472,6 +472,18 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 		if p.accept("!") {
 			out.Required = append(out.Required, name)
 		}
+		dirs, err := p.directives()
+		if err != nil {
+			return nil, err
+		}
+		for d := range dirs {
+			if d != "pii" {
+				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii)", name, d)
+			}
+		}
+		if _, ok := dirs["pii"]; ok {
+			ft.PII = true
+		}
 		out.Properties[name] = ft
 	}
 	return out, nil

@@ -11,6 +11,7 @@ import (
 func NewRegistry() *loom.Registry {
 	return loomgen.NewRegistry(loomgen.Impl{
 		Invoice:       &Invoice{},
+		Payee:         &Payee{},
 		LedgerEntry:   &LedgerEntry{},
 		RaiseOnOrder:  &RaiseOnOrder{},
 		CaptureOnPaid: &CaptureOnPaid{},

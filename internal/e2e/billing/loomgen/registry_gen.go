@@ -21,6 +21,10 @@ type InvoiceHandlers interface {
 	RaiseInvoice(ctx context.Context, state *Invoice, cmd *RaiseInvoice) ([]loom.DomainEvent, error)
 }
 
+type PayeeHandlers interface {
+	RegisterPayee(ctx context.Context, state *Payee, cmd *RegisterPayee) ([]loom.DomainEvent, error)
+}
+
 type LedgerEntryHandlers interface {
 	PostLedgerEntry(ctx context.Context, state *LedgerEntry, cmd *PostLedgerEntry) ([]loom.DomainEvent, error)
 }
@@ -39,6 +43,7 @@ type RaiseOnOrderReactions interface {
 
 type Impl struct {
 	Invoice       InvoiceHandlers
+	Payee         PayeeHandlers
 	LedgerEntry   LedgerEntryHandlers
 	PostLedger    PostLedgerReactions
 	CaptureOnPaid CaptureOnPaidReactions
@@ -74,6 +79,23 @@ func NewRegistry(impl Impl) *loom.Registry {
 					},
 				},
 			},
+			{
+				Name:          "Payee",
+				SnapshotEvery: 1,
+				StatePII:      []string{"tin"},
+				NewState:      func() loom.AggregateState { return &Payee{} },
+				Commands: []*loom.CommandDef{
+					{
+						Name:  "RegisterPayee",
+						New:   func() loom.Command { return &RegisterPayee{} },
+						Emits: []string{"PayeeRegistered"},
+						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
+							evts, err := impl.Payee.RegisterPayee(ctx, state.(*Payee), cmd.(*RegisterPayee))
+							return asAny(evts), err
+						},
+					},
+				},
+			},
 		},
 		Records: []*loom.RecordDef{
 			{
@@ -97,6 +119,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{Name: "InvoiceRaised", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &InvoiceRaised{} }},
 			{Name: "LedgerEntryPosted", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &LedgerEntryPosted{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "orders", Aliases: nil, New: func() any { return &OrderPlaced{} }},
+			{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"tin"}, New: func() any { return &PayeeRegistered{} }},
 		},
 		Policies: []*loom.ReactorDef{
 			{
@@ -148,7 +171,16 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 			},
 		},
-		Projections: []*loom.ProjectionDef{},
+		Projections: []*loom.ProjectionDef{
+			{
+				Name:     "payeeDirectory",
+				Entity:   "PayeeDirectory",
+				Events:   []string{"PayeeRegistered"},
+				PII:      []string{"tin"},
+				NewState: func() loom.EntityState { return &PayeeDirectory{} },
+				EntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },
+			},
+		},
 	}
 }
 

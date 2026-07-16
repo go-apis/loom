@@ -49,6 +49,14 @@ type OrderPlaced struct {
 
 func (*OrderPlaced) LoomEvent() string { return "OrderPlaced" }
 
+type PayeeRegistered struct {
+	Name     string `json:"name"`
+	Tin      string `json:"tin"`
+	TinLast4 string `json:"tin_last4"`
+}
+
+func (*PayeeRegistered) LoomEvent() string { return "PayeeRegistered" }
+
 type MarkInvoicePaid struct {
 	loom.CommandBase
 }
@@ -64,6 +72,16 @@ type RaiseInvoice struct {
 }
 
 func (*RaiseInvoice) LoomCommand() string { return "RaiseInvoice" }
+
+type RegisterPayee struct {
+	loom.CommandBase
+
+	Name     string `json:"name"`
+	Tin      string `json:"tin"`
+	TinLast4 string `json:"tin_last4"`
+}
+
+func (*RegisterPayee) LoomCommand() string { return "RegisterPayee" }
 
 type PostLedgerEntry struct {
 	loom.CommandBase
@@ -104,9 +122,47 @@ func (s *Invoice) Fold(eventType string, data any) error {
 	return nil
 }
 
+type Payee struct {
+	Name     string `json:"name"`
+	Tin      string `json:"tin"`
+	TinLast4 string `json:"tin_last4"`
+}
+
+func (s *Payee) Fold(eventType string, data any) error {
+	switch e := data.(type) {
+	case *PayeeRegistered:
+		s.Name = e.Name
+		s.Tin = e.Tin
+		s.TinLast4 = e.TinLast4
+	case nil:
+		_ = e
+		return loomErrNilEvent(eventType)
+	}
+	return nil
+}
+
 type LedgerEntry struct {
 	AmountCents int64     `json:"amount_cents"`
 	Currency    string    `json:"currency"`
 	CustomerId  uuid.UUID `json:"customer_id"`
 	PostedAt    time.Time `json:"posted_at"`
+}
+
+type PayeeDirectory struct {
+	Name     string `json:"name"`
+	Tin      string `json:"tin"`
+	TinLast4 string `json:"tin_last4"`
+}
+
+func (s *PayeeDirectory) Fold(eventType string, data any) error {
+	switch e := data.(type) {
+	case *PayeeRegistered:
+		s.Name = e.Name
+		s.Tin = e.Tin
+		s.TinLast4 = e.TinLast4
+	case nil:
+		_ = e
+		return loomErrNilEvent(eventType)
+	}
+	return nil
 }

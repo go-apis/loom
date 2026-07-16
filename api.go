@@ -34,6 +34,7 @@ import (
 //	POST /effects/resolve               settle an in-doubt effect (body: scope, key, result?)
 //	GET  /dead_letters                  parked deliveries
 //	POST /dead_letters/{id}/redrive     re-run one parked delivery
+//	POST /shred                         delete a stream's @pii data key (body: namespace, id) — irreversible
 //	GET  /stats                         ops health: outbox, dead letters, timers, effects
 func (c *Client) HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
@@ -53,6 +54,7 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("POST /effects/resolve", c.apiResolveEffect)
 	mux.HandleFunc("GET /dead_letters", c.apiDeadLetters)
 	mux.HandleFunc("POST /dead_letters/{id}/redrive", c.apiRedrive)
+	mux.HandleFunc("POST /shred", c.apiShred)
 	mux.HandleFunc("POST /batches", c.apiEnqueueBatch)
 	mux.HandleFunc("GET /batches/{id}", c.apiGetBatch)
 	mux.HandleFunc("GET /batches/{id}/failures", c.apiBatchFailures)
@@ -363,6 +365,26 @@ func (c *Client) apiRedrive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "redriven"})
+}
+
+func (c *Client) apiShred(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Namespace string    `json:"namespace"`
+		ID        uuid.UUID `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Namespace == "" || body.ID == uuid.Nil {
+		apiError(w, http.StatusBadRequest, "namespace and id are required")
+		return
+	}
+	if err := c.Shred(r.Context(), body.Namespace, body.ID); err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "shredded"})
 }
 
 func (c *Client) apiStats(w http.ResponseWriter, r *http.Request) {

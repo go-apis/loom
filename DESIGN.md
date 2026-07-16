@@ -23,7 +23,7 @@ on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
 type        := "type" IDENT fields
 entity      := "entity" IDENT fields
-fields      := "{" (IDENT ":" ftype "!"?)* "}"
+fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
 builtin     := string int float bool uuid timestamp bytes any map
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
@@ -43,6 +43,11 @@ Rules enforced at parse/validate time:
   transaction and must not touch the outside world); `loom.Once` refuses
   undeclared keys — a typo'd key would be a fresh journal identity and a
   repeated call, so declaration is the safety net, not ceremony
+- `@pii` lives only on top-level fields of local unpublished events and
+  aggregate/record/entity states: commands are transient inputs, published
+  events cross the bus in plaintext (keep PII on a private event — the
+  ten99 private/published pair pattern), foreign events belong to another
+  service's keys, and named types would smuggle PII anywhere
 
 ## Generated code
 
@@ -102,6 +107,19 @@ generated switches, folds from generated assignments.
   and redrives the dead letter. At-most-once with loud ambiguity, the
   strongest guarantee non-idempotent APIs admit. Failed settles re-run on
   retry: an error return is the handler asserting the call did not happen.
+- **PII encryption** (`loom_keys`): `@pii` fields are sealed with
+  AES-256-GCM under a per-stream data key wrapped by a `KeyWrapper`
+  (`LocalKeys` master key today; a KMS wrapper is the same interface).
+  Sealing happens at every rest boundary — log, snapshots, read models,
+  records, parked dead letters — and opening happens on folds and typed
+  reads (`Load`/`Entity`/`Record` and their GET endpoints). Raw list
+  queries and the log browser return ciphertext as stored, and jsonb
+  filters can't match PII fields (keep a plain derived field like
+  `tin_last4` for that). `Shred(ns, id)` deletes the key: every copy of
+  that stream's PII becomes permanently unreadable and decodes as zero
+  values, so replays and rebuilds keep working, redacted — erasure for an
+  append-only store. Cached keys are evicted cluster-wide via the LISTEN
+  channel.
 - **The log as a timeseries**: `global_seq` is monotonic and rows are
   append-only, so time queries are sequence-range queries. A BRIN index on
   `at` makes time-window scans cheap at ~zero write cost, and

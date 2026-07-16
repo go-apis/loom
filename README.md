@@ -103,6 +103,36 @@ and redrives (`POST /dead_letters/{id}/redrive`). At-most-once, with loud
 ambiguity instead of silent duplicates. Undeclared effect keys are runtime
 errors — a typo must not mint a fresh journal identity.
 
+## PII: encrypted at rest, shreddable forever
+
+Mark the fields that identify a person and give the client a key wrapper:
+
+```
+aggregate Payee {
+  state {
+    name: string
+    tin: string @pii
+    tin_last4: string
+  }
+  ...
+}
+```
+
+```go
+keys, _ := loom.LocalKeys(masterKey) // 32 bytes from your secret manager
+cli, _ := loom.New(loom.Config{DB: db, Registry: reg, Keys: keys})
+```
+
+`@pii` fields are sealed with a per-stream data key everywhere they rest —
+log, snapshots, read models, records, dead letters — and open on folds and
+typed reads. `cli.Shred(ctx, ns, id)` (or `POST /shred`) deletes the key:
+every copy of that stream's PII is permanently unreadable, reads and
+rebuilds continue with the fields redacted to zero values. That's erasure
+for an append-only store. Published events can't carry `@pii` (the schema
+rejects it) — keep PII on private events and publish a scrubbed pair.
+Filters can't match sealed fields; keep a plain derived field
+(`tin_last4`) for lookups.
+
 ## Batches
 
 `loom.AsBatch(cmds...)` from a reaction (enqueued atomically with the
@@ -131,6 +161,7 @@ GET  /effects?status=running                   the effect journal
 POST /effects/resolve                          settle an in-doubt effect
 GET  /dead_letters                             parked deliveries
 POST /dead_letters/{id}/redrive                re-run one parked delivery
+POST /shred                                    delete a stream's PII key (irreversible)
 GET  /stats                                    outbox / dead letters / timers / effects health
 ```
 

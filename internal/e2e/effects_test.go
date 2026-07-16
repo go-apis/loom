@@ -25,7 +25,7 @@ func TestEffectJournal(t *testing.T) {
 	defer cancel()
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: billing.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: billing.NewRegistry(), Keys: testKeys(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestEffectInDoubt(t *testing.T) {
 	defer cancel()
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: billing.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: billing.NewRegistry(), Keys: testKeys(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

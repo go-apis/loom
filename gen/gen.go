@@ -364,7 +364,11 @@ func loomErrNilEvent(eventType string) error {
 
 	b.WriteString("\t\tAggregates: []*loom.AggregateDef{\n")
 	for _, a := range g.s.Aggregates {
-		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tSnapshotEvery: %d,\n\t\t\t\tNewState: func() loom.AggregateState { return &%s{} },\n", a.Name, a.Snapshot, a.Name)
+		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tSnapshotEvery: %d,\n", a.Name, a.Snapshot)
+		if pii := a.State.PIIFields(); len(pii) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tStatePII: %s,\n", stringSlice(pii))
+		}
+		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.AggregateState { return &%s{} },\n", a.Name)
 		b.WriteString("\t\t\t\tCommands: []*loom.CommandDef{\n")
 		for _, c := range a.Commands {
 			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
@@ -378,7 +382,11 @@ func loomErrNilEvent(eventType string) error {
 
 	b.WriteString("\t\tRecords: []*loom.RecordDef{\n")
 	for _, r := range g.s.Records {
-		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tNewState: func() any { return &%s{} },\n", r.Name, r.Name)
+		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n", r.Name)
+		if pii := r.State.PIIFields(); len(pii) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tStatePII: %s,\n", stringSlice(pii))
+		}
+		fmt.Fprintf(&b, "\t\t\t\tNewState: func() any { return &%s{} },\n", r.Name)
 		b.WriteString("\t\t\t\tCommands: []*loom.RecordCommandDef{\n")
 		for _, c := range r.Commands {
 			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
@@ -396,8 +404,12 @@ func loomErrNilEvent(eventType string) error {
 		if version == 0 {
 			version = 1
 		}
-		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q, Aliases: %s, New: func() any { return &%s{} }},\n",
-			e.Name, version, e.Publish, e.Service, stringSlice(e.Aliases), e.Name)
+		pii := ""
+		if fields := e.Payload.PIIFields(); len(fields) > 0 {
+			pii = fmt.Sprintf(" PII: %s,", stringSlice(fields))
+		}
+		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q, Aliases: %s,%s New: func() any { return &%s{} }},\n",
+			e.Name, version, e.Publish, e.Service, stringSlice(e.Aliases), pii, e.Name)
 	}
 	b.WriteString("\t\t},\n")
 
@@ -407,6 +419,11 @@ func loomErrNilEvent(eventType string) error {
 	b.WriteString("\t\tProjections: []*loom.ProjectionDef{\n")
 	for _, p := range g.s.Projections {
 		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEntity: %q,\n\t\t\t\tEvents: %s,\n", p.Name, p.Entity, stringSlice(eventNames(p)))
+		if ent := g.s.FindEntity(p.Entity); ent != nil {
+			if pii := ent.State.PIIFields(); len(pii) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\tPII: %s,\n", stringSlice(pii))
+			}
+		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
 		b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },\n\t\t\t},\n")
 	}
