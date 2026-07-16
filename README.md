@@ -189,6 +189,27 @@ GET  /timers                                   pending schedule (overdue flagged
 GET  /batches                                  recent batches
 ```
 
+## Testing: given/when/then
+
+`loomtest` exercises generated handlers and reactions against the real
+registry with no database — tests read like the schema:
+
+```go
+loomtest.Aggregate(t, reg, "Invoice").
+    Given(&loomgen.InvoiceRaised{Status: "raised", AmountCents: 4000}).
+    When(&loomgen.MarkInvoicePaid{CommandBase: base}).
+    Then(&loomgen.InvoicePaid{Status: "paid", AmountCents: 4000})
+
+loomtest.Reaction(t, reg, "raiseOnOrder").
+    When("ns", orderID, &loomgen.OrderPlaced{TotalCents: 4000}).
+    Then(&loomgen.RaiseInvoice{...})
+```
+
+`ThenNothing` asserts convergence no-ops, `ThenError` asserts guards, and
+`Reading(...)` fakes `loom.Load` for reactions that read state. Effects,
+projections, timers and batches stay e2e territory — this harness tests
+domain decisions, not delivery.
+
 ## The gateway
 
 One GraphQL endpoint over any number of loom services, built at boot from

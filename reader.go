@@ -18,14 +18,27 @@ import (
 // Reads are deliberately the only capability injected: dispatching from
 // inside a handler would nest units of work — return commands instead.
 
-type readerKey struct{}
-
-func withReader(ctx context.Context, c *Client) context.Context {
-	return context.WithValue(ctx, readerKey{}, c)
+// StateReader is what handlers see behind loom.Load/GetRecord/GetEntity.
+// The runtime injects the Client; tests inject fakes via WithStateReader.
+type StateReader interface {
+	Load(ctx context.Context, aggregate, namespace string, id uuid.UUID) (AggregateState, int, error)
+	Record(ctx context.Context, record, namespace string, id uuid.UUID) (any, error)
+	Entity(ctx context.Context, entity, namespace string, id uuid.UUID) (EntityState, error)
 }
 
-func reader(ctx context.Context) (*Client, error) {
-	c, ok := ctx.Value(readerKey{}).(*Client)
+type readerKey struct{}
+
+// WithStateReader injects read access for handler code under test.
+func WithStateReader(ctx context.Context, r StateReader) context.Context {
+	return context.WithValue(ctx, readerKey{}, r)
+}
+
+func withReader(ctx context.Context, c *Client) context.Context {
+	return context.WithValue(ctx, readerKey{}, StateReader(c))
+}
+
+func reader(ctx context.Context) (StateReader, error) {
+	c, ok := ctx.Value(readerKey{}).(StateReader)
 	if !ok {
 		return nil, fmt.Errorf("loom: no runtime in context — reads are available inside handlers and reactions")
 	}
