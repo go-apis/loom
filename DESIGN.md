@@ -163,10 +163,21 @@ generated switches, folds from generated assignments.
   gRPC transport can be added from the same registry later if a genuine
   internal-RPC need appears.
 
+## The console (M2)
+
+`/console` on every service: an embedded, self-contained page over the
+JSON endpoints. Overview (health cards, batches, event volumes), Design
+(the registry as a document — commands' emit contracts, reactions'
+dispatch contracts via `ReactorDef.Subs`, effects, PII markers), Events
+(log browser), Issues (checkpoint lag per runner — the stuck-detection
+signal, in-doubt effect resolution, dead-letter redrive, overdue timers).
+Deliberately no framework UI dependency and no build step; a topology
+graph and the Performance tab are the deferred follow-ons.
+
 ## Not yet built (tracked on the issue)
 
-Console (M2 equivalent), old-envelope compat codec for gpub (migration
-on-ramp), persisted process state + timeouts, upcasters beyond aliases,
-given/when/then harness generation, `loom extract` (legacy on-ramp,
-returning from tag `m1-extraction`), replay-parity harness, table migrator,
-OTel, TypeScript target.
+Console topology graph + Performance tab, old-envelope compat codec for
+gpub (migration on-ramp), persisted process state + timeouts, upcasters
+beyond aliases, given/when/then harness generation, `loom extract` (legacy
+on-ramp, returning from tag `m1-extraction`), replay-parity harness, table
+migrator, OTel, TypeScript target.

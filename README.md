@@ -182,7 +182,24 @@ GET  /dead_letters                             parked deliveries
 POST /dead_letters/{id}/redrive                re-run one parked delivery
 POST /shred                                    delete a stream's PII key (irreversible)
 GET  /stats                                    outbox / dead letters / timers / effects health
+GET  /console                                  the ops console (see below)
+GET  /registry                                 the service as its schema sees it
+GET  /runners                                  checkpoint lag per projection/process
+GET  /timers                                   pending schedule (overdue flagged)
+GET  /batches                                  recent batches
 ```
+
+## The console
+
+Every service carries its ops UI: open `/console` on any mounted service.
+**Overview** (outbox, dead letters, effects, batches, event volumes),
+**Design** (aggregates → commands → events, reactions with their dispatch
+contracts and effects, projections — the schema as the runtime runs it),
+**Events** (log browser: filter by type/aggregate/correlation, inspect
+payloads), **Issues** (runner lag against the log head, in-doubt effects
+with resolve, dead letters with redrive, overdue timers). One embedded
+self-contained page over the JSON endpoints — no build step, no external
+assets, auth is whatever wraps the mount.
 
 Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,
 compiled to parameterized jsonb SQL; `order`, `limit`, `offset` paginate.

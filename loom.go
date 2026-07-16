@@ -183,10 +183,19 @@ type EventDef struct {
 type ReactorDef struct {
 	Name   string
 	Events []string
+	// Subs carries the per-subscription dispatch contracts — the same
+	// lists the generated React enforces — so the console can draw the
+	// full topology at runtime.
+	Subs []SubscriptionDef
 	// Effects are the declared journaled external calls this process may
 	// perform via loom.Once (processes only).
 	Effects []string
 	React   func(ctx context.Context, evt *Event) ([]Command, error)
+}
+
+type SubscriptionDef struct {
+	Event      string
+	Dispatches []string
 }
 
 type ProjectionDef struct {

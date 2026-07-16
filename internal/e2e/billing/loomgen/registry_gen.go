@@ -125,6 +125,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{
 				Name:   "postLedger",
 				Events: []string{"InvoicePaid"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "InvoicePaid", Dispatches: []string{"PostLedgerEntry"}},
+				},
 				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
 					switch data := evt.Data.(type) {
 					case *InvoicePaid:
@@ -140,8 +143,11 @@ func NewRegistry(impl Impl) *loom.Registry {
 		},
 		Processes: []*loom.ReactorDef{
 			{
-				Name:    "captureOnPaid",
-				Events:  []string{"InvoicePaid"},
+				Name:   "captureOnPaid",
+				Events: []string{"InvoicePaid"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "InvoicePaid", Dispatches: nil},
+				},
 				Effects: []string{"gateway_capture"},
 				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
 					switch data := evt.Data.(type) {
@@ -158,6 +164,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{
 				Name:   "raiseOnOrder",
 				Events: []string{"OrderPlaced"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "OrderPlaced", Dispatches: []string{"RaiseInvoice"}},
+				},
 				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
 					switch data := evt.Data.(type) {
 					case *OrderPlaced:

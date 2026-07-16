@@ -91,6 +91,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{
 				Name:   "dropAutoCancel",
 				Events: []string{"OrderShipped"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "OrderShipped", Dispatches: []string{"CancelOrder"}},
+				},
 				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
 					switch data := evt.Data.(type) {
 					case *OrderShipped:
@@ -106,6 +109,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{
 				Name:   "scheduleAutoCancel",
 				Events: []string{"OrderPlaced"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "OrderPlaced", Dispatches: []string{"CancelOrder"}},
+				},
 				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
 					switch data := evt.Data.(type) {
 					case *OrderPlaced:
@@ -123,6 +129,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{
 				Name:   "shipOnPayment",
 				Events: []string{"InvoicePaid"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "InvoicePaid", Dispatches: []string{"ShipOrder"}},
+				},
 				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
 					switch data := evt.Data.(type) {
 					case *InvoicePaid:

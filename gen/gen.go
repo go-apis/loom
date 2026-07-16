@@ -472,6 +472,11 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 			events = append(events, sub.Event)
 		}
 		fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEvents: %s,\n", r.Name, stringSlice(events))
+		b.WriteString("\t\t\t\tSubs: []loom.SubscriptionDef{\n")
+		for _, sub := range r.Subscriptions {
+			fmt.Fprintf(b, "\t\t\t\t\t{Event: %q, Dispatches: %s},\n", sub.Event, stringSlice(sub.Dispatches))
+		}
+		b.WriteString("\t\t\t\t},\n")
 		if len(r.Effects) > 0 {
 			fmt.Fprintf(b, "\t\t\t\tEffects: %s,\n", stringSlice(r.Effects))
 		}
