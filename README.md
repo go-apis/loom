@@ -189,7 +189,18 @@ Postgres via pgx, hand-written SQL, no ORM. Events carry a global sequence
 schema version. Optimistic concurrency is a typed `ConflictError` with
 automatic dispatch retry. Published events go through a transactional
 outbox (advisory-lock relay, SKIP LOCKED, ordering keys) to a pluggable
-`Bus` — in-memory today; Pub/Sub next.
+`Bus`: in-memory for tests and single binaries, Google Cloud Pub/Sub for
+production:
+
+```go
+bus, _ := gpub.New(ctx, gpub.Config{ProjectID: "my-project"})
+cli, _ := loom.New(loom.Config{DB: db, Bus: bus, Registry: reg})
+```
+
+One shared topic, a durable subscription per consumer group, ordering keys
+per aggregate, nack-for-redelivery (loom's dedup and parking absorb
+at-least-once). Runs against the Pub/Sub emulator with ordering disabled —
+the emulator's ordered backlog is broken.
 
 ## Status
 

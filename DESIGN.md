@@ -75,6 +75,15 @@ generated switches, folds from generated assignments.
 - **Outbox relay**: the one component ported by design from the old
   runtime: advisory-lock election, SKIP LOCKED claims, insert-order drain,
   per-aggregate ordering keys.
+- **Bus providers**: `MemoryBus` (in-process, tests/single-binary) and
+  `gpub` (Google Cloud Pub/Sub: one shared topic, subscription per
+  consumer group, per-aggregate ordering keys, ResumePublish after a
+  failed keyed publish, ordering disabled under the emulator whose ordered
+  backlog is broken — lessons carried over from the old provider).
+  Undecodable messages ack-and-log (nacking garbage redelivers forever);
+  handler errors nack, and loom's dedup + parking make at-least-once safe.
+  A `Codec` seam exists for bridging the old eventsourcing envelope during
+  the (parked) six-service migration.
 - **Processes**: local events from the log; foreign events from the bus
   with consumer-side dedup (`loom_dedup`). Retries with backoff, then loud
   parking to `loom_dead_letters`. Silent drops are structurally impossible.
@@ -146,8 +155,8 @@ generated switches, folds from generated assignments.
 
 ## Not yet built (tracked on the issue)
 
-Console (M2 equivalent), real bus providers (Pub/Sub with old-envelope
-compat), persisted process state + timeouts, upcasters beyond aliases,
+Console (M2 equivalent), old-envelope compat codec for gpub (migration
+on-ramp), persisted process state + timeouts, upcasters beyond aliases,
 given/when/then harness generation, `loom extract` (legacy on-ramp,
 returning from tag `m1-extraction`), replay-parity harness, table migrator,
 OTel, TypeScript target.
