@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Loom",
+  "scopeName": "source.loom",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#consume" },
+    { "include": "#declaration" },
+    { "include": "#keyword" },
+    { "include": "#directive" },
+    { "include": "#field" },
+    { "include": "#builtin" },
+    { "include": "#typeref" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.loom",
+      "match": "//.*$"
+    },
+    "consume": {
+      "match": "\\b(consume)\\s+([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.loom" },
+        "2": { "name": "entity.name.namespace.loom" },
+        "3": { "name": "entity.name.type.event.loom" }
+      }
+    },
+    "declaration": {
+      "match": "\\b(service|aggregate|holder|entity|saga|handler|projector|commands|command|event|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.loom" },
+        "2": { "name": "entity.name.type.loom" }
+      }
+    },
+    "keyword": {
+      "name": "keyword.control.loom",
+      "match": "\\b(on|project|state)\\b"
+    },
+    "directive": {
+      "name": "storage.modifier.directive.loom",
+      "match": "@[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "field": {
+      "match": "^\\s*([a-z_][A-Za-z0-9_]*)\\s*(?=:)",
+      "captures": {
+        "1": { "name": "variable.other.member.loom" }
+      }
+    },
+    "builtin": {
+      "name": "support.type.primitive.loom",
+      "match": "\\b(string|int|float|bool|uuid|timestamp|bytes|any|map)\\b"
+    },
+    "typeref": {
+      "name": "entity.name.type.reference.loom",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "string": {
+      "name": "string.quoted.double.loom",
+      "match": "\"[^\"]*\""
+    },
+    "number": {
+      "name": "constant.numeric.loom",
+      "match": "-?\\b[0-9]+\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.loom",
+      "match": "->|[!?]"
+    }
+  }
+}

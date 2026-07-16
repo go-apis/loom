@@ -1,0 +1,36 @@
+{
+  "name": "loom-lang",
+  "displayName": "Loom Schema Language",
+  "description": "Syntax highlighting for Loom (.loom) event-sourcing schema files",
+  "version": "0.1.0",
+  "publisher": "inflow",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "loom",
+        "aliases": [
+          "Loom",
+          "loom"
+        ],
+        "extensions": [
+          ".loom"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "loom",
+        "scopeName": "source.loom",
+        "path": "./syntaxes/loom.tmLanguage.json"
+      }
+    ]
+  }
+}
