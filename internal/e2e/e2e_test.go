@@ -3,7 +3,11 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,6 +247,111 @@ func TestProjectionRebuild(t *testing.T) {
 		}
 		return entity.(*ordersgen.OrderSummary).TotalCents == 200
 	})
+}
+
+// TestHTTPAPI drives the service purely over the registry-driven HTTP
+// surface: dispatch a command, search the read model, browse the log by
+// correlation, read ops stats.
+func TestHTTPAPI(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(cli.HTTPHandler())
+	defer srv.Close()
+
+	orderID := uuid.New()
+	body := fmt.Sprintf(`{
+		"aggregate_id": %q, "namespace": "default",
+		"customer_id": %q, "currency": "USD",
+		"items": [{"sku": "widget", "quantity": 2, "price_cents": 750}]
+	}`, orderID, uuid.New())
+	req, _ := http.NewRequestWithContext(ctx, "POST", srv.URL+"/commands/PlaceOrder", strings.NewReader(body))
+	req.Header.Set("X-Correlation-Id", "corr-http-test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("dispatch: got %d", resp.StatusCode)
+	}
+
+	// unknown command 404s
+	resp, _ = http.Post(srv.URL+"/commands/Nope", "application/json", strings.NewReader(`{}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown command: got %d", resp.StatusCode)
+	}
+
+	// aggregate state over HTTP
+	var agg struct {
+		Version int             `json:"version"`
+		State   json.RawMessage `json:"state"`
+	}
+	getJSON(t, ctx, srv.URL+"/aggregates/Order/"+orderID.String()+"?namespace=default", &agg)
+	if agg.Version != 1 {
+		t.Fatalf("aggregate version: %d", agg.Version)
+	}
+
+	// filtered read-model search (wait for the projection)
+	waitFor(t, ctx, "summary queryable over http", func() bool {
+		var list struct {
+			Items []loom.Row `json:"items"`
+		}
+		getJSON(t, ctx, srv.URL+"/entities/OrderSummary?namespace=default&status=placed&total_cents.gte=1000", &list)
+		return len(list.Items) == 1 && list.Items[0].ID == orderID.String()
+	})
+	// a filter that should exclude it
+	var none struct {
+		Items []loom.Row `json:"items"`
+	}
+	getJSON(t, ctx, srv.URL+"/entities/OrderSummary?namespace=default&total_cents.gte=99999", &none)
+	if len(none.Items) != 0 {
+		t.Fatalf("filter failed to exclude: %d items", len(none.Items))
+	}
+
+	// log browsing by correlation
+	var log struct {
+		Items []loom.LogEntry `json:"items"`
+	}
+	getJSON(t, ctx, srv.URL+"/events?correlation_id=corr-http-test", &log)
+	if len(log.Items) != 1 || log.Items[0].Type != "OrderPlaced" {
+		t.Fatalf("log query: %+v", log.Items)
+	}
+
+	// ops stats
+	var stats map[string]any
+	getJSON(t, ctx, srv.URL+"/stats", &stats)
+	if stats["service"] != "orders" {
+		t.Fatalf("stats: %+v", stats)
+	}
+}
+
+func getJSON(t *testing.T, ctx context.Context, url string, into any) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: %d", url, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testDB(t *testing.T, ctx context.Context) *pgxpool.Pool {

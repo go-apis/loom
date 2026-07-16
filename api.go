@@ -1,0 +1,268 @@
+package loom
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// HTTPHandler mounts the whole service as an HTTP API, driven entirely by
+// the registry — no per-service handler code. Mount it behind whatever
+// auth middleware the deployment uses:
+//
+//	mux.Handle("/loom/", http.StripPrefix("/loom", cli.HTTPHandler()))
+//
+// Routes:
+//
+//	POST /commands/{Command}            dispatch (body = command JSON)
+//	GET  /entities/{Entity}?namespace=  filtered list (field=v, field.gte=v, order, limit, offset)
+//	GET  /entities/{Entity}/{id}        one read-model row
+//	GET  /records/{Record}/{id}         one state-of-record row
+//	GET  /records/{Record}?namespace=   filtered list
+//	GET  /aggregates/{Aggregate}/{id}   folded state + version
+//	GET  /events                        log browser (type, aggregate_id, correlation_id, since, until, after_seq)
+//	GET  /events/stats?since=           counts by event type
+//	GET  /stats                         ops health: outbox, dead letters, timers
+func (c *Client) HTTPHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /commands/{name}", c.apiDispatch)
+	mux.HandleFunc("GET /entities/{name}", c.apiList(c.QueryEntities))
+	mux.HandleFunc("GET /entities/{name}/{id}", c.apiGetEntity)
+	mux.HandleFunc("GET /records/{name}", c.apiList(c.QueryRecords))
+	mux.HandleFunc("GET /records/{name}/{id}", c.apiGetRecord)
+	mux.HandleFunc("GET /aggregates/{name}/{id}", c.apiGetAggregate)
+	mux.HandleFunc("GET /events", c.apiEvents)
+	mux.HandleFunc("GET /events/stats", c.apiEventStats)
+	mux.HandleFunc("GET /stats", c.apiStats)
+	return mux
+}
+
+func (c *Client) apiDispatch(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var cmd Command
+	if _, def := c.reg.aggregateForCommand(name); def != nil {
+		cmd = def.New()
+	} else if _, rdef := c.reg.recordForCommand(name); rdef != nil {
+		cmd = rdef.New()
+	} else {
+		apiError(w, http.StatusNotFound, fmt.Sprintf("unknown command %s", name))
+		return
+	}
+	if err := json.NewDecoder(r.Body).Decode(cmd); err != nil {
+		apiError(w, http.StatusBadRequest, "bad command body: "+err.Error())
+		return
+	}
+	if ns, _ := cmd.CommandTarget(); ns == "" {
+		apiError(w, http.StatusBadRequest, "command needs a namespace")
+		return
+	}
+
+	ctx := WithMeta(r.Context(), Metadata{
+		CorrelationID: r.Header.Get("X-Correlation-Id"),
+		Actor:         r.Header.Get("X-Actor"),
+	})
+	err := c.Dispatch(ctx, cmd)
+	var conflict *ConflictError
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+	case errors.As(err, &conflict):
+		apiError(w, http.StatusConflict, err.Error())
+	default:
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+	}
+}
+
+func (c *Client) apiList(query func(ctx context.Context, name string, q Query) ([]Row, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q, err := queryFromURL(r)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		rows, err := query(r.Context(), r.PathValue("name"), q)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(rows)})
+	}
+}
+
+func (c *Client) apiGetEntity(w http.ResponseWriter, r *http.Request) {
+	c.apiGetDoc(w, r, func(ns string, id uuid.UUID) (any, error) {
+		state, err := c.Entity(r.Context(), r.PathValue("name"), ns, id)
+		if state == nil {
+			return nil, err
+		}
+		return state, err
+	})
+}
+
+func (c *Client) apiGetRecord(w http.ResponseWriter, r *http.Request) {
+	c.apiGetDoc(w, r, func(ns string, id uuid.UUID) (any, error) {
+		return c.Record(r.Context(), r.PathValue("name"), ns, id)
+	})
+}
+
+func (c *Client) apiGetDoc(w http.ResponseWriter, r *http.Request, load func(ns string, id uuid.UUID) (any, error)) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		apiError(w, http.StatusBadRequest, "namespace is required")
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	doc, err := load(ns, id)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if doc == nil {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+func (c *Client) apiGetAggregate(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		apiError(w, http.StatusBadRequest, "namespace is required")
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	state, version, err := c.Load(r.Context(), r.PathValue("name"), ns, id)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if version == 0 {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "state": state})
+}
+
+func (c *Client) apiEvents(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query()
+	q := LogQuery{
+		Namespace:     p.Get("namespace"),
+		Type:          p.Get("type"),
+		AggregateType: p.Get("aggregate_type"),
+		AggregateID:   p.Get("aggregate_id"),
+		CorrelationID: p.Get("correlation_id"),
+		Ascending:     p.Get("order") == "asc",
+	}
+	if v := p.Get("after_seq"); v != "" {
+		q.AfterSeq, _ = strconv.ParseInt(v, 10, 64)
+	}
+	if v := p.Get("since"); v != "" {
+		q.Since, _ = time.Parse(time.RFC3339, v)
+	}
+	if v := p.Get("until"); v != "" {
+		q.Until, _ = time.Parse(time.RFC3339, v)
+	}
+	if v := p.Get("limit"); v != "" {
+		q.Limit, _ = strconv.Atoi(v)
+	}
+	entries, err := c.QueryLog(r.Context(), q)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(entries)})
+}
+
+func (c *Client) apiEventStats(w http.ResponseWriter, r *http.Request) {
+	var since time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		since, _ = time.Parse(time.RFC3339, v)
+	}
+	stats, err := c.LogStats(r.Context(), since)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"counts": stats})
+}
+
+func (c *Client) apiStats(w http.ResponseWriter, r *http.Request) {
+	depth, age, err := c.OutboxDepth(r.Context())
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var deadLetters, timers int64
+	_ = c.db.QueryRow(r.Context(), `SELECT count(*) FROM loom_dead_letters WHERE service=$1`, c.reg.Service).Scan(&deadLetters)
+	_ = c.db.QueryRow(r.Context(), `SELECT count(*) FROM loom_timers WHERE service=$1`, c.reg.Service).Scan(&timers)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service":            c.reg.Service,
+		"outbox_depth":       depth,
+		"outbox_oldest_secs": int64(age.Seconds()),
+		"dead_letters":       deadLetters,
+		"timers_pending":     timers,
+	})
+}
+
+// queryFromURL turns query params into a Query: reserved keys aside, every
+// param is a filter — `status=shipped`, `total_cents.gte=1000`.
+func queryFromURL(r *http.Request) (Query, error) {
+	p := r.URL.Query()
+	q := Query{
+		Namespace: p.Get("namespace"),
+		OrderBy:   p.Get("order"),
+	}
+	if v := p.Get("limit"); v != "" {
+		q.Limit, _ = strconv.Atoi(v)
+	}
+	if v := p.Get("offset"); v != "" {
+		q.Offset, _ = strconv.Atoi(v)
+	}
+	for key, values := range p {
+		switch key {
+		case "namespace", "order", "limit", "offset":
+			continue
+		}
+		if len(values) == 0 {
+			continue
+		}
+		field, op := key, ""
+		if i := strings.LastIndex(key, "."); i > 0 {
+			field, op = key[:i], key[i+1:]
+		}
+		q.Filters = append(q.Filters, Filter{Field: field, Op: op, Value: values[0]})
+	}
+	return q, nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func apiError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func orEmpty[T any](in []T) []T {
+	if in == nil {
+		return []T{}
+	}
+	return in
+}

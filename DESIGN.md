@@ -82,6 +82,18 @@ generated switches, folds from generated assignments.
   scheduling unit's transaction. Keyed idempotently (default: command type
   + target) so redelivered reactions overwrite; `loom.CancelTimer` deletes
   by the same key. SKIP LOCKED claims, retry then park.
+- **The log as a timeseries**: `global_seq` is monotonic and rows are
+  append-only, so time queries are sequence-range queries. A BRIN index on
+  `at` makes time-window scans cheap at ~zero write cost, and
+  `(service, correlation_id)` serves trace-a-flow lookups. Deliberately no
+  TimescaleDB dependency (unavailable on Cloud SQL); if volume ever
+  demands it, native partitioning by `global_seq` range and rollup tables
+  are the escalation path, not an engine change.
+- **HTTP API** (`api.go` / `query.go`): the registry drives a complete
+  mounted surface — command dispatch, filtered entity/record queries
+  (validated field names, parameterized values, typed numeric/bool
+  comparisons), log browsing, ops stats. Transport-level auth stays with
+  the deployment.
 
 ## Not yet built (tracked on the issue)
 

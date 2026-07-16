@@ -75,6 +75,26 @@ Commands declare what they emit (`-> OrderPlaced`) and reactions declare
 what they dispatch — both are runtime-enforced contracts, so the schema can
 never lie about the topology.
 
+## The service is the API
+
+`cli.HTTPHandler()` mounts the whole service over HTTP, driven entirely by
+the registry — no per-service handler code:
+
+```
+POST /commands/PlaceOrder                      dispatch (JSON body; 409 on conflict)
+GET  /entities/OrderSummary?namespace=demo&status=shipped&total_cents.gte=1000
+GET  /entities/OrderSummary/{id}               one row
+GET  /records/LedgerEntry/{id}                 state-of-record reads
+GET  /aggregates/Order/{id}                    folded state + version
+GET  /events?correlation_id=...                log browser
+GET  /events/stats?since=...                   counts by type
+GET  /stats                                    outbox / dead letters / timers health
+```
+
+Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,
+compiled to parameterized jsonb SQL; `order`, `limit`, `offset` paginate.
+Auth is deliberately not Loom's job — mount behind your middleware.
+
 ## Storage (schema v2)
 
 Postgres via pgx, hand-written SQL, no ORM. Events carry a global sequence

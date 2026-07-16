@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS loom_events (
 	CONSTRAINT loom_events_stream UNIQUE (service, namespace, aggregate_type, aggregate_id, version)
 );
 CREATE INDEX IF NOT EXISTS loom_events_by_service_seq ON loom_events (service, global_seq);
+-- the log is append-only and time-ordered: BRIN makes time-range scans
+-- cheap at negligible write/storage cost
+CREATE INDEX IF NOT EXISTS loom_events_at_brin ON loom_events USING brin (at);
+CREATE INDEX IF NOT EXISTS loom_events_correlation ON loom_events (service, correlation_id);
 
 CREATE TABLE IF NOT EXISTS loom_snapshots (
 	service        text NOT NULL,
@@ -63,6 +67,8 @@ CREATE TABLE IF NOT EXISTS loom_entities (
 	updated_at  timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, namespace, entity_type, id)
 );
+
+CREATE INDEX IF NOT EXISTS loom_entities_data ON loom_entities USING gin (data jsonb_path_ops);
 
 CREATE TABLE IF NOT EXISTS loom_checkpoints (
 	service    text NOT NULL,
