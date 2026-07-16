@@ -20,9 +20,11 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/go-apis/loom"
 )
@@ -45,10 +47,11 @@ type Config struct {
 }
 
 type Bus struct {
-	client *pubsub.Client
-	topic  *pubsub.Topic
-	codec  Codec
-	log    *slog.Logger
+	client    *pubsub.Client
+	publisher *pubsub.Publisher
+	topicID   string
+	codec     Codec
+	log       *slog.Logger
 
 	cancel context.CancelFunc
 	cctx   context.Context
@@ -73,40 +76,48 @@ func New(ctx context.Context, cfg Config) (*Bus, error) {
 	if err != nil {
 		return nil, err
 	}
-	topic, err := ensureTopic(ctx, client, cfg.TopicID)
-	if err != nil {
+	if err := ensureTopic(ctx, client, cfg.TopicID); err != nil {
 		client.Close()
 		return nil, err
 	}
+	publisher := client.Publisher(cfg.TopicID)
+	publisher.EnableMessageOrdering = !emulated()
+	publisher.PublishSettings.ByteThreshold = 5000
+	publisher.PublishSettings.CountThreshold = 10
+	publisher.PublishSettings.DelayThreshold = 100 * time.Millisecond
+
 	cctx, cancel := context.WithCancel(context.Background())
 	return &Bus{
-		client: client,
-		topic:  topic,
-		codec:  cfg.Codec,
-		log:    cfg.Logger,
-		cctx:   cctx,
-		cancel: cancel,
+		client:    client,
+		publisher: publisher,
+		topicID:   cfg.TopicID,
+		codec:     cfg.Codec,
+		log:       cfg.Logger,
+		cctx:      cctx,
+		cancel:    cancel,
 	}, nil
 }
 
 func emulated() bool { return os.Getenv("PUBSUB_EMULATOR_HOST") != "" }
 
-func ensureTopic(ctx context.Context, client *pubsub.Client, id string) (*pubsub.Topic, error) {
-	topic := client.Topic(id)
-	ok, err := topic.Exists(ctx)
-	if err != nil {
-		return nil, err
+func (b *Bus) topicName() string {
+	return fmt.Sprintf("projects/%s/topics/%s", b.client.Project(), b.topicID)
+}
+
+func ensureTopic(ctx context.Context, client *pubsub.Client, id string) error {
+	name := fmt.Sprintf("projects/%s/topics/%s", client.Project(), id)
+	_, err := client.TopicAdminClient.GetTopic(ctx, &pubsubpb.GetTopicRequest{Topic: name})
+	if err == nil {
+		return nil
 	}
-	if !ok {
-		if _, err := client.CreateTopic(ctx, id); err != nil && status.Code(err) != codes.AlreadyExists {
-			return nil, err
-		}
+	if status.Code(err) != codes.NotFound {
+		return err
 	}
-	topic.EnableMessageOrdering = !emulated()
-	topic.PublishSettings.ByteThreshold = 5000
-	topic.PublishSettings.CountThreshold = 10
-	topic.PublishSettings.DelayThreshold = 100 * time.Millisecond
-	return topic, nil
+	_, err = client.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{Name: name})
+	if err != nil && status.Code(err) != codes.AlreadyExists {
+		return err
+	}
+	return nil
 }
 
 func (b *Bus) Publish(ctx context.Context, env *loom.Envelope) error {
@@ -115,10 +126,10 @@ func (b *Bus) Publish(ctx context.Context, env *loom.Envelope) error {
 		return err
 	}
 	key := env.OrderingKey()
-	if !b.topic.EnableMessageOrdering {
+	if !b.publisher.EnableMessageOrdering {
 		key = ""
 	}
-	res := b.topic.Publish(ctx, &pubsub.Message{
+	res := b.publisher.Publish(ctx, &pubsub.Message{
 		Data:        data,
 		OrderingKey: key,
 		Attributes: map[string]string{
@@ -128,10 +139,10 @@ func (b *Bus) Publish(ctx context.Context, env *loom.Envelope) error {
 		},
 	})
 	if _, err := res.Get(ctx); err != nil {
-		// a failed publish pauses its ordering key on this topic handle;
+		// a failed publish pauses its ordering key on this publisher;
 		// without a resume every retry of the same key fails for the life
 		// of the process
-		b.topic.ResumePublish(key)
+		b.publisher.ResumePublish(key)
 		return err
 	}
 	return nil
@@ -150,30 +161,31 @@ func (b *Bus) Subscribe(ctx context.Context, group string, handler func(ctx cont
 	return nil
 }
 
-func (b *Bus) ensureSubscription(ctx context.Context, group string) (*pubsub.Subscription, error) {
-	id := b.topic.ID() + "__" + strings.ReplaceAll(group, ".", "-")
-	sub := b.client.Subscription(id)
-	ok, err := sub.Exists(ctx)
+func (b *Bus) ensureSubscription(ctx context.Context, group string) (*pubsub.Subscriber, error) {
+	id := b.topicID + "__" + strings.ReplaceAll(group, ".", "-")
+	name := fmt.Sprintf("projects/%s/subscriptions/%s", b.client.Project(), id)
+	_, err := b.client.SubscriptionAdminClient.GetSubscription(ctx, &pubsubpb.GetSubscriptionRequest{Subscription: name})
 	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		_, err = b.client.CreateSubscription(ctx, id, pubsub.SubscriptionConfig{
-			Topic:                 b.topic,
-			AckDeadline:           10 * time.Second,
+		if status.Code(err) != codes.NotFound {
+			return nil, err
+		}
+		_, err = b.client.SubscriptionAdminClient.CreateSubscription(ctx, &pubsubpb.Subscription{
+			Name:                  name,
+			Topic:                 b.topicName(),
+			AckDeadlineSeconds:    10,
 			EnableMessageOrdering: !emulated(),
-			RetryPolicy:           &pubsub.RetryPolicy{MinimumBackoff: 10 * time.Millisecond},
+			RetryPolicy:           &pubsubpb.RetryPolicy{MinimumBackoff: durationpb.New(10 * time.Millisecond)},
 		})
 		if err != nil && status.Code(err) != codes.AlreadyExists {
 			return nil, err
 		}
-		sub = b.client.Subscription(id)
 	}
+	sub := b.client.Subscriber(id)
 	sub.ReceiveSettings.MaxOutstandingMessages = 100
 	return sub, nil
 }
 
-func (b *Bus) receiveLoop(sub *pubsub.Subscription, group string, handler func(ctx context.Context, env *loom.Envelope) error) {
+func (b *Bus) receiveLoop(sub *pubsub.Subscriber, group string, handler func(ctx context.Context, env *loom.Envelope) error) {
 	defer b.wg.Done()
 	h := func(ctx context.Context, msg *pubsub.Message) {
 		env, err := b.codec.Unmarshal(msg.Data)
@@ -205,7 +217,7 @@ func (b *Bus) receiveLoop(sub *pubsub.Subscription, group string, handler func(c
 
 // Close stops publishing, cancels receive loops, and closes the client.
 func (b *Bus) Close() error {
-	b.topic.Stop()
+	b.publisher.Stop()
 	b.cancel()
 	b.wg.Wait()
 	return b.client.Close()
