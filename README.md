@@ -189,15 +189,41 @@ GET  /timers                                   pending schedule (overdue flagged
 GET  /batches                                  recent batches
 ```
 
+## The gateway
+
+One GraphQL endpoint over any number of loom services, built at boot from
+their registries — no gqlgen build step, no resolver boilerplate, and it
+matches the SDL contracts `loom graphql` emits (plus `id`/`namespace`/
+`updatedAt` on rows):
+
+```go
+gateway, _ := loomgraphql.New(loomgraphql.Config{
+    Services: []*loom.Client{recipientsCli, filingsCli},
+    Joins: []loomgraphql.Join{{
+        OnType: "FormList", Field: "recipient", Returns: "RecipientSummary",
+        Resolve: func(ctx context.Context, src map[string]any) (any, error) { ... },
+    }},
+})
+mux.Handle("/graphql", gateway)
+```
+
+Mutations dispatch commands (`placeOrder(input: {...}) { status }`),
+queries serve aggregates and filtered read-model lists, and Join fields
+are the hand-written cross-service edges no generator should guess.
+Subscriptions from the SDL fragments ride the services' SSE endpoints
+instead of the gateway.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service.
 **Overview** (outbox, dead letters, effects, batches, event volumes),
 **Design** (aggregates → commands → events, reactions with their dispatch
 contracts and effects, projections — the schema as the runtime runs it),
-**Events** (log browser: filter by type/aggregate/correlation, inspect
-payloads), **Issues** (runner lag against the log head, in-doubt effects
-with resolve, dead letters with redrive, overdue timers). One embedded
+**Data** (browse read models and records with filters, fetch any row or
+aggregate by id), **Events** (log browser: filter by
+type/aggregate/correlation, inspect payloads), **Issues** (runner lag
+against the log head, in-doubt effects with resolve, dead letters with
+redrive, overdue timers). One embedded
 self-contained page over the JSON endpoints — no build step, no external
 assets, auth is whatever wraps the mount.
 

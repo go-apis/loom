@@ -28,6 +28,7 @@ func (c *Client) apiConsole(w http.ResponseWriter, r *http.Request) {
 
 type registryDoc struct {
 	Service     string          `json:"service"`
+	Namespaces  []string        `json:"namespaces"`
 	Aggregates  []registryAgg   `json:"aggregates"`
 	Records     []registryAgg   `json:"records"`
 	Events      []registryEvent `json:"events"`
@@ -75,7 +76,18 @@ type registryProj struct {
 }
 
 func (c *Client) apiRegistry(w http.ResponseWriter, r *http.Request) {
-	doc := registryDoc{Service: c.reg.Service}
+	doc := registryDoc{Service: c.reg.Service, Namespaces: []string{}}
+	rows, err := c.db.Query(r.Context(), `
+		SELECT DISTINCT namespace FROM loom_events WHERE service=$1 ORDER BY namespace LIMIT 100`, c.reg.Service)
+	if err == nil {
+		for rows.Next() {
+			var ns string
+			if rows.Scan(&ns) == nil {
+				doc.Namespaces = append(doc.Namespaces, ns)
+			}
+		}
+		rows.Close()
+	}
 	for _, a := range c.reg.Aggregates {
 		agg := registryAgg{Name: a.Name, Snapshot: a.SnapshotEvery, PII: a.StatePII}
 		for _, cmd := range a.Commands {

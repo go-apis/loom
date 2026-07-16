@@ -69,6 +69,7 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
   <nav>
     <button data-tab="overview" class="on">Overview</button>
     <button data-tab="design">Design</button>
+    <button data-tab="data">Data</button>
     <button data-tab="events">Events</button>
     <button data-tab="issues">Issues</button>
   </nav>
@@ -87,6 +88,23 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
     <h2>Processes <span class="flow">— async, retried, parked loudly</span></h2><div id="dProcesses"></div>
     <h2>Projections</h2><div id="dProjections"></div>
     <h2>Events</h2><div id="dEvents"></div>
+  </section>
+
+  <section id="data">
+    <div class="filters">
+      <select id="dType"></select>
+      <input id="dNs" list="nsList" placeholder="namespace">
+      <datalist id="nsList"></datalist>
+      <input id="dField" placeholder="field" size="14">
+      <select id="dOp"><option value="">eq</option><option value="ne">ne</option><option value="gt">gt</option>
+        <option value="gte">gte</option><option value="lt">lt</option><option value="lte">lte</option><option value="like">like</option></select>
+      <input id="dValue" placeholder="value" size="14">
+      <select id="dLimit"><option>50</option><option>100</option><option>250</option></select>
+      <button class="act" id="dGo">Search</button>
+      <input id="dId" placeholder="…or fetch one by id" size="36">
+    </div>
+    <div id="dataList"></div>
+    <pre id="dataDetail" hidden></pre>
   </section>
 
   <section id="events">
@@ -201,6 +219,59 @@ async function loadDesign() {
       <td>${tags(e.pii,"pii")}</td></tr>`), "none");
 }
 
+// --- data ---
+let dataTypes = []; // {name, kind: entity|record|aggregate}
+async function initData() {
+  const reg = await get("registry");
+  dataTypes = [
+    ...(reg.projections||[]).map(p => ({name: p.entity, kind: "entities"})),
+    ...(reg.records||[]).map(r => ({name: r.name, kind: "records"})),
+    ...(reg.aggregates||[]).map(a => ({name: a.name, kind: "aggregates"})),
+  ];
+  $("dType").innerHTML = dataTypes.map((t,i) =>
+    `<option value="${i}">${esc(t.name)} (${t.kind.slice(0,-1)})</option>`).join("");
+  $("nsList").innerHTML = (reg.namespaces||[]).map(n => `<option>${esc(n)}</option>`).join("");
+  if (!$("dNs").value && (reg.namespaces||[]).length) $("dNs").value = reg.namespaces[0];
+}
+async function loadData() {
+  const t = dataTypes[$("dType").value];
+  const ns = $("dNs").value.trim();
+  $("dataDetail").hidden = true;
+  if (!t || !ns) { $("dataList").innerHTML = `<div class="empty">pick a type and namespace</div>`; return; }
+
+  const one = $("dId").value.trim();
+  if (one) {
+    const r = await fetch(`${t.kind}/${encodeURIComponent(t.name)}/${encodeURIComponent(one)}?namespace=${encodeURIComponent(ns)}`);
+    const doc = await r.json();
+    $("dataList").innerHTML = "";
+    $("dataDetail").hidden = false;
+    $("dataDetail").textContent = r.ok ? JSON.stringify(doc, null, 2) : ("not found: " + (doc.error || r.status));
+    return;
+  }
+  if (t.kind === "aggregates") {
+    $("dataList").innerHTML = `<div class="empty">aggregates fold from the log — fetch one by id</div>`;
+    return;
+  }
+  const p = new URLSearchParams({namespace: ns, limit: $("dLimit").value});
+  if ($("dField").value.trim() && $("dValue").value.trim()) {
+    const op = $("dOp").value;
+    p.set($("dField").value.trim() + (op ? "." + op : ""), $("dValue").value.trim());
+  }
+  const res = await get(`${t.kind}/${encodeURIComponent(t.name)}?` + p);
+  const items = res.items || [];
+  const cols = [...new Set(items.flatMap(r => Object.keys(r.data || {})))].slice(0, 6);
+  $("dataList").innerHTML = table(["id", ...cols, "updated"],
+    items.map((r,i) => `<tr class="click" data-i="${i}"><td class="mono">${esc(String(r.id).slice(0,8))}…</td>
+      ${cols.map(c => `<td class="mono">${esc(JSON.stringify(r.data?.[c]) ?? "").slice(0,40)}</td>`).join("")}
+      <td>${ago(r.updated_at)}</td></tr>`),
+    "no rows match");
+  $("dataList").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => {
+    $("dataDetail").hidden = false;
+    $("dataDetail").textContent = JSON.stringify(items[tr.dataset.i], null, 2);
+  });
+}
+$("dGo").onclick = loadData;
+
 // --- events ---
 async function loadEvents() {
   const p = new URLSearchParams();
@@ -287,6 +358,7 @@ async function refresh() {
     const tab = activeTab();
     if (tab === "overview") await loadOverview();
     if (tab === "design") await loadDesign();
+    if (tab === "data" && !dataTypes.length) { await initData(); await loadData(); }
     if (tab === "events" && !$("eventList").innerHTML) await loadEvents();
     if (tab === "issues") await loadIssues();
   } catch (e) {

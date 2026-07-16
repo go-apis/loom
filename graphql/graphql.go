@@ -1,0 +1,422 @@
+// Package graphql serves one GraphQL endpoint over any number of loom
+// services — the gateway. The schema is built at boot from the services'
+// registries and matches the SDL contract `loom graphql` emits: state
+// types (camelCase fields), command inputs → mutations returning
+// DispatchResult, entity/record list+get queries with FilterInput, plus
+// runtime extras the fragments don't carry (id/namespace/updatedAt on
+// rows) and hand-written cross-service Join fields. Subscriptions from
+// the fragments are deliberately not served here — watches ride the
+// services' SSE endpoints.
+package graphql
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	gql "github.com/graphql-go/graphql"
+	"github.com/graphql-go/graphql/language/ast"
+
+	"github.com/go-apis/loom"
+)
+
+// Join adds a hand-written cross-service field: the one part of a graph
+// no generator should guess.
+type Join struct {
+	OnType  string // GraphQL type name the field hangs off, e.g. "FormList"
+	Field   string // e.g. "recipient"
+	Returns string // result type name; must exist in the composed schema
+	List    bool
+	Resolve func(ctx context.Context, source map[string]any) (any, error)
+}
+
+type Config struct {
+	Services []*loom.Client
+	Joins    []Join
+}
+
+// New composes the services into one executable schema and returns the
+// /graphql handler (POST {query, variables, operationName}).
+func New(cfg Config) (http.Handler, error) {
+	if len(cfg.Services) == 0 {
+		return nil, fmt.Errorf("graphql: no services")
+	}
+	b := &builder{
+		types:   map[string]*typeEntry{},
+		inputs:  map[string]gql.Input{},
+		queries: gql.Fields{},
+		muts:    gql.Fields{},
+	}
+	for _, cli := range cfg.Services {
+		if err := b.service(cli); err != nil {
+			return nil, err
+		}
+	}
+	for _, j := range cfg.Joins {
+		if err := b.join(j); err != nil {
+			return nil, err
+		}
+	}
+	schemaCfg := gql.SchemaConfig{
+		Query: gql.NewObject(gql.ObjectConfig{Name: "Query", Fields: b.queries}),
+	}
+	if len(b.muts) > 0 {
+		schemaCfg.Mutation = gql.NewObject(gql.ObjectConfig{Name: "Mutation", Fields: b.muts})
+	}
+	schema, err := gql.NewSchema(schemaCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &handler{schema: schema}, nil
+}
+
+// --- scalars shared with the SDL contract ---
+
+func passthrough(name, desc string) *gql.Scalar {
+	return gql.NewScalar(gql.ScalarConfig{
+		Name: name, Description: desc,
+		Serialize:  func(v any) any { return v },
+		ParseValue: func(v any) any { return v },
+		ParseLiteral: func(valueAST ast.Value) any {
+			return valueAST.GetValue()
+		},
+	})
+}
+
+var (
+	scalarUUID = passthrough("UUID", "UUID as a string")
+	scalarTime = passthrough("Time", "RFC 3339 timestamp")
+	scalarMap  = passthrough("Map", "arbitrary JSON object")
+
+	filterOp = gql.NewEnum(gql.EnumConfig{Name: "FilterOp", Values: gql.EnumValueConfigMap{
+		"EQ": {Value: ""}, "NE": {Value: "ne"}, "GT": {Value: "gt"}, "GTE": {Value: "gte"},
+		"LT": {Value: "lt"}, "LTE": {Value: "lte"}, "LIKE": {Value: "like"},
+	}})
+	filterInput = gql.NewInputObject(gql.InputObjectConfig{Name: "FilterInput", Fields: gql.InputObjectConfigFieldMap{
+		"field": {Type: gql.NewNonNull(gql.String)},
+		"op":    {Type: gql.NewNonNull(filterOp)},
+		"value": {Type: gql.NewNonNull(gql.String)},
+	}})
+	dispatchResult = gql.NewObject(gql.ObjectConfig{Name: "DispatchResult", Fields: gql.Fields{
+		"status": {Type: gql.NewNonNull(gql.String)},
+	}})
+)
+
+// --- builder ---
+
+type typeEntry struct {
+	obj    *gql.Object
+	fields []string // sorted json field names, for collision checks
+}
+
+type builder struct {
+	types   map[string]*typeEntry
+	inputs  map[string]gql.Input
+	queries gql.Fields
+	muts    gql.Fields
+}
+
+func (b *builder) service(cli *loom.Client) error {
+	reg := cli.Registry()
+
+	for _, agg := range reg.Aggregates {
+		obj, err := b.objectFor(agg.Name, agg.NewState())
+		if err != nil {
+			return err
+		}
+		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, obj)); err != nil {
+			return err
+		}
+		for _, def := range agg.Commands {
+			if err := b.mutation(cli, def.Name, def.New); err != nil {
+				return err
+			}
+		}
+	}
+	for _, rec := range reg.Records {
+		obj, err := b.objectFor(rec.Name, rec.NewState())
+		if err != nil {
+			return err
+		}
+		if err := b.addQuery(lowerFirst(rec.Name), docGet(obj, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+			return cli.Record(ctx, rec.Name, ns, id)
+		})); err != nil {
+			return err
+		}
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+			return cli.QueryRecords(ctx, rec.Name, q)
+		})); err != nil {
+			return err
+		}
+		for _, def := range rec.Commands {
+			if err := b.mutation(cli, def.Name, def.New); err != nil {
+				return err
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, p := range reg.Projections {
+		if seen[p.Entity] {
+			continue
+		}
+		seen[p.Entity] = true
+		entity := p.Entity
+		obj, err := b.objectFor(entity, p.NewState())
+		if err != nil {
+			return err
+		}
+		if err := b.addQuery(lowerFirst(entity), docGet(obj, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+			state, err := cli.Entity(ctx, entity, ns, id)
+			if state == nil {
+				return nil, err
+			}
+			return state, err
+		})); err != nil {
+			return err
+		}
+		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+			return cli.QueryEntities(ctx, entity, q)
+		})); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *builder) addQuery(name string, f *gql.Field) error {
+	if _, dup := b.queries[name]; dup {
+		return fmt.Errorf("graphql: query %q defined by two services — rename one side", name)
+	}
+	b.queries[name] = f
+	return nil
+}
+
+func (b *builder) join(j Join) error {
+	on, ok := b.types[j.OnType]
+	if !ok {
+		return fmt.Errorf("graphql: join on unknown type %s", j.OnType)
+	}
+	ret, ok := b.types[j.Returns]
+	if !ok {
+		return fmt.Errorf("graphql: join %s.%s returns unknown type %s", j.OnType, j.Field, j.Returns)
+	}
+	var out gql.Output = ret.obj
+	if j.List {
+		out = gql.NewList(gql.NewNonNull(ret.obj))
+	}
+	resolve := j.Resolve
+	on.obj.AddFieldConfig(j.Field, &gql.Field{
+		Type: out,
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			src, _ := p.Source.(map[string]any)
+			if src == nil {
+				return nil, nil
+			}
+			return resolve(p.Context, src)
+		},
+	})
+	return nil
+}
+
+// --- resolvers ---
+
+// toDoc renders any state as the resolver source: a map keyed by the json
+// (snake) field names, with row identity injected.
+func toDoc(state any, ns string, id string) (map[string]any, error) {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	doc := map[string]any{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if ns != "" {
+		doc["namespace"] = ns
+	}
+	if id != "" {
+		doc["id"] = id
+	}
+	return doc, nil
+}
+
+func nsIDArgs() gql.FieldConfigArgument {
+	return gql.FieldConfigArgument{
+		"namespace": {Type: gql.NewNonNull(gql.String)},
+		"id":        {Type: gql.NewNonNull(scalarUUID)},
+	}
+}
+
+func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
+	ns, _ := p.Args["namespace"].(string)
+	raw := fmt.Sprint(p.Args["id"])
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return "", uuid.Nil, fmt.Errorf("bad id %q", raw)
+	}
+	return ns, id, nil
+}
+
+func aggregateGet(cli *loom.Client, name string, obj *gql.Object) *gql.Field {
+	return &gql.Field{
+		Type: obj,
+		Args: nsIDArgs(),
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			ns, id, err := parseNsID(p)
+			if err != nil {
+				return nil, err
+			}
+			state, version, err := cli.Load(p.Context, name, ns, id)
+			if err != nil || version == 0 {
+				return nil, err
+			}
+			return toDoc(state, ns, id.String())
+		},
+	}
+}
+
+func docGet(obj *gql.Object, load func(ctx context.Context, ns string, id uuid.UUID) (any, error)) *gql.Field {
+	return &gql.Field{
+		Type: obj,
+		Args: nsIDArgs(),
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			ns, id, err := parseNsID(p)
+			if err != nil {
+				return nil, err
+			}
+			state, err := load(p.Context, ns, id)
+			if err != nil || state == nil || reflect.ValueOf(state).IsNil() {
+				return nil, err
+			}
+			return toDoc(state, ns, id.String())
+		},
+	}
+}
+
+func docList(obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+	return &gql.Field{
+		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
+		Args: gql.FieldConfigArgument{
+			"namespace": {Type: gql.NewNonNull(gql.String)},
+			"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
+			"order":     {Type: gql.String},
+			"limit":     {Type: gql.Int},
+			"offset":    {Type: gql.Int},
+		},
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			q := loom.Query{Namespace: fmt.Sprint(p.Args["namespace"])}
+			if order, ok := p.Args["order"].(string); ok {
+				q.OrderBy = order
+			}
+			if limit, ok := p.Args["limit"].(int); ok {
+				q.Limit = limit
+			}
+			if offset, ok := p.Args["offset"].(int); ok {
+				q.Offset = offset
+			}
+			if where, ok := p.Args["where"].([]any); ok {
+				for _, w := range where {
+					f, _ := w.(map[string]any)
+					if f == nil {
+						continue
+					}
+					q.Filters = append(q.Filters, loom.Filter{
+						Field: fmt.Sprint(f["field"]),
+						Op:    fmt.Sprint(f["op"]),
+						Value: fmt.Sprint(f["value"]),
+					})
+				}
+			}
+			rows, err := query(p.Context, q)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for _, r := range rows {
+				doc := map[string]any{}
+				_ = json.Unmarshal(r.Data, &doc)
+				doc["id"] = r.ID
+				doc["namespace"] = r.Namespace
+				doc["updatedAt"] = r.UpdatedAt.Format(time.RFC3339Nano)
+				out = append(out, doc)
+			}
+			return out, nil
+		},
+	}
+}
+
+func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command) error {
+	field := lowerFirst(name)
+	if _, dup := b.muts[field]; dup {
+		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
+	}
+	input, conv, err := b.commandInput(name, newCmd())
+	if err != nil {
+		return err
+	}
+	b.muts[field] = &gql.Field{
+		Type: gql.NewNonNull(dispatchResult),
+		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			args, _ := p.Args["input"].(map[string]any)
+			raw, err := json.Marshal(conv(args))
+			if err != nil {
+				return nil, err
+			}
+			cmd := newCmd()
+			if err := json.Unmarshal(raw, cmd); err != nil {
+				return nil, err
+			}
+			if err := cli.Dispatch(p.Context, cmd); err != nil {
+				return nil, err
+			}
+			return map[string]any{"status": "ok"}, nil
+		},
+	}
+	return nil
+}
+
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// --- http ---
+
+type handler struct{ schema gql.Schema }
+
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query         string         `json:"query"`
+		Variables     map[string]any `json:"variables"`
+		OperationName string         `json:"operationName"`
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"errors":[{"message":"bad request body"}]}`, http.StatusBadRequest)
+			return
+		}
+	case http.MethodGet:
+		req.Query = r.URL.Query().Get("query")
+	default:
+		http.Error(w, `{"errors":[{"message":"POST a query"}]}`, http.StatusMethodNotAllowed)
+		return
+	}
+	result := gql.Do(gql.Params{
+		Schema:         h.schema,
+		RequestString:  req.Query,
+		VariableValues: req.Variables,
+		OperationName:  req.OperationName,
+		Context:        r.Context(),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
