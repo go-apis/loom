@@ -26,19 +26,29 @@ const (
 
 type asBatch struct {
 	Command
+	id   uuid.UUID // zero = mint one
 	cmds []Command
 }
 
 // AsBatch wraps commands so a reaction can fan out durably: the unit of
 // work enqueues them as a batch (atomic with the triggering event) instead
-// of executing them inline. The batch id is returned nowhere — reactions
-// that need it should derive it: the batch id is the triggering event's
-// aggregate id when unambiguous, else a fresh uuid.
+// of executing them inline, under a fresh batch id.
 func AsBatch(cmds ...Command) Command {
 	if len(cmds) == 0 {
 		return nil
 	}
 	return &asBatch{Command: cmds[0], cmds: cmds}
+}
+
+// AsBatchKeyed is AsBatch with a caller-chosen batch id — use the
+// triggering event's aggregate id so a redelivered reaction converges on
+// the batch it already enqueued (the duplicate enqueue no-ops) and the
+// batch is findable from the aggregate.
+func AsBatchKeyed(id uuid.UUID, cmds ...Command) Command {
+	if len(cmds) == 0 {
+		return nil
+	}
+	return &asBatch{Command: cmds[0], id: id, cmds: cmds}
 }
 
 // Batch is the progress row.
@@ -84,11 +94,18 @@ func (c *Client) EnqueueBatch(ctx context.Context, namespace string, cmds []Comm
 }
 
 func (c *Client) enqueueBatchTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, namespace string, cmds []Command) error {
-	if _, err := tx.Exec(ctx, `
+	// keyed batches converge: a redelivered reaction re-enqueueing the same
+	// id is a no-op rather than a duplicate fan-out
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO loom_batches (service, namespace, id, status, total)
-		VALUES ($1,$2,$3,'running',$4)`,
-		c.reg.Service, namespace, id, len(cmds)); err != nil {
+		VALUES ($1,$2,$3,'running',$4)
+		ON CONFLICT DO NOTHING`,
+		c.reg.Service, namespace, id, len(cmds))
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
 	}
 	rows := make([][]any, 0, len(cmds))
 	for i, cmd := range cmds {
@@ -98,7 +115,7 @@ func (c *Client) enqueueBatchTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, na
 		}
 		rows = append(rows, []any{c.reg.Service, id, i, cmd.LoomCommand(), raw})
 	}
-	_, err := tx.CopyFrom(ctx,
+	_, err = tx.CopyFrom(ctx,
 		pgx.Identifier{"loom_batch_items"},
 		[]string{"service", "batch_id", "seq", "command_type", "command"},
 		pgx.CopyFromRows(rows))

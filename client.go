@@ -153,7 +153,11 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 				continue
 			case *asBatch:
 				ns, _ := w.CommandTarget()
-				if err := c.enqueueBatchTx(ctx, tx, uuid.New(), ns, w.cmds); err != nil {
+				id := w.id
+				if id == uuid.Nil {
+					id = uuid.New()
+				}
+				if err := c.enqueueBatchTx(ctx, tx, id, ns, w.cmds); err != nil {
 					return err
 				}
 				batched = true
