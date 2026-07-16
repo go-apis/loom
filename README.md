@@ -95,6 +95,19 @@ Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,
 compiled to parameterized jsonb SQL; `order`, `limit`, `offset` paginate.
 Auth is deliberately not Loom's job — mount behind your middleware.
 
+Streaming is SSE (browser-native, proxy/Workers friendly; deliberately not
+gRPC — see DESIGN.md):
+
+```
+GET /events/stream?type=OrderPlaced&after_seq=0    live log tail, resumable
+GET /entities/OrderSummary/{id}/stream             read-model watch
+GET /aggregates/Order/{id}/stream                  state watch
+```
+
+The SSE id is the global sequence, so EventSource's automatic
+Last-Event-ID reconnect resumes exactly where it left off. Instances wake
+each other through pg LISTEN/NOTIFY.
+
 ## Storage (schema v2)
 
 Postgres via pgx, hand-written SQL, no ORM. Events carry a global sequence

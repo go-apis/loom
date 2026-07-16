@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,9 @@ type Client struct {
 	nudge      chan struct{} // log advanced: wake projection/process runners
 	relayNudge chan struct{} // outbox rows written: wake the relay
 
+	watchMu  sync.Mutex
+	watchers map[chan struct{}]bool // SSE streams awaiting log advances
+
 	retries int
 }
 
@@ -55,6 +59,7 @@ func New(cfg Config) (*Client, error) {
 		log:        cfg.Logger.With("service", cfg.Registry.Service),
 		nudge:      make(chan struct{}, 1),
 		relayNudge: make(chan struct{}, 1),
+		watchers:   map[chan struct{}]bool{},
 		retries:    cfg.ConflictRetries,
 	}, nil
 }

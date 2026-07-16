@@ -279,14 +279,11 @@ type executor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// notify nudges runners (same instance and others via LISTEN/NOTIFY) that
-// the log advanced.
+// notify nudges runners and SSE watchers — this instance directly, other
+// instances via pg_notify (their listenLoop rebroadcasts locally).
 func (c *Client) notifyLog(ctx context.Context) {
 	_, _ = c.db.Exec(ctx, `SELECT pg_notify($1, '')`, "loom_"+c.reg.Service)
-	select {
-	case c.nudge <- struct{}{}:
-	default:
-	}
+	c.broadcastLog()
 }
 
 func nowUTC() time.Time { return time.Now().UTC() }

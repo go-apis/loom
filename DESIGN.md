@@ -94,6 +94,17 @@ generated switches, folds from generated assignments.
   (validated field names, parameterized values, typed numeric/bool
   comparisons), log browsing, ops stats. Transport-level auth stays with
   the deployment.
+- **Streaming = SSE, deliberately not gRPC** (`stream.go`): every streaming
+  need in the domain is one-directional (server → client) — progress, log
+  tails, state watches — which SSE serves over plain HTTP with native
+  browser support and no proxy/Workers friction. The schema is already the
+  typed contract, the bus already handles service-to-service, so gRPC
+  would buy bidirectional streaming nobody needs at real compatibility
+  cost. Resumability rides the global sequence (SSE id = seq →
+  Last-Event-ID reconnect). Cross-instance wake-ups via pg LISTEN/NOTIFY
+  (`listenLoop`), which also makes runners multi-instance-responsive. A
+  gRPC transport can be added from the same registry later if a genuine
+  internal-RPC need appears.
 
 ## Not yet built (tracked on the issue)
 

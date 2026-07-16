@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -336,6 +337,106 @@ func TestHTTPAPI(t *testing.T) {
 	if stats["service"] != "orders" {
 		t.Fatalf("stats: %+v", stats)
 	}
+}
+
+// TestSSEStreams tails the event log and watches a read model over SSE
+// while the domain runs.
+func TestSSEStreams(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(cli.HTTPHandler())
+	// registered before the stream bodies' cleanups, so it runs after them
+	// (LIFO) and never waits on live SSE connections
+	t.Cleanup(srv.Close)
+
+	orderID := uuid.New()
+
+	// live log tail: subscribe from seq 0 so history + live both arrive
+	events := sseEvents(t, ctx, srv.URL+"/events/stream?after_seq=0&type=OrderPlaced")
+	// read-model watch
+	changes := sseEvents(t, ctx, srv.URL+"/entities/OrderSummary/"+orderID.String()+"/stream?namespace=default")
+
+	time.Sleep(200 * time.Millisecond) // let subscriptions attach
+	err = cli.Dispatch(ctx, &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: orderID, Namespace: "default"},
+		CustomerId:  uuid.New(),
+		Currency:    "USD",
+		Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 1, PriceCents: 999}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case evt := <-events:
+		if evt.name != "OrderPlaced" || !strings.Contains(evt.data, orderID.String()) {
+			t.Fatalf("unexpected log event: %+v", evt)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no OrderPlaced arrived on /events/stream")
+	}
+
+	select {
+	case change := <-changes:
+		if change.name != "change" || !strings.Contains(change.data, `"status":"placed"`) {
+			t.Fatalf("unexpected entity change: %+v", change)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no change arrived on the entity stream")
+	}
+}
+
+type sseEvent struct {
+	id, name, data string
+}
+
+// sseEvents opens an SSE stream and delivers parsed events on a channel.
+func sseEvents(t *testing.T, ctx context.Context, url string) <-chan sseEvent {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("stream %s: %d", url, resp.StatusCode)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+
+	out := make(chan sseEvent, 16)
+	go func() {
+		defer close(out)
+		scanner := bufio.NewScanner(resp.Body)
+		var cur sseEvent
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, "id: "):
+				cur.id = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "event: "):
+				cur.name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				cur.data = strings.TrimPrefix(line, "data: ")
+			case line == "" && cur.data != "":
+				out <- cur
+				cur = sseEvent{}
+			}
+		}
+	}()
+	return out
 }
 
 func getJSON(t *testing.T, ctx context.Context, url string, into any) {

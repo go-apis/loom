@@ -40,6 +40,9 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("GET /aggregates/{name}/{id}", c.apiGetAggregate)
 	mux.HandleFunc("GET /events", c.apiEvents)
 	mux.HandleFunc("GET /events/stats", c.apiEventStats)
+	mux.HandleFunc("GET /events/stream", c.apiEventsStream)
+	mux.HandleFunc("GET /entities/{name}/{id}/stream", c.apiEntityStream)
+	mux.HandleFunc("GET /aggregates/{name}/{id}/stream", c.apiAggregateStream)
 	mux.HandleFunc("GET /stats", c.apiStats)
 	return mux
 }
