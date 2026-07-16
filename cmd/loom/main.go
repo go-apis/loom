@@ -28,6 +28,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "generate":
 		err = runGenerate(os.Args[2:])
+	case "check":
+		err = runCheck(os.Args[2:])
 	default:
 		usage()
 	}
@@ -40,7 +42,29 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: loom init <service>")
 	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>]")
+	fmt.Fprintln(os.Stderr, "       loom check <schema.loom ...>")
 	os.Exit(2)
+}
+
+// runCheck parses and validates schemas without generating anything — for
+// designing schemas before their services exist.
+func runCheck(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("check wants schema files")
+	}
+	for _, path := range args {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		s, err := sdl.Parse(string(src))
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		fmt.Printf("%s: ok — service %s: %d aggregates, %d events, %d policies, %d processes, %d projections\n",
+			path, s.Service, len(s.Aggregates), len(s.Events), len(s.Policies), len(s.Processes), len(s.Projections))
+	}
+	return nil
 }
 
 // config is loom.yml. Everything except the schema glob has a default.
