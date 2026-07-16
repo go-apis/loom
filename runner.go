@@ -262,6 +262,7 @@ func (c *Client) reactWithRetry(ctx context.Context, p *ReactorDef, evt *Event) 
 }
 
 func (c *Client) react(ctx context.Context, p *ReactorDef, evt *Event) error {
+	ctx = withReader(ctx, c)
 	ctx = withEffectScope(ctx, c, p, evt)
 	cmds, err := p.React(ctx, evt)
 	if err != nil {

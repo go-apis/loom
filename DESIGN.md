@@ -89,6 +89,11 @@ generated switches, folds from generated assignments.
   parking to `loom_dead_letters`. Silent drops are structurally impossible.
 - **Metadata**: correlation ids propagate across dispatches and the bus;
   causation records the triggering event. Both are columns, not folklore.
+- **Context-injected reads**: every handler/reaction invocation carries
+  read access (`loom.Load`/`GetRecord`/`GetEntity` on the ctx), so
+  implementations never hold a client and registries wire without the
+  set-client-after-New dance. Reads only — dispatch from inside a handler
+  would nest units of work; reactions return commands.
 - **Read models**: one `loom_entities` jsonb doc table (typed per-entity
   tables are a perf milestone, not a semantic change).
 - **Records** (`loom_records`): state-of-record persistence for the

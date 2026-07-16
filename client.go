@@ -103,6 +103,7 @@ func (c *Client) Dispatch(ctx context.Context, cmds ...Command) error {
 }
 
 func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
+	ctx = withReader(ctx, c)
 	meta := MetaFrom(ctx)
 	if meta.CorrelationID == "" {
 		meta.CorrelationID = uuid.NewString()

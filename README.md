@@ -44,6 +44,12 @@ Stubs are generated once and never rewritten — your business logic lives in
 ordinary Go files implementing generated interfaces. Everything else
 regenerates on every run.
 
+Handlers read state through their context — `loom.Load`, `loom.GetRecord`,
+`loom.GetEntity` — so handler structs hold only genuine external
+dependencies, and there's no client to plumb into the registry. Reads are
+the only injected capability: dispatching from inside a handler would nest
+units of work, so reactions return commands instead.
+
 ## Execution semantics (there are exactly three)
 
 | declaration | runs | guarantees |
