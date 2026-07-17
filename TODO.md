@@ -1,7 +1,7 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.23.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.24.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
@@ -37,7 +37,12 @@ resolved per request by a Config.Auth hook or WithAccess middleware;
 namespace scoping on reads/writes/subscriptions/Files/Streams via
 Protect; Namespace scalar on lists with "*" = every namespace, god
 access only (Query.AllNamespaces); denials are per-field errors, failed
-hook = 401; nil hook = open gateway for trusted mounts).
+hook = 401; nil hook = open gateway for trusted mounts), generated
+admin UI (v0.24: loomgraphql.UI("/graphql") — self-contained page built
+from introspection at load: list views w/ filters + live {x}sChanged
+toggle (fetch-streamed SSE so the Bearer header works), doc detail,
+mutation forms from input types, token/namespace header incl. "*",
+?token=&ns=&view= dev links).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
 ## 1. Old-envelope compat codec for gpub

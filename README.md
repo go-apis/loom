@@ -376,6 +376,22 @@ mux.Handle("/files", loomgraphql.Protect(auth, loomgraphql.Files(...)))
 mux.Handle("/streams/", http.StripPrefix("/streams", loomgraphql.Protect(auth, loomgraphql.Streams(...))))
 ```
 
+The gateway also ships a generated admin UI — a self-contained page
+that introspects the schema at load time and builds itself from it, so
+there is nothing to regenerate and nothing to drift:
+
+```go
+mux.Handle("/ui", loomgraphql.UI("/graphql"))
+```
+
+Entity list views with filters, ordering, and pagination; a **live**
+toggle that rides the `{x}sChanged` subscription so rows update (and
+flash) as events land; row-click doc detail; mutation forms generated
+from the command input types; and a Bearer-token + namespace header, so
+it's also the fastest way to *see* the Access model work — switch
+tokens and watch namespaces appear and disappear (`"*"` included). Dev
+links prefill: `/ui?token=…&ns=…&view=OrderSummary`.
+
 `Namespaces` scopes every read, subscription, mutation, file download,
 and raw watch; `Mutate` gates writes (optionally narrowed to specific
 mutation fields via `Mutations`); `All` is god mode. List queries and

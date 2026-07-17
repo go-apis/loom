@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loom ui</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1a2233; --muted: #6b7280;
+  --line: #e3e6ea; --accent: #2856c9; --bad: #b3261e; --ok: #1a7f37; --warn: #9a6700;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#101418; --panel:#171c22; --ink:#e6e9ee; --muted:#8b95a3;
+          --line:#2a323c; --accent:#7aa2ff; --bad:#ff6b61; --ok:#4ac26b; --warn:#e3b341; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink);
+       font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display:flex; align-items:center; gap:12px; padding:12px 20px;
+         border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+header h1 { font-size:16px; margin:0 8px 0 0; font-weight:650; }
+header .ep { font-family:var(--mono); color:var(--muted); font-size:12px; }
+input, select, textarea { background:var(--panel); color:var(--ink); border:1px solid var(--line);
+       border-radius:6px; padding:6px 9px; font:inherit; }
+textarea { font-family:var(--mono); font-size:12.5px; width:100%; }
+button { background:var(--panel); color:var(--ink); border:1px solid var(--line);
+       border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; }
+button:hover { border-color:var(--accent); color:var(--accent); }
+button.primary { border-color:var(--accent); color:var(--accent); font-weight:600; }
+.layout { display:flex; min-height:calc(100vh - 61px); }
+nav { width:230px; border-right:1px solid var(--line); background:var(--panel); padding:14px 0; flex-shrink:0; }
+nav h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:14px 16px 4px; }
+nav a { display:block; padding:5px 16px; color:var(--ink); text-decoration:none; font-family:var(--mono); font-size:12.5px; cursor:pointer; }
+nav a:hover { color:var(--accent); }
+nav a.on { color:var(--accent); background:var(--bg); border-right:2px solid var(--accent); }
+main { flex:1; padding:18px 22px; min-width:0; }
+.controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+table { width:100%; border-collapse:collapse; background:var(--panel);
+        border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+th, td { text-align:left; padding:7px 10px; border-top:1px solid var(--line); vertical-align:top;
+         max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+thead th { border-top:none; color:var(--muted); font-weight:550; font-size:12px; }
+td { font-family:var(--mono); font-size:12.5px; }
+tr.click { cursor:pointer; } tr.click:hover td { background:var(--bg); }
+tr.flash td { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
+pre { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+      padding:12px; overflow:auto; font-size:12.5px; margin:10px 0 0; }
+.empty { color:var(--muted); padding:14px; background:var(--panel);
+         border:1px dashed var(--line); border-radius:8px; }
+.err { color:var(--bad); padding:8px 0; white-space:pre-wrap; }
+.live { display:inline-flex; align-items:center; gap:6px; color:var(--muted); }
+.live .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+.live.on { color:var(--ok); } .live.on .dot { background:var(--ok); animation:pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity:.35; } }
+.form { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; max-width:640px; }
+.form label { display:block; margin:10px 0 3px; font-size:12.5px; color:var(--muted); }
+.form label b { color:var(--ink); font-family:var(--mono); font-weight:550; }
+.form input, .form select { width:100%; }
+.hint { color:var(--muted); font-size:12px; margin-top:4px; }
+.pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11.5px;
+        border:1px solid var(--line); color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>loom ui</h1><span class="ep" id="ep"></span>
+  <span style="flex:1"></span>
+  <input id="ns" placeholder='namespace ("*" = all)' size="16">
+  <input id="token" placeholder="Bearer token" size="22" type="password">
+  <button id="connect" class="primary">Connect</button>
+</header>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main id="main"><div class="empty">Connecting…</div></main>
+</div>
+
+<script>
+"use strict";
+const ENDPOINT = "__LOOM_GRAPHQL_ENDPOINT__";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+$("ep").textContent = ENDPOINT;
+$("token").value = localStorage.getItem("loom-ui-token") || "";
+$("ns").value = localStorage.getItem("loom-ui-ns") || "";
+// dev links: /ui?token=…&ns=… prefills the connection
+const qp = new URLSearchParams(location.search);
+if (qp.get("token") !== null) $("token").value = qp.get("token");
+if (qp.get("ns") !== null) $("ns").value = qp.get("ns");
+
+const headers = () => {
+  const h = {"Content-Type": "application/json"};
+  const t = $("token").value.trim();
+  if (t) h["Authorization"] = "Bearer " + t;
+  return h;
+};
+async function gql(query, variables) {
+  const r = await fetch(ENDPOINT, {method: "POST", headers: headers(),
+    body: JSON.stringify({query, variables})});
+  if (r.status === 401) throw new Error("401 unauthenticated — set a token");
+  return r.json();
+}
+
+// --- schema model from introspection ---
+const TYPEREF = "kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } }";
+const INTROSPECTION = `query { __schema {
+  queryType { fields { name args { name type { ${TYPEREF} } } type { ${TYPEREF} } } }
+  mutationType { fields { name args { name type { ${TYPEREF} } } type { ${TYPEREF} } } }
+  subscriptionType { fields { name } }
+  types { kind name enumValues { name }
+    fields { name type { ${TYPEREF} } }
+    inputFields { name type { ${TYPEREF} } } }
+} }`;
+
+// unwrap peels NON_NULL/LIST wrappers: {name, kind, list, required}
+function unwrap(t) {
+  let list = false, required = false, cur = t;
+  while (cur && (cur.kind === "NON_NULL" || cur.kind === "LIST")) {
+    if (cur.kind === "LIST") list = true;
+    else if (!list) required = true;
+    cur = cur.ofType;
+  }
+  return {name: cur?.name, kind: cur?.kind, list, required};
+}
+
+let model = null;
+async function connect() {
+  localStorage.setItem("loom-ui-token", $("token").value.trim());
+  localStorage.setItem("loom-ui-ns", $("ns").value.trim());
+  let res;
+  try { res = await gql(INTROSPECTION); }
+  catch (e) { $("main").innerHTML = `<div class="err">${esc(e.message)}</div>`; $("nav").innerHTML = ""; return; }
+  if (res.errors) { $("main").innerHTML = `<div class="err">${esc(res.errors[0].message)}</div>`; return; }
+  const s = res.data.__schema;
+  const types = {};
+  for (const t of s.types) if (!t.name.startsWith("__")) types[t.name] = t;
+  const subs = new Set((s.subscriptionType?.fields || []).map(f => f.name));
+  const lists = [], gets = {};
+  for (const f of s.queryType.fields) {
+    const ret = unwrap(f.type);
+    const argNames = f.args.map(a => a.name);
+    if (ret.kind === "OBJECT" && ret.list && argNames.includes("namespace"))
+      lists.push({field: f.name, type: ret.name, live: subs.has(f.name + "Changed")});
+    if (ret.kind === "OBJECT" && !ret.list && argNames.includes("id"))
+      gets[ret.name] = f.name;
+  }
+  const mutations = (s.mutationType?.fields || []).map(f => {
+    const inputArg = f.args.find(a => a.name === "input");
+    return {field: f.name, input: inputArg ? unwrap(inputArg.type).name : null, returns: unwrap(f.type).name};
+  });
+  model = {types, lists, gets, mutations, subs};
+  renderNav();
+  const want = qp.get("view");
+  const wantList = lists.find(l => l.field === want || l.type === want);
+  const wantMut = mutations.find(m => m.field === want);
+  if (wantList) openList(wantList);
+  else if (wantMut) openMutation(wantMut);
+  else if (lists.length) openList(lists[0]);
+  else $("main").innerHTML = `<div class="empty">connected — no list queries in the schema</div>`;
+}
+$("connect").onclick = connect;
+
+function renderNav() {
+  let html = "<h2>Data</h2>";
+  for (const l of model.lists)
+    html += `<a data-list="${esc(l.field)}">${esc(l.type)}</a>`;
+  if (model.mutations.length) {
+    html += "<h2>Commands</h2>";
+    for (const m of model.mutations)
+      html += `<a data-mut="${esc(m.field)}">${esc(m.field)}</a>`;
+  }
+  $("nav").innerHTML = html;
+  $("nav").querySelectorAll("a[data-list]").forEach(a => a.onclick = () => {
+    openList(model.lists.find(l => l.field === a.dataset.list));
+  });
+  $("nav").querySelectorAll("a[data-mut]").forEach(a => a.onclick = () => {
+    openMutation(model.mutations.find(m => m.field === a.dataset.mut));
+  });
+}
+function markNav(attr, value) {
+  $("nav").querySelectorAll("a").forEach(a => a.classList.toggle("on", a.dataset[attr] === value));
+}
+
+// scalarFields: the type's flat columns; selection: a full nested pick
+function scalarFields(typeName) {
+  const t = model.types[typeName];
+  if (!t || !t.fields) return [];
+  return t.fields.filter(f => {
+    const u = unwrap(f.type);
+    // id/namespace render as fixed lead columns already
+    return !u.list && (u.kind === "SCALAR" || u.kind === "ENUM") && f.name !== "id" && f.name !== "namespace";
+  }).map(f => f.name);
+}
+function selection(typeName, depth) {
+  const t = model.types[typeName];
+  if (!t || !t.fields) return "";
+  const parts = [];
+  for (const f of t.fields) {
+    const u = unwrap(f.type);
+    if (u.kind === "SCALAR" || u.kind === "ENUM") parts.push(f.name);
+    else if (u.kind === "OBJECT" && depth > 0) {
+      const sub = selection(u.name, depth - 1);
+      if (sub) parts.push(`${f.name} { ${sub} }`);
+    }
+  }
+  return parts.join(" ");
+}
+
+// --- list views: query once, or ride the {x}sChanged subscription ---
+let liveAbort = null;
+function stopLive() { if (liveAbort) { liveAbort.abort(); liveAbort = null; } }
+
+function openList(l) {
+  stopLive();
+  markNav("list", l.field);
+  const cols = scalarFields(l.type);
+  $("main").innerHTML = `
+    <div class="controls">
+      <select id="fField"><option value="">— filter —</option>${cols.map(c => `<option>${esc(c)}</option>`).join("")}</select>
+      <select id="fOp">${["EQ","NE","GT","GTE","LT","LTE","LIKE"].map(o => `<option>${o}</option>`).join("")}</select>
+      <input id="fValue" placeholder="value" size="12">
+      <select id="fOrder"><option value="">— order —</option>${cols.map(c => `<option value="${esc(c)}">${esc(c)} ↑</option><option value="-${esc(c)}">${esc(c)} ↓</option>`).join("")}</select>
+      <select id="fLimit"><option>25</option><option>50</option><option>100</option></select>
+      <button id="run" class="primary">Query</button>
+      <label class="live" id="liveBadge"><input type="checkbox" id="liveToggle" ${l.live ? "" : "disabled"}><span class="dot"></span>live</label>
+      <span style="flex:1"></span><span class="pill">${esc(l.field)}</span>
+    </div>
+    <div id="rows"></div><pre id="detail" hidden></pre>`;
+  const vars = () => {
+    const v = {ns: $("ns").value.trim() || "default", limit: parseInt($("fLimit").value, 10)};
+    localStorage.setItem("loom-ui-ns", $("ns").value.trim());
+    if ($("fField").value && $("fValue").value !== "")
+      v.where = [{field: toSnake($("fField").value), op: $("fOp").value, value: $("fValue").value}];
+    if ($("fOrder").value) v.order = toSnake($("fOrder").value);
+    return v;
+  };
+  const q = `query($ns: Namespace!, $where: [FilterInput!], $order: String, $limit: Int) {
+    ${l.field}(namespace: $ns, where: $where, order: $order, limit: $limit) { id namespace ${selection(l.type, 1)} } }`;
+
+  let lastRows = [];
+  const paint = (rows, flash) => {
+    const prev = new Map(lastRows.map(r => [r.id, JSON.stringify(r)]));
+    lastRows = rows;
+    if (!rows.length) { $("rows").innerHTML = `<div class="empty">no rows</div>`; return; }
+    $("rows").innerHTML = `<table><thead><tr><th>id</th><th>namespace</th>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>
+      ${rows.map((r, i) => `<tr class="click${flash && prev.get(r.id) !== JSON.stringify(r) ? " flash" : ""}" data-i="${i}">
+        <td>${esc(String(r.id).slice(0, 8))}…</td><td>${esc(r.namespace)}</td>
+        ${cols.map(c => `<td>${esc(fmtCell(r[c]))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    $("rows").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => openDetail(l.type, rows[tr.dataset.i]));
+  };
+  const runOnce = async () => {
+    const res = await gql(q, vars());
+    if (res.errors) { $("rows").innerHTML = `<div class="err">${esc(res.errors[0].message)}</div>`; return; }
+    paint(res.data[l.field] || [], false);
+  };
+  $("run").onclick = () => { $("liveToggle").checked = false; toggleLive(); runOnce(); };
+  const toggleLive = () => {
+    stopLive();
+    $("liveBadge").classList.toggle("on", $("liveToggle").checked);
+    if (!$("liveToggle").checked) return;
+    const subQ = q.replace("query(", "subscription(").replace(l.field + "(", l.field + "Changed(");
+    liveAbort = new AbortController();
+    sse(subQ, vars(), liveAbort.signal, (payload) => {
+      const rows = payload.data?.[l.field + "Changed"];
+      if (rows) paint(rows, true);
+      else if (payload.errors) $("rows").innerHTML = `<div class="err">${esc(payload.errors[0].message)}</div>`;
+    });
+  };
+  $("liveToggle").onchange = toggleLive;
+  runOnce();
+}
+
+// sse: POST the subscription with Accept: text/event-stream and parse
+// `event: next` frames off the fetch body (EventSource can't send the
+// Authorization header; fetch streaming can).
+async function sse(query, variables, signal, onNext) {
+  const r = await fetch(ENDPOINT, {method: "POST", signal,
+    headers: {...headers(), "Accept": "text/event-stream"},
+    body: JSON.stringify({query, variables})});
+  if (!r.ok || !r.body) { onNext({errors: [{message: "stream failed: " + r.status}]}); return; }
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+        const data = frame.split("\n").filter(x => x.startsWith("data: ")).map(x => x.slice(6)).join("\n");
+        if (frame.includes("event: next") && data) onNext(JSON.parse(data));
+      }
+    }
+  } catch (e) { /* aborted */ }
+}
+
+function openDetail(typeName, row) {
+  const get = model.gets[typeName];
+  const show = (doc) => { $("detail").hidden = false; $("detail").textContent = JSON.stringify(doc, null, 2); };
+  if (!get) { show(row); return; }
+  gql(`query($ns: String!, $id: UUID!) { ${get}(namespace: $ns, id: $id) { ${selection(typeName, 2)} } }`,
+    {ns: row.namespace, id: row.id}).then(res => show(res.errors ? res.errors : res.data[get]));
+}
+
+// --- mutation forms, generated from the input type ---
+function openMutation(m) {
+  stopLive();
+  markNav("mut", m.field);
+  const input = model.types[m.input];
+  const fields = input?.inputFields || [];
+  const control = (f) => {
+    const u = unwrap(f.type);
+    const req = u.required ? " *" : "";
+    const label = `<label><b>${esc(f.name)}</b> <span>${esc(u.list ? "[" + u.name + "]" : u.name)}${req}</span></label>`;
+    if (u.kind === "ENUM" && !u.list) {
+      const opts = (model.types[u.name]?.enumValues || []).map(v => `<option>${esc(v.name)}</option>`).join("");
+      return `${label}<select data-f="${esc(f.name)}" data-kind="enum">${u.required ? "" : "<option value=''></option>"}${opts}</select>`;
+    }
+    if (u.list || u.kind === "INPUT_OBJECT" || u.name === "Map")
+      return `${label}<textarea data-f="${esc(f.name)}" data-kind="json" rows="3" placeholder='JSON, e.g. ${u.list ? "[…]" : "{…}"}'></textarea>`;
+    if (u.name === "Boolean")
+      return `${label}<select data-f="${esc(f.name)}" data-kind="bool"><option value=""></option><option>true</option><option>false</option></select>`;
+    if (u.name === "Int" || u.name === "Long" || u.name === "Float")
+      return `${label}<input data-f="${esc(f.name)}" data-kind="num" type="number">`;
+    const preset = f.name === "namespace" ? ` value="${esc($("ns").value.trim())}"` : "";
+    return `${label}<input data-f="${esc(f.name)}" data-kind="str"${preset} placeholder="${u.name === "UUID" ? "uuid" : ""}">`;
+  };
+  $("main").innerHTML = `<div class="form">
+    <div style="display:flex;align-items:baseline;gap:10px"><h3 style="margin:0">${esc(m.field)}</h3>
+    <span class="pill">${esc(m.input || "no input")}</span></div>
+    ${fields.map(control).join("")}
+    <div style="margin-top:14px"><button id="send" class="primary">Dispatch</button>
+    <button id="uuidBtn" title="fill empty uuid fields">new UUIDs</button></div>
+    <pre id="mutOut" hidden></pre></div>`;
+  $("uuidBtn").onclick = () => {
+    $("main").querySelectorAll("input[data-kind=str]").forEach(el => {
+      if (!el.value && (el.placeholder === "uuid" || /Id$|^id$/.test(el.dataset.f))) el.value = crypto.randomUUID();
+    });
+  };
+  $("send").onclick = async () => {
+    const vars = {};
+    let bad = null;
+    $("main").querySelectorAll("[data-f]").forEach(el => {
+      const v = el.value.trim();
+      if (v === "") return;
+      switch (el.dataset.kind) {
+        case "num": vars[el.dataset.f] = Number(v); break;
+        case "bool": vars[el.dataset.f] = v === "true"; break;
+        case "json": try { vars[el.dataset.f] = JSON.parse(v); } catch { bad = el.dataset.f + ": invalid JSON"; } break;
+        default: vars[el.dataset.f] = v;
+      }
+    });
+    const out = $("mutOut");
+    out.hidden = false;
+    if (bad) { out.textContent = bad; return; }
+    const res = await gql(`mutation($input: ${m.input}!) { ${m.field}(input: $input) { ${selection(m.returns, 1) || "status"} } }`, {input: vars});
+    out.textContent = JSON.stringify(res.errors || res.data, null, 2);
+  };
+}
+
+const fmtCell = (v) => v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+// filter/order args speak the storage's snake_case field names
+const toSnake = (s) => s.replace(/[A-Z]/g, c => "_" + c.toLowerCase());
+
+connect();
+</script>
+</body>
+</html>
