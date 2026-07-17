@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	loomgql "github.com/go-apis/loom/graphql"
 	"github.com/go-apis/loom/internal/e2e/billing"
 	"github.com/go-apis/loom/internal/e2e/orders"
+	ordersgen "github.com/go-apis/loom/internal/e2e/orders/loomgen"
 )
 
 // TestGraphQLGateway drives both services through one composed graph:
@@ -232,5 +234,160 @@ func TestGraphQLPlayground(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(body), `"Query"`) {
 		t.Fatalf("GET query: %s", body)
+	}
+}
+
+// readSSE reads one non-heartbeat SSE event (event name + data line).
+func readSSE(t *testing.T, scanner *bufio.Scanner) (event, data string) {
+	t.Helper()
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data:"):
+			data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		case line == "" && event != "":
+			return event, data
+		}
+	}
+	t.Fatalf("stream ended early: %v", scanner.Err())
+	return "", ""
+}
+
+// TestGraphQLSubscriptions: {x}Changed rides SSE on /graphql — the
+// current doc immediately, then a fresh execution per change, ending
+// when the client disconnects. The gateway is the only public surface.
+func TestGraphQLSubscriptions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := loomgql.New(loomgql.Config{Services: []*loom.Client{cli}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(gateway)
+	defer srv.Close()
+
+	orderID := uuid.New()
+	place := &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: orderID, Namespace: "default"},
+		CustomerId:  uuid.New(),
+		Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 2, PriceCents: 750}},
+		Currency:    "USD",
+	}
+	if err := cli.Dispatch(ctx, place); err != nil {
+		t.Fatal(err)
+	}
+
+	vars, _ := json.Marshal(map[string]any{"ns": "default", "id": orderID.String()})
+	q := `subscription($ns: String!, $id: UUID!) { orderChanged(namespace: $ns, id: $id) { status totalCents } }`
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		srv.URL+"?query="+url.QueryEscape(q)+"&variables="+url.QueryEscape(string(vars)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type: %q", ct)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+
+	next := func() map[string]any {
+		event, data := readSSE(t, scanner)
+		if event != "next" {
+			t.Fatalf("want next, got %q: %s", event, data)
+		}
+		var res struct {
+			Data   map[string]any `json:"data"`
+			Errors []any          `json:"errors"`
+		}
+		if err := json.Unmarshal([]byte(data), &res); err != nil || len(res.Errors) > 0 {
+			t.Fatalf("bad result %s (err=%v)", data, err)
+		}
+		doc, _ := res.Data["orderChanged"].(map[string]any)
+		if doc == nil {
+			t.Fatalf("no orderChanged in %s", data)
+		}
+		return doc
+	}
+
+	// the current state arrives without waiting for a change
+	if doc := next(); doc["status"] != "placed" || doc["totalCents"] != float64(1500) {
+		t.Fatalf("initial: %+v", doc)
+	}
+	// a dispatch wakes the watch and re-executes the selection
+	if err := cli.Dispatch(ctx, &ordersgen.ShipOrder{CommandBase: loom.CommandBase{AggregateID: orderID, Namespace: "default"}}); err != nil {
+		t.Fatal(err)
+	}
+	if doc := next(); doc["status"] != "shipped" {
+		t.Fatalf("after ship: %+v", doc)
+	}
+}
+
+// TestGatewayStreams: the raw SSE watch passthrough serves entity and
+// aggregate streams by service; everything else on the service surface
+// stays unreachable through it.
+func TestGatewayStreams(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(loomgql.Streams(cli))
+	defer srv.Close()
+
+	orderID := uuid.New()
+	if err := cli.Dispatch(ctx, &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: orderID, Namespace: "default"},
+		CustomerId:  uuid.New(),
+		Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 1, PriceCents: 100}},
+		Currency:    "USD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		srv.URL+"/orders/aggregates/Order/"+orderID.String()+"/stream?namespace=default", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	event, data := readSSE(t, bufio.NewScanner(resp.Body))
+	if event != "change" || !strings.Contains(data, `"placed"`) {
+		t.Fatalf("watch stream: %s %s", event, data)
+	}
+
+	// ops endpoints don't pass through
+	for _, path := range []string{"/orders/events", "/orders/stats", "/orders/console", "/nope/entities/X/1/stream"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s: status %d, want 404", path, resp.StatusCode)
+		}
 	}
 }

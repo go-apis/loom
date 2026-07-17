@@ -138,7 +138,8 @@ func (b *builder) outputType(t reflect.Type) (gql.Output, error) {
 	case reflect.String:
 		return gql.String, nil
 	case reflect.Int, reflect.Int32, reflect.Int64:
-		return gql.Int, nil
+		// schema int is int64: Long, matching the emitted SDL
+		return scalarLong, nil
 	case reflect.Float32, reflect.Float64:
 		return gql.Float, nil
 	case reflect.Bool:
@@ -332,7 +333,7 @@ func (b *builder) inputType(t reflect.Type) (gql.Input, converter, error) {
 	case reflect.String:
 		return gql.String, identity, nil
 	case reflect.Int, reflect.Int32, reflect.Int64:
-		return gql.Int, identity, nil
+		return scalarLong, identity, nil
 	case reflect.Float32, reflect.Float64:
 		return gql.Float, identity, nil
 	case reflect.Bool:

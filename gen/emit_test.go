@@ -75,6 +75,8 @@ func TestGraphQL(t *testing.T) {
 		"items: [OrderItemInput!]!",
 		"customerId: UUID!",
 		"scalar Long",
+		"totalCents: Long", // schema int is int64: money rides Long, not Int
+		"priceCents: Long!",
 		"type FileRef {",
 		"downloadUrl: String!",
 		"input FileRefInput {",

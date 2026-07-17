@@ -269,8 +269,15 @@ mux.Handle("/files", loomgraphql.Files(recipientsCli, filingsCli)) // FileRef.do
 Mutations dispatch commands (`placeOrder(input: {...}) { status }`),
 queries serve aggregates and filtered read-model lists, and Join fields
 are the hand-written cross-service edges no generator should guess.
-Subscriptions from the SDL fragments ride the services' SSE endpoints
-instead of the gateway.
+Subscriptions (`orderChanged(namespace, id) { status }`) are served on
+the same endpoint over SSE — send `Accept: text/event-stream` (GET with
+`?query=&variables=` works with the browser's native EventSource) and
+each change arrives as an `event: next` execution result. Raw
+resumable watches also pass through via `loomgraphql.Streams`. Together
+with `Files`, the gateway is the whole public surface: keep the
+services' own HTTP handlers on the private network. Schema `int` fields
+are served as the 64-bit `Long` scalar — GraphQL `Int` is 32-bit and
+cent totals are not.
 
 ## The console
 

@@ -2,20 +2,23 @@
 // services — the gateway. The schema is built at boot from the services'
 // registries and matches the SDL contract `loom graphql` emits: state
 // types (camelCase fields), command inputs → mutations returning
-// DispatchResult, entity/record list+get queries with FilterInput, plus
+// DispatchResult, entity/record list+get queries with FilterInput,
+// {x}Changed subscriptions (served over SSE on the same endpoint), plus
 // runtime extras the fragments don't carry (id/namespace/updatedAt on
-// rows) and hand-written cross-service Join fields. Subscriptions from
-// the fragments are deliberately not served here — watches ride the
-// services' SSE endpoints.
+// rows) and hand-written cross-service Join fields. Together with Files
+// and Streams, the gateway is the whole public surface — the services'
+// own HTTP handlers can stay on the private network.
 package graphql
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +55,7 @@ func New(cfg Config) (http.Handler, error) {
 		inputs:  map[string]gql.Input{},
 		queries: gql.Fields{},
 		muts:    gql.Fields{},
+		subs:    gql.Fields{},
 	}
 	for _, cli := range cfg.Services {
 		if err := b.service(cli); err != nil {
@@ -68,6 +72,9 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	if len(b.muts) > 0 {
 		schemaCfg.Mutation = gql.NewObject(gql.ObjectConfig{Name: "Mutation", Fields: b.muts})
+	}
+	if len(b.subs) > 0 {
+		schemaCfg.Subscription = gql.NewObject(gql.ObjectConfig{Name: "Subscription", Fields: b.subs})
 	}
 	schema, err := gql.NewSchema(schemaCfg)
 	if err != nil {
@@ -89,11 +96,44 @@ func passthrough(name, desc string) *gql.Scalar {
 	})
 }
 
+// coerceLong accepts what JSON transports actually deliver for 64-bit
+// ints: numbers (float64 from encoding/json), native ints, or strings.
+func coerceLong(v any) any {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case string:
+		if i, err := strconv.ParseInt(n, 10, 64); err == nil {
+			return i
+		}
+	}
+	return nil
+}
+
 var (
 	scalarUUID = passthrough("UUID", "UUID as a string")
 	scalarTime = passthrough("Time", "RFC 3339 timestamp")
 	scalarMap  = passthrough("Map", "arbitrary JSON object")
-	scalarLong = passthrough("Long", "64-bit integer as a JSON number (GraphQL Int is 32-bit)")
+	// Long carries schema `int` (int64): GraphQL Int is 32-bit and cent
+	// totals are not. Real coercion (not passthrough) so inline literals
+	// in queries parse to int64.
+	scalarLong = gql.NewScalar(gql.ScalarConfig{
+		Name: "Long", Description: "64-bit integer as a JSON number (GraphQL Int is 32-bit)",
+		Serialize:  func(v any) any { return v },
+		ParseValue: coerceLong,
+		ParseLiteral: func(valueAST ast.Value) any {
+			if iv, ok := valueAST.(*ast.IntValue); ok {
+				if n, err := strconv.ParseInt(iv.Value, 10, 64); err == nil {
+					return n
+				}
+			}
+			return nil
+		},
+	})
 
 	filterOp = gql.NewEnum(gql.EnumConfig{Name: "FilterOp", Values: gql.EnumValueConfigMap{
 		"EQ": {Value: ""}, "NE": {Value: "ne"}, "GT": {Value: "gt"}, "GTE": {Value: "gte"},
@@ -121,6 +161,7 @@ type builder struct {
 	inputs  map[string]gql.Input
 	queries gql.Fields
 	muts    gql.Fields
+	subs    gql.Fields
 }
 
 func (b *builder) service(cli *loom.Client) error {
@@ -132,6 +173,16 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, obj)); err != nil {
+			return err
+		}
+		name := agg.Name
+		if err := b.addSub(lowerFirst(agg.Name)+"Changed", docChanged(cli, obj, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+			state, version, err := cli.Load(ctx, name, ns, id)
+			if err != nil || version == 0 {
+				return nil, err
+			}
+			return toDoc(state, ns, id.String())
+		})); err != nil {
 			return err
 		}
 		for _, def := range agg.Commands {
@@ -191,8 +242,88 @@ func (b *builder) service(cli *loom.Client) error {
 		})); err != nil {
 			return err
 		}
+		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+			state, err := cli.Entity(ctx, entity, ns, id)
+			if err != nil || state == nil {
+				return nil, err
+			}
+			return toDoc(state, ns, id.String())
+		})); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (b *builder) addSub(name string, f *gql.Field) error {
+	if _, dup := b.subs[name]; dup {
+		return fmt.Errorf("graphql: subscription %q defined by two services — rename one side", name)
+	}
+	b.subs[name] = f
+	return nil
+}
+
+// docChanged is the {x}Changed subscription: the current doc immediately
+// (once it exists), then a fresh copy on every change — the same
+// semantics as the services' SSE doc streams, driven by the same log
+// wake-ups. graphql-go re-executes the selection per emitted payload.
+func docChanged(cli *loom.Client, obj *gql.Object, load func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error)) *gql.Field {
+	return &gql.Field{
+		Type: gql.NewNonNull(obj),
+		Args: nsIDArgs(),
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			return p.Source, nil // the payload docSubscribe emitted
+		},
+		Subscribe: func(p gql.ResolveParams) (any, error) {
+			ns, id, err := parseNsID(p)
+			if err != nil {
+				return nil, err
+			}
+			ctx := p.Context
+			out := make(chan any)
+			go func() {
+				defer close(out)
+				wake, cancel := cli.Watch()
+				defer cancel()
+				// poll fallback, mirroring the services' stream loops
+				poll := time.NewTicker(2 * time.Second)
+				defer poll.Stop()
+				var last []byte
+				step := func() bool {
+					doc, err := load(ctx, ns, id)
+					if err != nil || doc == nil {
+						return err == nil // absent row: keep waiting; error: end
+					}
+					raw, err := json.Marshal(doc)
+					if err != nil || bytes.Equal(raw, last) {
+						return err == nil
+					}
+					last = raw
+					select {
+					case out <- any(doc):
+						return true
+					case <-ctx.Done():
+						return false
+					}
+				}
+				if !step() {
+					return
+				}
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-wake:
+					case <-poll.C:
+					}
+					if !step() {
+						return
+					}
+				}
+			}()
+			return out, nil
+		},
+	}
 }
 
 func (b *builder) addQuery(name string, f *gql.Field) error {
@@ -474,6 +605,40 @@ func originFrom(ctx context.Context) string {
 	return s
 }
 
+// Streams exposes the services' watch endpoints (entity/aggregate SSE,
+// resumable via Last-Event-ID) at the gateway, routed by service — the
+// raw-EventSource sibling of the GraphQL subscriptions. Only the
+// read-model watch paths pass through; ops surfaces (events log, stats,
+// console) stay private.
+//
+//	mux.Handle("/streams/", http.StripPrefix("/streams", loomgraphql.Streams(recipientsCli, filingsCli)))
+//	// → GET /streams/{service}/entities/{Name}/{id}/stream?namespace=…
+//	// → GET /streams/{service}/aggregates/{Name}/{id}/stream?namespace=…
+func Streams(services ...*loom.Client) http.Handler {
+	byName := make(map[string]http.Handler, len(services))
+	for _, cli := range services {
+		byName[cli.Registry().Service] = cli.HTTPHandler()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		service, rest, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		h := byName[service]
+		if !ok || h == nil {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		rest = "/" + rest
+		watch := (strings.HasPrefix(rest, "/entities/") || strings.HasPrefix(rest, "/aggregates/")) &&
+			strings.HasSuffix(rest, "/stream")
+		if r.Method != http.MethodGet || !watch {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = rest
+		h.ServeHTTP(w, r2)
+	})
+}
+
 // Files serves file downloads at the gateway, so the services' own HTTP
 // surfaces can stay private: object keys are service-prefixed, and the
 // gateway reaches storage through the owning service's client. Mount it
@@ -529,7 +694,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case http.MethodGet:
-		req.Query = r.URL.Query().Get("query")
+		p := r.URL.Query()
+		req.Query = p.Get("query")
+		req.OperationName = p.Get("operationName")
+		if v := p.Get("variables"); v != "" {
+			_ = json.Unmarshal([]byte(v), &req.Variables)
+		}
 		// a browser landing here gets the playground; ?query= still works
 		// for quick curl checks
 		if req.Query == "" && strings.Contains(r.Header.Get("Accept"), "text/html") {
@@ -542,7 +712,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"errors":[{"message":"POST a query"}]}`, http.StatusMethodNotAllowed)
 		return
 	}
-	result := gql.Do(gql.Params{
+	params := gql.Params{
 		Schema:         h.schema,
 		RequestString:  req.Query,
 		VariableValues: req.Variables,
@@ -550,7 +720,53 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the browser origin rides the context so upload sessions can be
 		// CORS-bound to it
 		Context: context.WithValue(r.Context(), originKey{}, r.Header.Get("Origin")),
-	})
+	}
+	// subscriptions ride SSE on this same endpoint (graphql-sse shape:
+	// `next` events carrying execution results, `complete` at the end) —
+	// browser-native EventSource, no websocket stack
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		h.serveSSE(w, r, params)
+		return
+	}
+	result := gql.Do(params)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (h *handler) serveSSE(w http.ResponseWriter, r *http.Request, params gql.Params) {
+	f, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"errors":[{"message":"streaming unsupported"}]}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	f.Flush()
+
+	results := gql.Subscribe(params)
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": ping\n\n")
+			f.Flush()
+		case res, more := <-results:
+			if !more {
+				fmt.Fprint(w, "event: complete\ndata:\n\n")
+				f.Flush()
+				return
+			}
+			raw, err := json.Marshal(res)
+			if err != nil {
+				raw = []byte(`{"errors":[{"message":"unencodable result"}]}`)
+			}
+			fmt.Fprintf(w, "event: next\ndata: %s\n\n", raw)
+			f.Flush()
+		}
+	}
 }

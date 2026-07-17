@@ -19,6 +19,15 @@ import (
 // is the sequence, and EventSource's automatic Last-Event-ID reconnect
 // picks up exactly where it left off.
 
+// Watch registers a wake-up channel signalled whenever this service's
+// log may have advanced — local dispatches and, via LISTEN, other
+// instances'. The signal is a coalesced hint with no payload: reload
+// and diff. cancel unregisters. This is the primitive behind the SSE
+// endpoints and the gateway's subscriptions.
+func (c *Client) Watch() (<-chan struct{}, func()) {
+	return c.watchLog()
+}
+
 // watchLog registers a wake-up channel signalled whenever this service's
 // log may have advanced (local dispatches and, via LISTEN, other
 // instances').

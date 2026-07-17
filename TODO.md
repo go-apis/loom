@@ -1,13 +1,16 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.16.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.17.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
 Design/Data/Events/Issues), GraphQL gateway + playground, loomtest,
 uploads (`file` type + `upload` blocks, BlobStore seam, gblob resumable
-GCS + Watch, DirBlobStore, shred deletes stream files, Long scalar).
+GCS + Watch, DirBlobStore, shred deletes stream files), gateway-only
+public surface (Files + Streams passthrough + {x}Changed subscriptions
+over SSE on /graphql), Long everywhere (schema int emits/serves Long —
+money is int64, decided 2026-07-17).
 
 ## 1. `@table` — typed per-entity tables (the deferred perf milestone)
 
@@ -24,32 +27,7 @@ code for projectionStep, a declarative diff against the live shape (NOT
 AutoMigrate — that lesson is paid for), and the query layer targets real
 columns. Cheaper interim: generated SQL views over the doc table.
 
-## 2. Gateway subscriptions / watches
-
-The SDL fragments declare `Subscription` (entity/aggregate watches); the
-gateway deliberately doesn't serve them — graphql-go's subscription
-support is weak. Options: bridge to the existing SSE endpoints
-(documented status quo), graphql-transport-ws on the gateway backed by
-the same pg LISTEN wake-ups the SSE streams use, or swap executor.
-PRIORITY RAISED: Chris wants services private with the gateway as the
-only public surface (uploads/downloads already comply — mutations +
-graphql.Files). Watches are now the ONLY thing forcing a service
-endpoint public. Cheapest compliant option: an SSE passthrough on the
-gateway (like Files — route by service, stream from the owning client's
-watch loop) without touching GraphQL subscriptions at all.
-
-## 3. `Long` scalar — CONTRACT DECISION, needs Chris
-
-GraphQL `Int` is 32-bit; schema `int` is int64. Cent totals past ~$21M
-overflow. The `Long` scalar itself now EXISTS (uploads introduced it:
-FileRef.size and the SDL emit both use it; the runtime gateway serves
-it), so the remaining decision is only how existing `int` fields adopt
-it: flip all ints? opt-in `int(long)` format? next contract rev?
-Emitter (gen/graphql.go gqlTypeCore), runtime gateway (types.go
-outputType/inputType Int64 case), and OpenAPI (int64 already correct)
-must move together.
-
-## 4. Console topology graph
+## 2. Console topology graph
 
 The Design tab is tabular; the design of record wanted the drawn graph
 (command → event → reaction → command, cross-service consumes). All data
@@ -58,7 +36,7 @@ Self-contained: hand-rolled SVG layered layout in console.html — no
 external libs (the console is dependency-free by rule). M6 adds the
 Performance tab (throughput, lag, fold times) later.
 
-## 5. Upcasters beyond aliases
+## 3. Upcasters beyond aliases
 
 Schema versions exist on events (`@v`) and aliases handle renames;
 payload-shape migration doesn't exist. Shape: schema-declared
@@ -67,14 +45,14 @@ decode path calls when stored schema_version < registry version. Decide
 schema-first vs code-first; decode chokepoints are `decode()` +
 `decodeCommand()`.
 
-## 6. OTel
+## 4. OTel
 
 Spans for Dispatch/UoW, runners, effects, bus publish/consume; metrics
 for the /stats numbers (outbox depth, lag, dead letters, effect states).
 Correlation/causation ids already flow — join them to trace ids. Was a
 day-one objective (#61 comment 3); becomes urgent with real deployments.
 
-## 7. Old-envelope compat codec for gpub
+## 5. Old-envelope compat codec for gpub
 
 `gpub.Codec` seam exists; implement the old eventsourcing Event JSON
 (service/namespace/aggregate_id/type/by/timestamp/data/metadata — no

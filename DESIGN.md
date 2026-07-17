@@ -168,6 +168,21 @@ generated switches, folds from generated assignments.
   gRPC transport can be added from the same registry later if a genuine
   internal-RPC need appears.
 
+## The gateway is the public surface
+
+Services stay on the private network; the gateway serves everything a
+UI needs, federating at the client level (it holds `*loom.Client`s, not
+HTTP proxies): `/graphql` for queries, mutations, and `{x}Changed`
+subscriptions — served over SSE on the same endpoint (`Accept:
+text/event-stream`, graphql-sse-shaped `next`/`complete` events,
+EventSource-compatible GET) via graphql-go's native `Subscribe` and the
+exported `Client.Watch` wake-ups — plus `graphql.Files` for downloads
+and `graphql.Streams` for raw resumable entity/aggregate watches. Only
+watch paths pass through Streams; the ops surfaces (events log, stats,
+console, redrive) never face the internet. GraphQL numbers: schema
+`int` is int64 and emits/serves the `Long` scalar everywhere — money in
+cents must not squeeze through a 32-bit Int (decided 2026-07-17).
+
 ## Uploads: large files without bytes in the domain
 
 Files never enter the log or cross the bus — events carry a `FileRef`

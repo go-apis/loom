@@ -1,0 +1,137 @@
+# Generated from the orders service's .loom schema by loom graphql. DO NOT EDIT.
+
+scalar UUID
+scalar Time
+scalar Map
+scalar Long
+
+input FilterInput {
+  field: String!
+  op: FilterOp!
+  value: String!
+}
+
+enum FilterOp {
+  EQ
+  NE
+  GT
+  GTE
+  LT
+  LTE
+  LIKE
+}
+
+type DispatchResult {
+  status: String!
+}
+
+type FileRef {
+  id: UUID!
+  key: String!
+  name: String
+  contentType: String
+  size: Long!
+  downloadUrl: String!
+}
+
+input FileRefInput {
+  id: UUID!
+  key: String!
+  name: String
+  contentType: String
+  size: Long!
+}
+
+type UploadSession {
+  file: FileRef!
+  url: String!
+  protocol: String!
+}
+
+type OrderItem {
+  priceCents: Long!
+  quantity: Long!
+  sku: String!
+}
+
+input OrderItemInput {
+  priceCents: Long!
+  quantity: Long!
+  sku: String!
+}
+
+type Order {
+  contract: FileRef
+  currency: String
+  customerId: UUID
+  items: [OrderItem!]
+  shippedAt: Time
+  status: String
+  totalCents: Long
+}
+
+type OrderSummary {
+  currency: String
+  customerId: UUID
+  status: String
+  totalCents: Long
+}
+
+input AttachContractInput {
+  aggregateId: UUID!
+  namespace: String!
+  contract: FileRefInput!
+}
+
+input CancelOrderInput {
+  aggregateId: UUID!
+  namespace: String!
+}
+
+input PlaceOrderInput {
+  aggregateId: UUID!
+  namespace: String!
+  currency: String!
+  customerId: UUID!
+  items: [OrderItemInput!]!
+}
+
+input RequestContractInput {
+  aggregateId: UUID!
+  namespace: String!
+  contract: FileRefInput!
+}
+
+input ShipOrderInput {
+  aggregateId: UUID!
+  namespace: String!
+}
+
+input CreateContractUploadInput {
+  namespace: String!
+  id: UUID!
+  name: String
+  contentType: String
+  size: Long!
+}
+
+type Mutation {
+  attachContract(input: AttachContractInput!): DispatchResult!
+  cancelOrder(input: CancelOrderInput!): DispatchResult!
+  createContractUpload(input: CreateContractUploadInput!): UploadSession!
+  placeOrder(input: PlaceOrderInput!): DispatchResult!
+  requestContract(input: RequestContractInput!): DispatchResult!
+  shipOrder(input: ShipOrderInput!): DispatchResult!
+}
+
+type Query {
+  order(namespace: String!, id: UUID!): Order
+  orderSummary(namespace: String!, id: UUID!): OrderSummary
+  orderSummarys(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [OrderSummary!]!
+}
+
+type Subscription {
+  orderChanged(namespace: String!, id: UUID!): Order!
+  orderSummaryChanged(namespace: String!, id: UUID!): OrderSummary!
+}
+

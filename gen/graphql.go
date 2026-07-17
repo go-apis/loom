@@ -184,7 +184,9 @@ func gqlTypeCore(p *schema.Payload, refSuffix string) string {
 			return "String"
 		}
 	case "integer":
-		return "Int"
+		// schema int is int64 — money in cents overflows GraphQL's
+		// 32-bit Int, so every int rides Long
+		return "Long"
 	case "number":
 		return "Float"
 	case "boolean":
