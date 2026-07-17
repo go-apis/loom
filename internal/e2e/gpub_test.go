@@ -39,7 +39,7 @@ func TestPubSubBus(t *testing.T) {
 		return b
 	}
 	// each service holds its own client, like separate deployments
-	ordersCli, err := loom.New(loom.Config{DB: pool, Bus: newBus(), Registry: orders.NewRegistry()})
+	ordersCli, err := loom.New(loom.Config{DB: pool, Bus: newBus(), Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}

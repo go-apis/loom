@@ -93,6 +93,7 @@ var (
 	scalarUUID = passthrough("UUID", "UUID as a string")
 	scalarTime = passthrough("Time", "RFC 3339 timestamp")
 	scalarMap  = passthrough("Map", "arbitrary JSON object")
+	scalarLong = passthrough("Long", "64-bit integer as a JSON number (GraphQL Int is 32-bit)")
 
 	filterOp = gql.NewEnum(gql.EnumConfig{Name: "FilterOp", Values: gql.EnumValueConfigMap{
 		"EQ": {Value: ""}, "NE": {Value: "ne"}, "GT": {Value: "gt"}, "GTE": {Value: "gte"},
@@ -158,6 +159,11 @@ func (b *builder) service(cli *loom.Client) error {
 			if err := b.mutation(cli, def.Name, def.New); err != nil {
 				return err
 			}
+		}
+	}
+	for _, u := range reg.Uploads {
+		if err := b.uploadMutation(cli, u); err != nil {
+			return err
 		}
 	}
 	seen := map[string]bool{}
@@ -382,6 +388,120 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 	return nil
 }
 
+// uploadMutation serves create{Name}Upload: open a resumable session on
+// the owning service (which dispatches the upload's `on started` command)
+// and hand the URL back for the browser to PUT chunks directly.
+func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
+	field := "create" + u.Name + "Upload"
+	if _, dup := b.muts[field]; dup {
+		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
+	}
+	input := gql.NewInputObject(gql.InputObjectConfig{Name: "Create" + u.Name + "UploadInput", Fields: gql.InputObjectConfigFieldMap{
+		"namespace":   {Type: gql.NewNonNull(gql.String)},
+		"id":          {Type: gql.NewNonNull(scalarUUID)},
+		"name":        {Type: gql.String},
+		"contentType": {Type: gql.String},
+		"size":        {Type: gql.NewNonNull(scalarLong)},
+	}})
+	session, err := b.uploadSession()
+	if err != nil {
+		return err
+	}
+	upload := u.Name
+	b.muts[field] = &gql.Field{
+		Type: gql.NewNonNull(session),
+		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			args, _ := p.Args["input"].(map[string]any)
+			id, err := uuid.Parse(fmt.Sprint(args["id"]))
+			if err != nil {
+				return nil, fmt.Errorf("bad id %q", args["id"])
+			}
+			req := loom.UploadRequest{
+				Upload:    upload,
+				Namespace: fmt.Sprint(args["namespace"]),
+				StreamID:  id,
+				Origin:    originFrom(p.Context),
+			}
+			req.Name, _ = args["name"].(string)
+			req.ContentType, _ = args["contentType"].(string)
+			req.Size = asInt64(args["size"])
+			up, err := cli.CreateUpload(p.Context, req)
+			if err != nil {
+				return nil, err
+			}
+			return toDoc(up, "", "")
+		},
+	}
+	return nil
+}
+
+// uploadSession lazily builds the shared UploadSession result type.
+func (b *builder) uploadSession() (*gql.Object, error) {
+	if e, ok := b.types["UploadSession"]; ok {
+		return e.obj, nil
+	}
+	ref, err := b.fileRefObject()
+	if err != nil {
+		return nil, err
+	}
+	obj := gql.NewObject(gql.ObjectConfig{Name: "UploadSession", Fields: gql.Fields{
+		"file":     {Type: gql.NewNonNull(ref), Resolve: mapField("file")},
+		"url":      {Type: gql.NewNonNull(gql.String), Resolve: mapField("url")},
+		"protocol": {Type: gql.NewNonNull(gql.String), Resolve: mapField("protocol")},
+	}})
+	b.types["UploadSession"] = &typeEntry{obj: obj, fields: []string{"file", "protocol", "url"}}
+	return obj, nil
+}
+
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
+type originKey struct{}
+
+func originFrom(ctx context.Context) string {
+	s, _ := ctx.Value(originKey{}).(string)
+	return s
+}
+
+// Files serves file downloads at the gateway, so the services' own HTTP
+// surfaces can stay private: object keys are service-prefixed, and the
+// gateway reaches storage through the owning service's client. Mount it
+// beside the graph — it is the path FileRef.downloadUrl points at:
+//
+//	mux.Handle("/graphql", gateway)
+//	mux.Handle("/files", loomgraphql.Files(recipientsCli, filingsCli))
+func Files(services ...*loom.Client) http.Handler {
+	byName := make(map[string]*loom.Client, len(services))
+	for _, cli := range services {
+		byName[cli.Registry().Service] = cli
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"GET only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		key := r.URL.Query().Get("key")
+		service, _, ok := strings.Cut(key, "/")
+		cli := byName[service]
+		if !ok || cli == nil {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		cli.ServeFile(w, r, key)
+	})
+}
+
 func lowerFirst(s string) string {
 	if s == "" {
 		return s
@@ -427,7 +547,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RequestString:  req.Query,
 		VariableValues: req.Variables,
 		OperationName:  req.OperationName,
-		Context:        r.Context(),
+		// the browser origin rides the context so upload sessions can be
+		// CORS-bound to it
+		Context: context.WithValue(r.Context(), originKey{}, r.Header.Get("Origin")),
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)

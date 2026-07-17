@@ -50,3 +50,17 @@ func (h *Order) CancelOrder(ctx context.Context, state *loomgen.Order, cmd *loom
 	}
 	return []loom.DomainEvent{&loomgen.OrderCancelled{Status: "cancelled"}}, nil
 }
+
+func (h *Order) RequestContract(ctx context.Context, state *loomgen.Order, cmd *loomgen.RequestContract) ([]loom.DomainEvent, error) {
+	if state.Status == "" {
+		return nil, fmt.Errorf("no such order")
+	}
+	return []loom.DomainEvent{&loomgen.ContractRequested{Requested: cmd.Contract}}, nil
+}
+
+func (h *Order) AttachContract(ctx context.Context, state *loomgen.Order, cmd *loomgen.AttachContract) ([]loom.DomainEvent, error) {
+	if state.Contract != nil && state.Contract.ID == cmd.Contract.ID {
+		return nil, nil // finalize redelivery: converge
+	}
+	return []loom.DomainEvent{&loomgen.ContractAttached{Contract: cmd.Contract}}, nil
+}

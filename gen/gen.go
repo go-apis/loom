@@ -304,6 +304,9 @@ func (g *generator) goTypeCore(pl *schema.Payload) string {
 	case "array":
 		return "[]" + g.goType(pl.Items)
 	case "object":
+		if pl.Format == "file" {
+			return "loom.FileRef"
+		}
 		return "map[string]any"
 	default:
 		return "any"
@@ -430,6 +433,12 @@ func loomErrNilEvent(eventType string) error {
 	g.reactorDefs(&b, "Policies", g.s.Policies)
 	g.reactorDefs(&b, "Processes", g.s.Processes)
 
+	if uploads := g.uploadDefs(); len(uploads) > 0 {
+		b.WriteString("\t\tUploads: []*loom.UploadDef{\n")
+		b.WriteString(uploads)
+		b.WriteString("\t\t},\n")
+	}
+
 	b.WriteString("\t\tProjections: []*loom.ProjectionDef{\n")
 	for _, p := range g.s.Projections {
 		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEntity: %q,\n\t\t\t\tEvents: %s,\n", p.Name, p.Entity, stringSlice(eventNames(p)))
@@ -467,6 +476,36 @@ func checkDispatches(reactor, event string, allowed []string, cmds []loom.Comman
 	return nil
 }
 `)
+	return b.String()
+}
+
+// uploadDefs renders the registry entries for every `upload` block; the
+// file-field json names come from the shape Validate enforced.
+func (g *generator) uploadDefs() string {
+	var b strings.Builder
+	emit := func(owner string, commands []*schema.Command, uploads []*schema.Upload) {
+		fileField := func(name string) string {
+			for _, c := range commands {
+				if c.Name == name {
+					return c.FileField()
+				}
+			}
+			return ""
+		}
+		for _, u := range uploads {
+			fmt.Fprintf(&b, "\t\t\t{Name: %q, Owner: %q,", u.Name, owner)
+			if u.OnStarted != "" {
+				fmt.Fprintf(&b, " OnStarted: %q, StartedField: %q,", u.OnStarted, fileField(u.OnStarted))
+			}
+			fmt.Fprintf(&b, " OnUploaded: %q, UploadedField: %q},\n", u.OnUploaded, fileField(u.OnUploaded))
+		}
+	}
+	for _, a := range g.s.Aggregates {
+		emit(a.Name, a.Commands, a.Uploads)
+	}
+	for _, r := range g.s.Records {
+		emit(r.Name, r.Commands, r.Uploads)
+	}
 	return b.String()
 }
 

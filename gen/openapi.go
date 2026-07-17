@@ -36,6 +36,19 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 	components["Error"] = map[string]any{
 		"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}},
 	}
+	if usesFiles(s) {
+		components["FileRef"] = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":           map[string]any{"type": "string", "format": "uuid"},
+				"key":          map[string]any{"type": "string"},
+				"name":         map[string]any{"type": "string"},
+				"content_type": map[string]any{"type": "string"},
+				"size":         map[string]any{"type": "integer", "format": "int64"},
+			},
+			"required": []string{"id", "key", "size"},
+		}
+	}
 
 	paths := map[string]any{}
 	addCommand := func(c *schema.Command) {
@@ -93,6 +106,67 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 		paths["/entities/"+e.Name] = listPath("list"+e.Name+"s", e.Name)
 	}
 
+	if hasUploads(s) {
+		components["Upload"] = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"file": ref("FileRef"),
+				"url":  map[string]any{"type": "string", "description": "upload session URL"},
+				"protocol": map[string]any{"type": "string", "enum": []string{"gcs-resumable"},
+					"description": "the chunk dialect to speak at url; switch on this, never assume"},
+			},
+			"required": []string{"file", "url", "protocol"},
+		}
+		var kinds []string
+		for _, a := range s.Aggregates {
+			for _, u := range a.Uploads {
+				kinds = append(kinds, u.Name)
+			}
+		}
+		for _, r := range s.Records {
+			for _, u := range r.Uploads {
+				kinds = append(kinds, u.Name)
+			}
+		}
+		sort.Strings(kinds)
+		paths["/uploads"] = map[string]any{
+			"post": map[string]any{
+				"operationId": "createUpload",
+				"requestBody": map[string]any{"required": true, "content": jsonContent(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"upload":       map[string]any{"type": "string", "enum": kinds},
+						"namespace":    map[string]any{"type": "string"},
+						"id":           map[string]any{"type": "string", "format": "uuid", "description": "target stream id"},
+						"name":         map[string]any{"type": "string"},
+						"content_type": map[string]any{"type": "string"},
+						"size":         map[string]any{"type": "integer", "format": "int64"},
+					},
+					"required": []string{"upload", "namespace", "id", "size"},
+				})},
+				"responses": map[string]any{
+					"201": responseOf("session created", ref("Upload")),
+					"400": responseOf("bad request", ref("Error")),
+					"422": responseOf("rejected by the domain", ref("Error")),
+				},
+			},
+		}
+		paths["/files"] = map[string]any{
+			"get": map[string]any{
+				"operationId": "getFile",
+				"parameters": []any{
+					map[string]any{"name": "key", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
+				},
+				"responses": map[string]any{
+					"200": map[string]any{"description": "file bytes", "content": map[string]any{
+						"application/octet-stream": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
+					}},
+					"404": responseOf("not found", ref("Error")),
+				},
+			},
+		}
+	}
+
 	doc := map[string]any{
 		"openapi": "3.0.3",
 		"info": map[string]any{
@@ -113,6 +187,9 @@ func oaSchema(p *schema.Payload) map[string]any {
 	}
 	if p.Ref != "" {
 		return ref(p.Ref)
+	}
+	if p.IsFile() {
+		return ref("FileRef")
 	}
 	out := map[string]any{}
 	if p.Type != "" {
@@ -140,6 +217,20 @@ func oaSchema(p *schema.Payload) map[string]any {
 		out["required"] = req
 	}
 	return out
+}
+
+func hasUploads(s *schema.Schema) bool {
+	for _, a := range s.Aggregates {
+		if len(a.Uploads) > 0 {
+			return true
+		}
+	}
+	for _, r := range s.Records {
+		if len(r.Uploads) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func ref(name string) map[string]any {

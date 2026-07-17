@@ -1,11 +1,13 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.15.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.16.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
-Design/Data/Events/Issues), GraphQL gateway + playground, loomtest.
+Design/Data/Events/Issues), GraphQL gateway + playground, loomtest,
+uploads (`file` type + `upload` blocks, BlobStore seam, gblob resumable
+GCS + Watch, DirBlobStore, shred deletes stream files, Long scalar).
 
 ## 1. `@table` — typed per-entity tables (the deferred perf milestone)
 
@@ -22,22 +24,30 @@ code for projectionStep, a declarative diff against the live shape (NOT
 AutoMigrate — that lesson is paid for), and the query layer targets real
 columns. Cheaper interim: generated SQL views over the doc table.
 
-## 2. Gateway subscriptions
+## 2. Gateway subscriptions / watches
 
 The SDL fragments declare `Subscription` (entity/aggregate watches); the
 gateway deliberately doesn't serve them — graphql-go's subscription
 support is weak. Options: bridge to the existing SSE endpoints
 (documented status quo), graphql-transport-ws on the gateway backed by
 the same pg LISTEN wake-ups the SSE streams use, or swap executor.
-Decide when a UI actually wants live queries.
+PRIORITY RAISED: Chris wants services private with the gateway as the
+only public surface (uploads/downloads already comply — mutations +
+graphql.Files). Watches are now the ONLY thing forcing a service
+endpoint public. Cheapest compliant option: an SSE passthrough on the
+gateway (like Files — route by service, stream from the owning client's
+watch loop) without touching GraphQL subscriptions at all.
 
 ## 3. `Long` scalar — CONTRACT DECISION, needs Chris
 
 GraphQL `Int` is 32-bit; schema `int` is int64. Cent totals past ~$21M
-overflow. Flipping emitted `Int` → custom `Long` changes the contract for
-existing clients — decide deliberately (all ints? opt-in `int(long)`
-format? next contract rev?). Emitter (gen/graphql.go), runtime gateway,
-and OpenAPI (int64 format already correct there) must move together.
+overflow. The `Long` scalar itself now EXISTS (uploads introduced it:
+FileRef.size and the SDL emit both use it; the runtime gateway serves
+it), so the remaining decision is only how existing `int` fields adopt
+it: flip all ints? opt-in `int(long)` format? next contract rev?
+Emitter (gen/graphql.go gqlTypeCore), runtime gateway (types.go
+outputType/inputType Int64 case), and OpenAPI (int64 already correct)
+must move together.
 
 ## 4. Console topology graph
 
@@ -88,11 +98,40 @@ parked in favor of ten99).
 - Gateway: auth hooks? — auth stays deployment middleware by design;
   revisit only if field-level authz becomes real.
 
+## Upload follow-ons (small, when needed)
+
+- `r2blob` (Cloudflare R2, S3-compatible) — Chris is eyeing a move of
+  workers/file storage to Cloudflare. The contract is ready:
+  `UploadSession.protocol` discriminates dialects and `s3-multipart`
+  is reserved. What R2/S3 needs beyond a BlobStore impl: multipart has
+  no single self-authenticating session URL, so the service must sign
+  a presigned URL PER PART and accept a completion call — two new
+  endpoints (`POST /uploads/{id}/parts?n=`, `POST
+  /uploads/{id}/complete` with ETags), plus session state to remember
+  the multipart upload id (a loom_uploads row or object metadata).
+  Finalize signal: R2 event notifications ride Cloudflare Queues (no
+  Pub/Sub) — either a Worker forwards them to an HTTP endpoint on the
+  service (needs an authenticated /uploads/finalize hook) or the
+  completion call doubles as the signal (acceptable: completion is
+  server-side, not client say-so, since the service verifies via Stat
+  before dispatching). UI: one new uploader adapter keyed off
+  `protocol`; Uppy's @uppy/aws-s3 multipart plugin fits.
+
+- Console: render `uploads` from /registry in the Design tab (data
+  already served) and show them in the future topology graph.
+- Signed download URLs on gblob (`GET /files` streams through the
+  service today — fine for docs, wrong for video-sized reads).
+- Upload progress SSE? The client knows its own progress; only needed
+  if other sessions must watch an upload happen.
+
 ## Standing invariants (do not regress)
 
 - No reflection on the dispatch path (boot-time schema building is fine).
 - Stubs are never clobbered; loomgen always regenerates.
 - Nothing is silently dropped: retries → loud parking, effects → in-doubt.
 - Full TINs/@pii never cross the bus; published events reject @pii.
+- File bytes never enter the log or the bus — events carry FileRefs;
+  `on uploaded` fires only from storage's finalize signal, never from
+  the client claiming completion.
 - Console/playground stay embedded and dependency-free.
 - Old lib (go-apis/eventsourcing) is frozen to bugfix-only.

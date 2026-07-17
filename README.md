@@ -180,7 +180,9 @@ GET  /effects?status=running                   the effect journal
 POST /effects/resolve                          settle an in-doubt effect
 GET  /dead_letters                             parked deliveries
 POST /dead_letters/{id}/redrive                re-run one parked delivery
-POST /shred                                    delete a stream's PII key (irreversible)
+POST /uploads                                  open a resumable file-upload session
+GET  /files?key=...                            stream a stored file back
+POST /shred                                    delete a stream's PII key and files (irreversible)
 GET  /stats                                    outbox / dead letters / timers / effects health
 GET  /console                                  the ops console (see below)
 GET  /registry                                 the service as its schema sees it
@@ -188,6 +190,41 @@ GET  /runners                                  checkpoint lag per projection/pro
 GET  /timers                                   pending schedule (overdue flagged)
 GET  /batches                                  recent batches
 ```
+
+## Uploads: large files, chunked, event-sourced
+
+Declare an upload on the aggregate/record that owns the file; its
+lifecycle dispatches your commands, so the domain sees uploads as events
+like everything else:
+
+```
+aggregate Order {
+  state { contract: file? }
+  command AttachContract { contract: file! } -> ContractAttached
+  event ContractAttached { contract: file! }
+  upload Contract {
+    on uploaded -> AttachContract
+  }
+}
+```
+
+`POST /uploads` (or the gateway's `createContractUpload` mutation) opens a
+resumable session and returns a URL the browser PUTs chunks to *directly*
+— file bytes never transit the service, events carry a `FileRef`, and the
+`on uploaded` command fires from storage's finalize signal (GCS → Pub/Sub
+→ `gblob.Watch`), never from the client's say-so. Locally,
+`loom.NewDirBlobStore` speaks the same chunked resumable protocol and
+finalizes synchronously:
+
+```go
+store  := loom.NewDirBlobStore("data/blobs", "http://localhost:8099/blobs") // dev
+// store, _ := gblob.New(ctx, gblob.Config{Bucket: "acme-uploads"})          // prod
+cli, _ := loom.New(loom.Config{DB: pool, Registry: NewRegistry(), Blobs: store})
+mux.Handle("/blobs/", http.StripPrefix("/blobs", store)) // dev store only
+// prod: go store.Watch(ctx, projectID, "loom-uploads-orders", cli.FinalizeUpload)
+```
+
+Shred deletes a stream's files along with its data key.
 
 ## Testing: given/when/then
 
@@ -226,6 +263,7 @@ gateway, _ := loomgraphql.New(loomgraphql.Config{
     }},
 })
 mux.Handle("/graphql", gateway)
+mux.Handle("/files", loomgraphql.Files(recipientsCli, filingsCli)) // FileRef.downloadUrl points here
 ```
 
 Mutations dispatch commands (`placeOrder(input: {...}) { status }`),

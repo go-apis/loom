@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,11 +35,15 @@ import (
 //	POST /effects/resolve               settle an in-doubt effect (body: scope, key, result?)
 //	GET  /dead_letters                  parked deliveries
 //	POST /dead_letters/{id}/redrive     re-run one parked delivery
-//	POST /shred                         delete a stream's @pii data key (body: namespace, id) — irreversible
+//	POST /shred                         delete a stream's @pii data key and files (body: namespace, id) — irreversible
+//	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
+//	GET  /files?key=                    stream a stored file's bytes
 //	GET  /stats                         ops health: outbox, dead letters, timers, effects
 func (c *Client) HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /commands/{name}", c.apiDispatch)
+	mux.HandleFunc("POST /uploads", c.apiCreateUpload)
+	mux.HandleFunc("GET /files", c.apiGetFile)
 	mux.HandleFunc("GET /entities/{name}", c.apiList(c.QueryEntities))
 	mux.HandleFunc("GET /entities/{name}/{id}", c.apiGetEntity)
 	mux.HandleFunc("GET /records/{name}", c.apiList(c.QueryRecords))
@@ -159,6 +164,66 @@ func (c *Client) apiBatchStream(w http.ResponseWriter, r *http.Request) {
 		last = raw
 		return sse.event("", "progress", json.RawMessage(raw))
 	})
+}
+
+func (c *Client) apiCreateUpload(w http.ResponseWriter, r *http.Request) {
+	var req UploadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Origin = r.Header.Get("Origin")
+	ctx := WithMeta(r.Context(), Metadata{
+		CorrelationID: r.Header.Get("X-Correlation-Id"),
+		Actor:         r.Header.Get("X-Actor"),
+	})
+	up, err := c.CreateUpload(ctx, req)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, up)
+}
+
+func (c *Client) apiGetFile(w http.ResponseWriter, r *http.Request) {
+	c.ServeFile(w, r, r.URL.Query().Get("key"))
+}
+
+// ServeFile streams one stored file with its content type, length, and
+// original filename. It backs the service's GET /files and the
+// gateway's — services can stay private; the gateway reaches storage
+// through the same client. A later signed-URL upgrade can redirect from
+// here without changing callers.
+func (c *Client) ServeFile(w http.ResponseWriter, r *http.Request, key string) {
+	if c.blobs == nil || key == "" {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	info, err := c.blobs.Stat(r.Context(), key)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if info == nil {
+		apiError(w, http.StatusNotFound, "not found")
+		return
+	}
+	body, err := c.blobs.Open(r.Context(), key)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer body.Close()
+	if info.ContentType != "" {
+		w.Header().Set("Content-Type", info.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if name := info.Metadata[metaName]; name != "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	_, _ = io.Copy(w, body)
 }
 
 func (c *Client) apiDispatch(w http.ResponseWriter, r *http.Request) {

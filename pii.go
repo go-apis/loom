@@ -260,9 +260,16 @@ func (c *Client) decryptEventData(ctx context.Context, namespace string, id uuid
 
 // Shred deletes a stream's data key: every @pii field ever written for it —
 // events, snapshots, read models, records, parked envelopes — becomes
-// permanently unreadable and reads as the zero value from here on. This is
-// the erasure lever for an append-only store; there is no unshred.
+// permanently unreadable and reads as the zero value from here on. Uploaded
+// files live outside the key's reach, so they are deleted outright (the
+// stream prefix scopes them). This is the erasure lever for an append-only
+// store; there is no unshred.
 func (c *Client) Shred(ctx context.Context, namespace string, id uuid.UUID) error {
+	if c.blobs != nil {
+		if err := c.blobs.DeletePrefix(ctx, c.shredPrefix(namespace, id)); err != nil {
+			return fmt.Errorf("loom: shred %s/%s files: %w", namespace, id, err)
+		}
+	}
 	if _, err := c.db.Exec(ctx, `
 		DELETE FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
 		c.reg.Service, namespace, id); err != nil {

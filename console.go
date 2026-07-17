@@ -28,14 +28,22 @@ func (c *Client) apiConsole(w http.ResponseWriter, r *http.Request) {
 // --- /registry: the Design tab's data ---
 
 type registryDoc struct {
-	Service     string          `json:"service"`
-	Namespaces  []string        `json:"namespaces"`
-	Aggregates  []registryAgg   `json:"aggregates"`
-	Records     []registryAgg   `json:"records"`
-	Events      []registryEvent `json:"events"`
-	Policies    []registryReact `json:"policies"`
-	Processes   []registryReact `json:"processes"`
-	Projections []registryProj  `json:"projections"`
+	Service     string           `json:"service"`
+	Namespaces  []string         `json:"namespaces"`
+	Aggregates  []registryAgg    `json:"aggregates"`
+	Records     []registryAgg    `json:"records"`
+	Events      []registryEvent  `json:"events"`
+	Policies    []registryReact  `json:"policies"`
+	Processes   []registryReact  `json:"processes"`
+	Projections []registryProj   `json:"projections"`
+	Uploads     []registryUpload `json:"uploads,omitempty"`
+}
+
+type registryUpload struct {
+	Name       string `json:"name"`
+	Owner      string `json:"owner"`
+	OnStarted  string `json:"on_started,omitempty"`
+	OnUploaded string `json:"on_uploaded"`
 }
 
 type registryAgg struct {
@@ -127,6 +135,9 @@ func (c *Client) apiRegistry(w http.ResponseWriter, r *http.Request) {
 	doc.Processes = react(c.reg.Processes)
 	for _, p := range c.reg.Projections {
 		doc.Projections = append(doc.Projections, registryProj{Name: p.Name, Entity: p.Entity, Events: p.Events, PII: p.PII})
+	}
+	for _, u := range c.reg.Uploads {
+		doc.Uploads = append(doc.Uploads, registryUpload{Name: u.Name, Owner: u.Owner, OnStarted: u.OnStarted, OnUploaded: u.OnUploaded})
 	}
 	writeJSON(w, http.StatusOK, doc)
 }

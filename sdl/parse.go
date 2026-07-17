@@ -174,6 +174,12 @@ func (p *parser) aggregate() error {
 			if _, err := p.event(); err != nil {
 				return err
 			}
+		case "upload":
+			up, err := p.upload()
+			if err != nil {
+				return err
+			}
+			agg.Uploads = append(agg.Uploads, up)
 		default:
 			return p.errf(t, "unexpected %q in aggregate %s", t.text, name)
 		}
@@ -214,12 +220,63 @@ func (p *parser) record() error {
 			if _, err := p.event(); err != nil {
 				return err
 			}
+		case "upload":
+			up, err := p.upload()
+			if err != nil {
+				return err
+			}
+			rec.Uploads = append(rec.Uploads, up)
 		default:
 			return p.errf(t, "unexpected %q in record %s", t.text, name)
 		}
 	}
 	p.out.Records = append(p.out.Records, rec)
 	return nil
+}
+
+// upload parses a resumable-upload declaration; the hooks dispatch the
+// enclosing aggregate/record's commands:
+//
+//	upload W9 {
+//	  on started -> RequestW9
+//	  on uploaded -> AttachW9
+//	}
+func (p *parser) upload() (*schema.Upload, error) {
+	p.next()
+	name, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	up := &schema.Upload{Name: name}
+	if err := p.expect("{"); err != nil {
+		return nil, err
+	}
+	for !p.accept("}") {
+		if err := p.expect("on"); err != nil {
+			return nil, err
+		}
+		t := p.peek()
+		hook, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect("->"); err != nil {
+			return nil, err
+		}
+		cmd, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		switch hook {
+		case "started":
+			up.OnStarted = cmd
+		case "uploaded":
+			up.OnUploaded = cmd
+		default:
+			return nil, p.errf(t, "upload %s: unknown hook %q (started, uploaded)", name, hook)
+		}
+	}
+	return up, nil
 }
 
 func (p *parser) command() (*schema.Command, error) {
@@ -550,6 +607,8 @@ func fieldTypeNamed(name, format string) *schema.Payload {
 		return &schema.Payload{Type: "string", Format: "date-time"}
 	case "bytes":
 		return &schema.Payload{Type: "string", Format: "byte"}
+	case "file":
+		return &schema.Payload{Type: "object", Format: "file"}
 	case "any":
 		return &schema.Payload{}
 	case "map":

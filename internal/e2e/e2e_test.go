@@ -39,7 +39,7 @@ func TestOrderBillingLoop(t *testing.T) {
 	pool := testDB(t, ctx)
 	bus := loom.NewMemoryBus()
 
-	ordersCli, err := loom.New(loom.Config{DB: pool, Bus: bus, Registry: orders.NewRegistry()})
+	ordersCli, err := loom.New(loom.Config{DB: pool, Bus: bus, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestAutoCancelTimer(t *testing.T) {
 	t.Cleanup(func() { orders.AutoCancelAfter = old })
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestProjectionRebuild(t *testing.T) {
 	defer cancel()
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestHTTPAPI(t *testing.T) {
 	defer cancel()
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestSSEStreams(t *testing.T) {
 	defer cancel()
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestBatchDispatch(t *testing.T) {
 	t.Cleanup(func() { orders.AutoCancelAfter = old })
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}

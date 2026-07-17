@@ -18,7 +18,7 @@ func GraphQL(s *schema.Schema) ([]byte, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Generated from the %s service's .loom schema by loom graphql. DO NOT EDIT.\n\n", s.Service)
-	b.WriteString("scalar UUID\nscalar Time\nscalar Map\n\n")
+	b.WriteString("scalar UUID\nscalar Time\nscalar Map\nscalar Long\n\n")
 
 	b.WriteString(`input FilterInput {
   field: String!
@@ -42,6 +42,35 @@ type DispatchResult {
 
 `)
 
+	if usesFiles(s) {
+		// FileRef is what a `file` field holds; UploadSession is what the
+		// upload mutations return. size rides Long: GraphQL Int is 32-bit.
+		b.WriteString(`type FileRef {
+  id: UUID!
+  key: String!
+  name: String
+  contentType: String
+  size: Long!
+  downloadUrl: String!
+}
+
+input FileRefInput {
+  id: UUID!
+  key: String!
+  name: String
+  contentType: String
+  size: Long!
+}
+
+type UploadSession {
+  file: FileRef!
+  url: String!
+  protocol: String!
+}
+
+`)
+	}
+
 	for _, t := range s.Types {
 		gqlType(&b, "type", t.Name, t.Payload)
 		gqlType(&b, "input", t.Name+"Input", t.Payload)
@@ -63,11 +92,19 @@ type DispatchResult {
 			mutations = append(mutations, fmt.Sprintf("  %s(input: %sInput!): DispatchResult!", lowerFirst(c.Name), c.Name))
 		}
 	}
+	addUploads := func(uploads []*schema.Upload) {
+		for _, u := range uploads {
+			fmt.Fprintf(&b, "input Create%sUploadInput {\n  namespace: String!\n  id: UUID!\n  name: String\n  contentType: String\n  size: Long!\n}\n\n", u.Name)
+			mutations = append(mutations, fmt.Sprintf("  create%sUpload(input: Create%sUploadInput!): UploadSession!", u.Name, u.Name))
+		}
+	}
 	for _, a := range s.Aggregates {
 		addCommands(a.Commands)
+		addUploads(a.Uploads)
 	}
 	for _, r := range s.Records {
 		addCommands(r.Commands)
+		addUploads(r.Uploads)
 	}
 
 	var queries, subscriptions []string
@@ -155,10 +192,61 @@ func gqlTypeCore(p *schema.Payload, refSuffix string) string {
 	case "array":
 		return "[" + gqlTypeCore(p.Items, refSuffix) + "!]"
 	case "object":
+		if p.Format == "file" {
+			return "FileRef" + refSuffix
+		}
 		return "Map"
 	default:
 		return "Map"
 	}
+}
+
+// usesFiles reports whether any payload has a `file` field or any
+// aggregate/record declares an upload.
+func usesFiles(s *schema.Schema) bool {
+	var found bool
+	var walk func(pl *schema.Payload)
+	walk = func(pl *schema.Payload) {
+		if pl == nil || found {
+			return
+		}
+		if pl.IsFile() {
+			found = true
+			return
+		}
+		walk(pl.Items)
+		for _, sub := range pl.Properties {
+			walk(sub)
+		}
+	}
+	for _, a := range s.Aggregates {
+		if len(a.Uploads) > 0 {
+			return true
+		}
+		walk(a.State)
+		for _, c := range a.Commands {
+			walk(c.Payload)
+		}
+	}
+	for _, r := range s.Records {
+		if len(r.Uploads) > 0 {
+			return true
+		}
+		walk(r.State)
+		for _, c := range r.Commands {
+			walk(c.Payload)
+		}
+	}
+	for _, e := range s.Entities {
+		walk(e.State)
+	}
+	for _, e := range s.Events {
+		walk(e.Payload)
+	}
+	for _, t := range s.Types {
+		walk(t.Payload)
+	}
+	return found
 }
 
 func gqlFieldName(snake string) string {

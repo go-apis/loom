@@ -8,6 +8,7 @@ aggregate Order @snapshot(5) {
     total_cents: int
     currency: string
     shipped_at: timestamp?
+    contract: file?
   }
 
   command PlaceOrder {
@@ -18,6 +19,14 @@ aggregate Order @snapshot(5) {
 
   command ShipOrder -> OrderShipped
   command CancelOrder -> OrderCancelled
+
+  command RequestContract {
+    contract: file!
+  } -> ContractRequested
+
+  command AttachContract {
+    contract: file!
+  } -> ContractAttached
 
   event OrderPlaced @publish {
     status: string!
@@ -34,6 +43,23 @@ aggregate Order @snapshot(5) {
 
   event OrderCancelled {
     status: string!
+  }
+
+  // a different field name than the state's `contract` on purpose: folds
+  // match by name, and a merely-requested upload must not read as attached
+  event ContractRequested {
+    requested: file!
+  }
+
+  event ContractAttached {
+    contract: file!
+  }
+
+  // signed contracts go straight to blob storage; the domain sees the
+  // lifecycle through the two commands
+  upload Contract {
+    on started -> RequestContract
+    on uploaded -> AttachContract
   }
 }
 

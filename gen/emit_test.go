@@ -37,15 +37,20 @@ func TestOpenAPI(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/commands/PlaceOrder", "/entities/OrderSummary", "/entities/OrderSummary/{id}", "/aggregates/Order/{id}"} {
+	for _, path := range []string{"/commands/PlaceOrder", "/entities/OrderSummary", "/entities/OrderSummary/{id}", "/aggregates/Order/{id}", "/uploads", "/files"} {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing path %s", path)
 		}
 	}
-	for _, s := range []string{"Order", "OrderSummary", "OrderItem", "PlaceOrderCommand"} {
+	for _, s := range []string{"Order", "OrderSummary", "OrderItem", "PlaceOrderCommand", "FileRef", "Upload"} {
 		if doc.Components.Schemas[s] == nil {
 			t.Errorf("missing component schema %s", s)
 		}
+	}
+	// file fields render as FileRef refs
+	if !strings.Contains(string(raw), `"contract": {
+          "$ref": "#/components/schemas/FileRef"`) && !strings.Contains(string(raw), `"$ref": "#/components/schemas/FileRef"`) {
+		t.Errorf("file field did not ref FileRef")
 	}
 }
 
@@ -69,6 +74,14 @@ func TestGraphQL(t *testing.T) {
 		"orderSummaryChanged(namespace: String!, id: UUID!): OrderSummary!",
 		"items: [OrderItemInput!]!",
 		"customerId: UUID!",
+		"scalar Long",
+		"type FileRef {",
+		"downloadUrl: String!",
+		"input FileRefInput {",
+		"type UploadSession {",
+		"protocol: String!",
+		"contract: FileRefInput!",
+		"createContractUpload(input: CreateContractUploadInput!): UploadSession!",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

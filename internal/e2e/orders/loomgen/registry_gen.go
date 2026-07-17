@@ -17,8 +17,10 @@ func loomErrNilEvent(eventType string) error {
 }
 
 type OrderHandlers interface {
+	AttachContract(ctx context.Context, state *Order, cmd *AttachContract) ([]loom.DomainEvent, error)
 	CancelOrder(ctx context.Context, state *Order, cmd *CancelOrder) ([]loom.DomainEvent, error)
 	PlaceOrder(ctx context.Context, state *Order, cmd *PlaceOrder) ([]loom.DomainEvent, error)
+	RequestContract(ctx context.Context, state *Order, cmd *RequestContract) ([]loom.DomainEvent, error)
 	ShipOrder(ctx context.Context, state *Order, cmd *ShipOrder) ([]loom.DomainEvent, error)
 }
 
@@ -51,6 +53,15 @@ func NewRegistry(impl Impl) *loom.Registry {
 				NewState:      func() loom.AggregateState { return &Order{} },
 				Commands: []*loom.CommandDef{
 					{
+						Name:  "AttachContract",
+						New:   func() loom.Command { return &AttachContract{} },
+						Emits: []string{"ContractAttached"},
+						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
+							evts, err := impl.Order.AttachContract(ctx, state.(*Order), cmd.(*AttachContract))
+							return asAny(evts), err
+						},
+					},
+					{
 						Name:  "CancelOrder",
 						New:   func() loom.Command { return &CancelOrder{} },
 						Emits: []string{"OrderCancelled"},
@@ -69,6 +80,15 @@ func NewRegistry(impl Impl) *loom.Registry {
 						},
 					},
 					{
+						Name:  "RequestContract",
+						New:   func() loom.Command { return &RequestContract{} },
+						Emits: []string{"ContractRequested"},
+						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
+							evts, err := impl.Order.RequestContract(ctx, state.(*Order), cmd.(*RequestContract))
+							return asAny(evts), err
+						},
+					},
+					{
 						Name:  "ShipOrder",
 						New:   func() loom.Command { return &ShipOrder{} },
 						Emits: []string{"OrderShipped"},
@@ -82,6 +102,8 @@ func NewRegistry(impl Impl) *loom.Registry {
 		},
 		Records: []*loom.RecordDef{},
 		Events: []*loom.EventDef{
+			{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
+			{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},
 			{Name: "OrderCancelled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderCancelled{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &OrderPlaced{} }},
@@ -144,6 +166,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 					return nil, fmt.Errorf("unroutable event %s", evt.Type)
 				},
 			},
+		},
+		Uploads: []*loom.UploadDef{
+			{Name: "Contract", Owner: "Order", OnStarted: "RequestContract", StartedField: "contract", OnUploaded: "AttachContract", UploadedField: "contract"},
 		},
 		Projections: []*loom.ProjectionDef{
 			{

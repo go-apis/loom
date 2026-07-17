@@ -28,7 +28,7 @@ func TestConsole(t *testing.T) {
 	t.Cleanup(func() { orders.AutoCancelAfter = old })
 
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}

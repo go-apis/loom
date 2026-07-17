@@ -24,6 +24,10 @@ type Config struct {
 	// schema declares any @pii field; see LocalKeys.
 	Keys KeyWrapper
 
+	// Blobs stores uploaded files. Required when the schema declares any
+	// upload; see gblob.New and NewDirBlobStore.
+	Blobs BlobStore
+
 	// ConflictRetries re-runs a Dispatch that lost an optimistic-concurrency
 	// race, against fresh state. Default 3.
 	ConflictRetries int
@@ -42,6 +46,7 @@ type Client struct {
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
 
 	keys  KeyWrapper
+	blobs BlobStore
 	dekMu sync.Mutex
 	deks  map[string][]byte // unwrapped per-stream data keys
 
@@ -64,7 +69,10 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Registry.hasPII() && cfg.Keys == nil {
 		return nil, fmt.Errorf("loom: the schema declares @pii fields — Config.Keys is required (see loom.LocalKeys)")
 	}
-	return &Client{
+	if len(cfg.Registry.Uploads) > 0 && cfg.Blobs == nil {
+		return nil, fmt.Errorf("loom: the schema declares uploads — Config.Blobs is required (see gblob.New, loom.NewDirBlobStore)")
+	}
+	c := &Client{
 		db:         cfg.DB,
 		bus:        cfg.Bus,
 		reg:        cfg.Registry,
@@ -74,9 +82,16 @@ func New(cfg Config) (*Client, error) {
 		batchNudge: make(chan struct{}, 1),
 		watchers:   map[chan struct{}]bool{},
 		keys:       cfg.Keys,
+		blobs:      cfg.Blobs,
 		deks:       map[string][]byte{},
 		retries:    cfg.ConflictRetries,
-	}, nil
+	}
+	// the dev store signals finalized uploads in-process; production
+	// stores are wired to FinalizeUpload in the deployment (gblob.Watch)
+	if n, ok := cfg.Blobs.(UploadNotifier); ok {
+		n.NotifyUploads(c.FinalizeUpload)
+	}
+	return c, nil
 }
 
 func (c *Client) Registry() *Registry { return c.reg }

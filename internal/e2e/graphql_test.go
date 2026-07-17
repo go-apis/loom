@@ -33,7 +33,7 @@ func TestGraphQLGateway(t *testing.T) {
 
 	pool := testDB(t, ctx)
 	bus := loom.NewMemoryBus()
-	ordersCli, err := loom.New(loom.Config{DB: pool, Bus: bus, Registry: orders.NewRegistry()})
+	ordersCli, err := loom.New(loom.Config{DB: pool, Bus: bus, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +152,34 @@ func TestGraphQLGateway(t *testing.T) {
 		t.Fatalf("order query: %+v", data)
 	}
 
+	// upload mutation: session brokered through the graph, FileRef and the
+	// Long-typed size come back
+	data = gql(`mutation($in: CreateContractUploadInput!) {
+		createContractUpload(input: $in) {
+			url
+			protocol
+			file { id key name contentType size downloadUrl }
+		}
+	}`, map[string]any{
+		"in": map[string]any{
+			"namespace": "default", "id": orderID.String(),
+			"name": "contract.pdf", "contentType": "application/pdf", "size": 4096,
+		},
+	})
+	sess, _ := data["createContractUpload"].(map[string]any)
+	file, _ := sess["file"].(map[string]any)
+	if sess["url"] == "" || sess["protocol"] != loom.ProtocolGCSResumable ||
+		file == nil || file["name"] != "contract.pdf" || file["size"] != float64(4096) ||
+		!strings.Contains(file["key"].(string), "orders/default/"+orderID.String()+"/Contract/") ||
+		!strings.HasPrefix(file["downloadUrl"].(string), "/files?key=orders%2Fdefault%2F") {
+		t.Fatalf("createContractUpload: %+v", data)
+	}
+	// `on started` reached the domain as an event
+	waitFor(t, ctx, "contract requested", func() bool {
+		_, version, err := ordersCli.Load(ctx, "Order", "default", orderID)
+		return err == nil && version >= 3
+	})
+
 	// introspection works (clients and IDEs depend on it)
 	data = gql(`{ __schema { queryType { name } } }`, nil)
 	if data["__schema"].(map[string]any)["queryType"].(map[string]any)["name"] != "Query" {
@@ -170,7 +198,7 @@ func TestGraphQLPlayground(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry()})
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
 	if err != nil {
 		t.Fatal(err)
 	}

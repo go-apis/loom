@@ -9,11 +9,12 @@ covers what's implemented and the decisions embedded in the code.
 schema      := "service" IDENT decl*
 decl        := aggregate | record | entity | event | consume | policy
              | process | projection | type
-aggregate   := "aggregate" IDENT directives? "{" (state | command | event)* "}"
-record      := "record" IDENT "{" (state | command | event)* "}"
+aggregate   := "aggregate" IDENT directives? "{" (state | command | event | upload)* "}"
+record      := "record" IDENT "{" (state | command | event | upload)* "}"
 state       := "state" fields
 command     := "command" IDENT fields? "->" identList
 event       := "event" IDENT directives? fields?
+upload      := "upload" IDENT "{" ("on" ("started"|"uploaded") "->" IDENT)* "}"
 consume     := "consume" IDENT "." IDENT fields?
 policy      := "policy" IDENT "{" on* "}"
 process     := "process" IDENT "{" (on | effect)* "}"
@@ -25,7 +26,7 @@ type        := "type" IDENT fields
 entity      := "entity" IDENT fields
 fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
-builtin     := string int float bool uuid timestamp bytes any map
+builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
 ```
 
@@ -48,6 +49,10 @@ Rules enforced at parse/validate time:
   events cross the bus in plaintext (keep PII on a private event — the
   ten99 private/published pair pattern), foreign events belong to another
   service's keys, and named types would smuggle PII anywhere
+- an `upload` needs an `on uploaded` command; both lifecycle commands must
+  belong to the enclosing aggregate/record and carry exactly one required
+  `file` field (loom fills it); upload names are service-unique — they
+  become API surface (`create{Name}Upload`)
 
 ## Generated code
 
@@ -162,6 +167,64 @@ generated switches, folds from generated assignments.
   (`listenLoop`), which also makes runners multi-instance-responsive. A
   gRPC transport can be added from the same registry later if a genuine
   internal-RPC need appears.
+
+## Uploads: large files without bytes in the domain
+
+Files never enter the log or cross the bus — events carry a `FileRef`
+(id, key, name, content type, size), bytes live behind the `BlobStore`
+seam (gblob on GCS, `DirBlobStore` locally — same chunked-PUT/308
+resumable protocol, so upload client code is identical in dev). The
+runtime brokers the session: `POST /uploads` (or the gateway's
+`create{Name}Upload` mutation) opens a resumable session server-side
+and returns the session URL; the browser PUTs chunks straight to
+storage. Zero file bytes transit the service — which also sidesteps
+Cloud Run's request-size ceiling.
+
+The lifecycle is domain-visible by declaration, not convention:
+
+```
+upload Contract {
+  on started  -> RequestContract   // optional: session opened
+  on uploaded -> AttachContract    // object finalized and verified
+}
+```
+
+`on uploaded` is never driven by the client claiming completion: it
+fires from storage's own finalize signal (GCS Object Finalize →
+Pub/Sub → `gblob.Watch` → `FinalizeUpload`; the dev store calls it
+synchronously on the last chunk). FinalizeUpload Stats the object and
+builds the FileRef from what storage actually holds, then dispatches;
+deliveries are at-least-once, dedup'd on the object key in
+`loom_dedup` like foreign events. Fold caveat worth knowing: folds
+merge by field name, so give the `started` event a different field
+name than the state's — a merely-requested file must not read as
+attached.
+
+Object keys are stream-prefixed (`service/namespace/streamID/upload/
+fileID`), which is Shred's lever: shredding a stream deletes its
+objects outright alongside its data key (bytes are outside the DEK's
+reach, so deletion, not crypto-shred). A GCS lifecycle rule on
+incomplete sessions cleans up abandoned uploads; `@pii` on a `file`
+field seals the *reference* at rest like any other field.
+
+The one place the provider shows through is the chunk dialect the
+browser speaks at the session URL, so `UploadSession` carries a
+`protocol` discriminator (`gcs-resumable` today; `s3-multipart`
+reserved for S3/R2). Clients switch on it — never assume the dialect —
+so adding a Cloudflare R2 or S3 store later is additive: new store
+package + new client adapter, no contract break.
+
+Downloads keep the services private: `FileRef.downloadUrl` points at
+the gateway's `graphql.Files` handler, which routes by the key's
+service prefix and streams through the owning client — the gateway
+federates at the client level, so no service HTTP surface is involved.
+The per-service `GET /files` remains for internal/ops use. A signed-URL
+upgrade later changes what ServeFile does (redirect instead of stream),
+not who calls it.
+
+GraphQL note: `FileRef.size` rides a `Long` scalar — GraphQL `Int` is
+32-bit and files are not. Long now exists in the SDL contract and the
+runtime gateway for future opt-in use by `int` fields.
 
 ## The console (M2)
 

@@ -18,9 +18,18 @@ aggregate Order @snapshot(5) {
   command PlaceOrder {
     items: [OrderItem]!
   } -> OrderPlaced
+  command AttachContract {
+    contract: file!
+  } -> ContractAttached
   event OrderPlaced @publish @v(2) {
     status: string!
     items: [OrderItem]!
+  }
+  event ContractAttached {
+    contract: file!
+  }
+  upload Contract {
+    on uploaded -> AttachContract
   }
 }
 
@@ -105,6 +114,12 @@ func TestParse(t *testing.T) {
 	// the effect
 	if _, c := s.FindRecordCommand("AdjustLedger"); c == nil || len(c.Emits) != 0 {
 		t.Fatalf("record command emit rules misparsed")
+	}
+	if ups := s.Aggregates[0].Uploads; len(ups) != 1 || ups[0].Name != "Contract" || ups[0].OnUploaded != "AttachContract" || ups[0].OnStarted != "" {
+		t.Fatalf("upload misparsed: %+v", s.Aggregates[0].Uploads)
+	}
+	if _, c := s.FindCommand("AttachContract"); c == nil || c.FileField() != "contract" {
+		t.Fatalf("file field misparsed")
 	}
 }
 
@@ -194,6 +209,52 @@ aggregate A {
 type T { tin: string @pii }
 `,
 			wantErr: "only valid on commands, local unpublished events",
+		},
+		"upload without uploaded hook": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C { doc: file! } -> E
+  event E { doc: file! }
+  upload Doc {
+    on started -> C
+  }
+}
+`,
+			wantErr: "no `on uploaded` command",
+		},
+		"upload command without file field": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+  upload Doc {
+    on uploaded -> C
+  }
+}
+`,
+			wantErr: "exactly one payload field, required and typed file",
+		},
+		"upload command on another owner": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C { doc: file! } -> E
+  event E { doc: file! }
+}
+aggregate B {
+  state { x: string }
+  command D { doc: file! } -> E
+  upload Doc {
+    on uploaded -> C
+  }
+}
+`,
+			wantErr: "not a command of B",
 		},
 		"duplicate effect": {
 			src: `

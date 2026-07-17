@@ -129,6 +129,7 @@ type Registry struct {
 	Policies    []*ReactorDef
 	Processes   []*ReactorDef
 	Projections []*ProjectionDef
+	Uploads     []*UploadDef
 }
 
 type AggregateDef struct {

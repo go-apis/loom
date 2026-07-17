@@ -21,6 +21,18 @@ type OrderItem struct {
 	Sku        string `json:"sku"`
 }
 
+type ContractAttached struct {
+	Contract loom.FileRef `json:"contract"`
+}
+
+func (*ContractAttached) LoomEvent() string { return "ContractAttached" }
+
+type ContractRequested struct {
+	Requested loom.FileRef `json:"requested"`
+}
+
+func (*ContractRequested) LoomEvent() string { return "ContractRequested" }
+
 type InvoicePaid struct {
 	PaidAt time.Time `json:"paid_at"`
 }
@@ -50,6 +62,14 @@ type OrderShipped struct {
 
 func (*OrderShipped) LoomEvent() string { return "OrderShipped" }
 
+type AttachContract struct {
+	loom.CommandBase
+
+	Contract loom.FileRef `json:"contract"`
+}
+
+func (*AttachContract) LoomCommand() string { return "AttachContract" }
+
 type CancelOrder struct {
 	loom.CommandBase
 }
@@ -66,6 +86,14 @@ type PlaceOrder struct {
 
 func (*PlaceOrder) LoomCommand() string { return "PlaceOrder" }
 
+type RequestContract struct {
+	loom.CommandBase
+
+	Contract loom.FileRef `json:"contract"`
+}
+
+func (*RequestContract) LoomCommand() string { return "RequestContract" }
+
 type ShipOrder struct {
 	loom.CommandBase
 }
@@ -73,16 +101,22 @@ type ShipOrder struct {
 func (*ShipOrder) LoomCommand() string { return "ShipOrder" }
 
 type Order struct {
-	Currency   string      `json:"currency"`
-	CustomerId uuid.UUID   `json:"customer_id"`
-	Items      []OrderItem `json:"items"`
-	ShippedAt  *time.Time  `json:"shipped_at"`
-	Status     string      `json:"status"`
-	TotalCents int64       `json:"total_cents"`
+	Contract   *loom.FileRef `json:"contract"`
+	Currency   string        `json:"currency"`
+	CustomerId uuid.UUID     `json:"customer_id"`
+	Items      []OrderItem   `json:"items"`
+	ShippedAt  *time.Time    `json:"shipped_at"`
+	Status     string        `json:"status"`
+	TotalCents int64         `json:"total_cents"`
 }
 
 func (s *Order) Fold(eventType string, data any) error {
 	switch e := data.(type) {
+	case *ContractAttached:
+		vContract := e.Contract
+		s.Contract = &vContract
+	case *ContractRequested:
+		_ = e // no shared fields
 	case *OrderCancelled:
 		s.Status = e.Status
 	case *OrderPlaced:

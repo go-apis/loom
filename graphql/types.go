@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ var (
 	uuidType    = reflect.TypeOf(uuid.UUID{})
 	timeType    = reflect.TypeOf(time.Time{})
 	cmdBaseType = reflect.TypeOf(loom.CommandBase{})
+	fileRefType = reflect.TypeOf(loom.FileRef{})
 )
 
 type fieldInfo struct {
@@ -129,6 +131,8 @@ func (b *builder) outputType(t reflect.Type) (gql.Output, error) {
 		return scalarUUID, nil
 	case t == timeType:
 		return scalarTime, nil
+	case t == fileRefType:
+		return b.fileRefObject()
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -188,6 +192,57 @@ func (b *builder) nestedObject(t reflect.Type) (*gql.Object, error) {
 	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields})
 	b.types[name] = &typeEntry{obj: obj, fields: sig}
 	return obj, nil
+}
+
+// fileRefObject builds (once) the FileRef type `file` schema fields
+// resolve to. It is hand-shaped rather than reflected so size rides the
+// Long scalar — GraphQL Int is 32-bit and files are not.
+func (b *builder) fileRefObject() (*gql.Object, error) {
+	if e, ok := b.types["FileRef"]; ok {
+		return e.obj, nil
+	}
+	obj := gql.NewObject(gql.ObjectConfig{Name: "FileRef", Fields: gql.Fields{
+		"id":          {Type: gql.NewNonNull(scalarUUID), Resolve: mapField("id")},
+		"key":         {Type: gql.NewNonNull(gql.String), Resolve: mapField("key")},
+		"name":        {Type: gql.String, Resolve: mapField("name")},
+		"contentType": {Type: gql.String, Resolve: mapField("content_type")},
+		"size":        {Type: gql.NewNonNull(scalarLong), Resolve: mapField("size")},
+		// where to fetch the bytes, relative to the gateway host (the
+		// Files handler). Opaque to clients — a signed-URL upgrade later
+		// changes what this returns, not who calls it.
+		"downloadUrl": {Type: gql.NewNonNull(gql.String), Resolve: func(p gql.ResolveParams) (any, error) {
+			src, _ := p.Source.(map[string]any)
+			if src == nil {
+				return nil, nil
+			}
+			key, _ := src["key"].(string)
+			return "/files?key=" + url.QueryEscape(key), nil
+		}},
+	}})
+	b.types["FileRef"] = &typeEntry{obj: obj, fields: []string{"content_type", "download_url", "id", "key", "name", "size"}}
+	return obj, nil
+}
+
+func (b *builder) fileRefInput() (gql.Input, converter, error) {
+	conv := structConv(map[string]fieldConv{
+		"id":          {snake: "id", conv: identity},
+		"key":         {snake: "key", conv: identity},
+		"name":        {snake: "name", conv: identity},
+		"contentType": {snake: "content_type", conv: identity},
+		"size":        {snake: "size", conv: identity},
+	})
+	if existing, ok := b.inputs["FileRefInput"]; ok {
+		return existing, conv, nil
+	}
+	input := gql.NewInputObject(gql.InputObjectConfig{Name: "FileRefInput", Fields: gql.InputObjectConfigFieldMap{
+		"id":          {Type: gql.NewNonNull(scalarUUID)},
+		"key":         {Type: gql.NewNonNull(gql.String)},
+		"name":        {Type: gql.String},
+		"contentType": {Type: gql.String},
+		"size":        {Type: gql.NewNonNull(scalarLong)},
+	}})
+	b.inputs["FileRefInput"] = input
+	return input, conv, nil
 }
 
 // --- inputs ---
@@ -270,6 +325,8 @@ func (b *builder) inputType(t reflect.Type) (gql.Input, converter, error) {
 		return scalarUUID, identity, nil
 	case t == timeType:
 		return scalarTime, identity, nil
+	case t == fileRefType:
+		return b.fileRefInput()
 	}
 	switch t.Kind() {
 	case reflect.String:

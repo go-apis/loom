@@ -28,6 +28,18 @@ type Aggregate struct {
 	Snapshot int        `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
+}
+
+// Upload declares a resumable file upload whose lifecycle dispatches the
+// enclosing aggregate/record's commands: OnStarted (optional) when the
+// session is created, OnUploaded (required) when storage reports the
+// object finalized. Each referenced command must have exactly one
+// payload field, required and typed `file`, which loom fills.
+type Upload struct {
+	Name       string `yaml:"name" json:"name"`
+	OnStarted  string `yaml:"on_started,omitempty" json:"on_started,omitempty"`
+	OnUploaded string `yaml:"on_uploaded" json:"on_uploaded"`
 }
 
 type Command struct {
@@ -53,6 +65,7 @@ type Record struct {
 	Name     string     `yaml:"name" json:"name"`
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
 }
 
 // Entity is a read model maintained by a projection.
@@ -107,6 +120,27 @@ type Payload struct {
 	// (crypto-shreddable). Only valid on top-level fields of local
 	// unpublished events and aggregate/record/entity states.
 	PII bool `yaml:"pii,omitempty" json:"pii,omitempty"`
+}
+
+// IsFile reports whether the payload is the builtin `file` type
+// (loom.FileRef on the wire).
+func (pl *Payload) IsFile() bool {
+	return pl != nil && pl.Type == "object" && pl.Format == "file"
+}
+
+// FileField returns the name of a command payload's single required
+// `file` field, or "" when the shape doesn't match — the shape upload
+// lifecycle commands must have.
+func (c *Command) FileField() string {
+	if c.Payload == nil || len(c.Payload.Properties) != 1 {
+		return ""
+	}
+	for name, p := range c.Payload.Properties {
+		if p.IsFile() && len(c.Payload.Required) == 1 && c.Payload.Required[0] == name {
+			return name
+		}
+	}
+	return ""
 }
 
 // PIIFields lists a payload's @pii field names, sorted.
@@ -182,10 +216,12 @@ func (s *Schema) Sort() {
 	sort.Slice(s.Aggregates, func(i, j int) bool { return s.Aggregates[i].Name < s.Aggregates[j].Name })
 	for _, a := range s.Aggregates {
 		sort.Slice(a.Commands, func(i, j int) bool { return a.Commands[i].Name < a.Commands[j].Name })
+		sort.Slice(a.Uploads, func(i, j int) bool { return a.Uploads[i].Name < a.Uploads[j].Name })
 	}
 	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Name < s.Records[j].Name })
 	for _, r := range s.Records {
 		sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].Name < r.Commands[j].Name })
+		sort.Slice(r.Uploads, func(i, j int) bool { return r.Uploads[i].Name < r.Uploads[j].Name })
 	}
 	sort.Slice(s.Entities, func(i, j int) bool { return s.Entities[i].Name < s.Entities[j].Name })
 	sort.Slice(s.Events, func(i, j int) bool { return s.Events[i].Name < s.Events[j].Name })
@@ -259,6 +295,49 @@ func (s *Schema) Validate() error {
 			}
 		}
 	}
+	// uploads: names are service-unique (they become API surface), and
+	// their lifecycle commands must belong to the enclosing owner with
+	// exactly one required `file` field for loom to fill.
+	uploadNames := map[string]bool{}
+	checkUploads := func(owner string, commands []*Command, uploads []*Upload) {
+		ownCommand := func(name string) *Command {
+			for _, c := range commands {
+				if c.Name == name {
+					return c
+				}
+			}
+			return nil
+		}
+		for _, u := range uploads {
+			if uploadNames[u.Name] {
+				fail("upload %s declared twice — upload names are service-unique", u.Name)
+			}
+			uploadNames[u.Name] = true
+			if u.OnUploaded == "" {
+				fail("upload %s has no `on uploaded` command — an upload nobody records is a schema error", u.Name)
+			}
+			for hook, cmdName := range map[string]string{"started": u.OnStarted, "uploaded": u.OnUploaded} {
+				if cmdName == "" {
+					continue
+				}
+				cmd := ownCommand(cmdName)
+				if cmd == nil {
+					fail("upload %s: `on %s` dispatches %s, which is not a command of %s", u.Name, hook, cmdName, owner)
+					continue
+				}
+				if cmd.FileField() == "" {
+					fail("upload %s: command %s must have exactly one payload field, required and typed file", u.Name, cmdName)
+				}
+			}
+		}
+	}
+	for _, a := range s.Aggregates {
+		checkUploads(a.Name, a.Commands, a.Uploads)
+	}
+	for _, r := range s.Records {
+		checkUploads(r.Name, r.Commands, r.Uploads)
+	}
+
 	for _, p := range s.Policies {
 		if len(p.Effects) > 0 {
 			fail("policy %s declares effects — policies run in the producing transaction; external calls belong in a process", p.Name)
