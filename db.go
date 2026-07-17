@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Storage schema v2. Fixed shape, hand-written SQL, no ORM. The global
@@ -212,6 +213,7 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 			}
 			return err
 		}
+		c.tel.count(ctx, c.tel.appended, 1, attribute.String("loom.event", e.Type))
 	}
 	return nil
 }

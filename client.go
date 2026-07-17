@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type Config struct {
@@ -51,6 +54,7 @@ type Client struct {
 	deks  map[string][]byte // unwrapped per-stream data keys
 
 	tables map[string]*tableSQL // @table entities: precomputed SQL by entity
+	tel    *telemetry
 
 	retries int
 }
@@ -87,8 +91,10 @@ func New(cfg Config) (*Client, error) {
 		blobs:      cfg.Blobs,
 		deks:       map[string][]byte{},
 		tables:     buildTables(cfg.Registry),
+		tel:        newTelemetry(cfg.Registry.Service),
 		retries:    cfg.ConflictRetries,
 	}
+	c.registerGauges()
 	// the dev store signals finalized uploads in-process; production
 	// stores are wired to FinalizeUpload in the deployment (gblob.Watch)
 	if n, ok := cfg.Blobs.(UploadNotifier); ok {
@@ -107,14 +113,27 @@ const maxPolicyDepth = 10
 // events (checked against each command's emit contract), run subscribed
 // policies in the same transaction, write outbox rows for published events,
 // snapshot, commit. Conflicts retry the whole unit against fresh state.
-func (c *Client) Dispatch(ctx context.Context, cmds ...Command) error {
-	var err error
+func (c *Client) Dispatch(ctx context.Context, cmds ...Command) (err error) {
+	names := make([]string, len(cmds))
+	for i, cmd := range cmds {
+		names[i] = cmd.LoomCommand()
+	}
+	attrs := append(metaAttrs(MetaFrom(ctx)), attribute.StringSlice("loom.commands", names))
+	ctx, end := c.tel.span(ctx, "loom.dispatch", attrs...)
+	start := time.Now()
+	defer func() {
+		end(err)
+		c.tel.dispatchDur.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(c.tel.service))
+		c.tel.count(ctx, c.tel.dispatches, 1)
+	}()
+
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		err = c.dispatchOnce(ctx, cmds)
 		var conflict *ConflictError
 		if !errors.As(err, &conflict) {
 			return err
 		}
+		c.tel.count(ctx, c.tel.conflicts, 1)
 		c.log.WarnContext(ctx, "dispatch conflict, retrying", "attempt", attempt+1, "error", err)
 	}
 	return err

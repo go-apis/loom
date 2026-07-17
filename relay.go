@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // The outbox relay is the one design carried over from the old runtime —
@@ -32,6 +33,9 @@ func (c *Client) enqueueOutbox(ctx context.Context, tx pgx.Tx, evt *Event) error
 		Meta:          evt.Meta,
 		Data:          data,
 	}
+	// the dispatch's trace context rides the stored envelope: the relay
+	// publishes after this transaction is long gone
+	injectTrace(ctx, env)
 	raw, err := json.Marshal(env)
 	if err != nil {
 		return err
@@ -134,11 +138,19 @@ func (c *Client) drainBatch(ctx context.Context, limit int) (int, error) {
 	}
 
 	for _, r := range batch {
-		if err := c.bus.Publish(ctx, &r.env); err != nil {
+		// the publish span is a child of the dispatch that enqueued the
+		// row; re-injecting lets the consumer's span join the same trace
+		pubCtx, end := c.tel.span(extractTrace(ctx, &r.env), "loom.publish",
+			attribute.String("loom.event", r.env.Type), attribute.Int64("loom.global_seq", r.env.GlobalSeq))
+		injectTrace(pubCtx, &r.env)
+		err := c.bus.Publish(pubCtx, &r.env)
+		end(err)
+		if err != nil {
 			// stop at the first failure: rows behind it stay unpublished,
 			// preserving insert order for the next drain.
 			return 0, err
 		}
+		c.tel.count(ctx, c.tel.published, 1)
 		if _, err := tx.Exec(ctx, `UPDATE loom_outbox SET published_at = now() WHERE id = $1`, r.id); err != nil {
 			return 0, err
 		}

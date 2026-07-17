@@ -116,6 +116,14 @@ generated switches, folds from generated assignments.
   parking to `loom_dead_letters`. Silent drops are structurally impossible.
 - **Metadata**: correlation ids propagate across dispatches and the bus;
   causation records the triggering event. Both are columns, not folklore.
+- **Observability**: OTel API only (no SDK dependency, no exporters, no
+  config — a no-op until the deployment installs global providers). Spans
+  at every execution seam; W3C trace context rides the envelope's `trace`
+  field so consumers join the producing dispatch's trace across the bus;
+  counters/histograms at the natural code points and DB-observed gauges
+  (outbox depth/age, dead letters, timers, effects, per-runner lag) on
+  the SDK's collection cycle. Correlation/causation ids ride spans as
+  attributes.
 - **Context-injected reads**: every handler/reaction invocation carries
   read access (`loom.Load`/`GetRecord`/`GetEntity` on the ctx), so
   implementations never hold a client and registries wire without the

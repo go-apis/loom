@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Batches are the bulk-dispatch primitive: N commands persisted durably up
@@ -276,6 +277,7 @@ func (c *Client) batchStep(ctx context.Context) (int, error) {
 		if dispatchErr != nil {
 			status, msg, counter = "failed", dispatchErr.Error(), "failed"
 		}
+		c.tel.count(ctx, c.tel.batchItems, 1, attribute.String("loom.status", status))
 		if _, err := c.db.Exec(ctx, fmt.Sprintf(`
 			WITH marked AS (
 				UPDATE loom_batch_items SET status=$4, error=$5, claimed_at=NULL

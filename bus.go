@@ -19,7 +19,10 @@ type Envelope struct {
 	SchemaVersion int             `json:"schema_version"`
 	At            string          `json:"at"`
 	Meta          Metadata        `json:"meta"`
-	Data          json.RawMessage `json:"data"`
+	// Trace carries W3C trace context (traceparent/tracestate) across the
+	// bus, so a consumer's reaction joins the producing dispatch's trace.
+	Trace map[string]string `json:"trace,omitempty"`
+	Data  json.RawMessage   `json:"data"`
 }
 
 func (e *Envelope) OrderingKey() string {

@@ -389,6 +389,36 @@ The SSE id is the global sequence, so EventSource's automatic
 Last-Event-ID reconnect resumes exactly where it left off. Instances wake
 each other through pg LISTEN/NOTIFY.
 
+## Observability
+
+Loom instruments with the OpenTelemetry **API only**: no exporters, no
+config knobs, everything a no-op until the deployment installs SDK
+providers (`otel.SetTracerProvider` / `otel.SetMeterProvider`) — then it
+all lights up.
+
+Spans cover every execution seam: `loom.dispatch` (the unit of work, with
+command names and correlation/causation ids), `loom.publish` (relay →
+bus), `loom.consume` (bus → process, dedup included), projection and
+process steps (only when there's work — idle polls are not traces),
+`loom.timer.fire`, `loom.effect` (outcome: executed / replayed / failed /
+in-doubt), batch items. Trace context rides the envelope (W3C
+`traceparent` in a `trace` field), so a consumer's reaction **joins the
+trace of the dispatch that published the event** — one trace from the
+originating command through the bus to every downstream effect, across
+services. Correlation ids ride every span as attributes, joining the
+domain's own causality to trace ids.
+
+Metrics mirror the `/stats` and `/runners` numbers: counters
+(`loom.dispatch.count`, `.conflicts`, `loom.events.appended`,
+`loom.outbox.published`, `loom.dead_letters.parked`,
+`loom.consume.dedup_hits`, `loom.timers.fired`, `loom.batch.items`,
+`loom.effects.calls`), histograms (`loom.dispatch.duration`,
+`loom.runner.step.duration`), and DB-observed gauges on the SDK's
+collection cycle (`loom.outbox.depth`, `.oldest_age`,
+`loom.dead_letters.depth`, `loom.timers.pending`, `loom.effects.running`,
+`.failed`, and `loom.runner.lag` per runner — the stuck-runner alarm as a
+metric).
+
 ## Storage (schema v2)
 
 Postgres via pgx, hand-written SQL, no ORM. Events carry a global sequence

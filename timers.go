@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Timers are durable scheduled commands: "dispatch this later", written in
@@ -187,7 +188,11 @@ func (c *Client) fireDueTimers(ctx context.Context, limit int) (int, error) {
 	return len(batch), nil
 }
 
-func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, metaRaw []byte) error {
+func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, metaRaw []byte) (retErr error) {
+	ctx, end := c.tel.span(ctx, "loom.timer.fire",
+		attribute.String("loom.timer", key), attribute.String("loom.command", cmdType))
+	defer func() { end(retErr) }()
+	c.tel.count(ctx, c.tel.timersFired, 1)
 	cmdRaw, err := c.openCommand(ctx, cmdType, cmdRaw)
 	if err != nil {
 		return err

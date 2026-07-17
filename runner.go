@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Runners are the async half of the runtime.
@@ -102,7 +104,7 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 // checkpoint reset.
 func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int, error) {
 	runner := "projection:" + p.Name
-	return func(ctx context.Context) (int, error) {
+	return func(ctx context.Context) (n int, retErr error) {
 		tx, err := c.db.Begin(ctx)
 		if err != nil {
 			return 0, err
@@ -127,6 +129,15 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 		if len(events) == 0 {
 			return 0, nil
 		}
+		// span only when there is work: an idle poll is not a trace
+		ctx, end := c.tel.span(ctx, "loom.projection.step",
+			attribute.String("loom.runner", runner), attribute.Int("loom.events", len(events)))
+		start := nowUTC()
+		defer func() {
+			end(retErr)
+			c.tel.stepDur.Record(ctx, nowUTC().Sub(start).Seconds(),
+				metric.WithAttributes(c.tel.service, attribute.String("loom.runner", runner)))
+		}()
 
 		table := c.tables[p.Entity] // @table: typed columns, not the doc store
 		for _, evt := range events {
@@ -240,7 +251,7 @@ func (c *Client) Rebuild(ctx context.Context, projection string) error {
 // event to dead letters and move on — at-least-once, no head-of-line block.
 func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Context) (int, error) {
 	runner := "process:" + p.Name
-	return func(ctx context.Context) (int, error) {
+	return func(ctx context.Context) (n int, retErr error) {
 		seq, err := c.readCheckpoint(ctx, runner)
 		if err != nil {
 			return 0, err
@@ -252,6 +263,14 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 		if len(events) == 0 {
 			return 0, nil
 		}
+		ctx, end := c.tel.span(ctx, "loom.process.step",
+			attribute.String("loom.runner", runner), attribute.Int("loom.events", len(events)))
+		start := nowUTC()
+		defer func() {
+			end(retErr)
+			c.tel.stepDur.Record(ctx, nowUTC().Sub(start).Seconds(),
+				metric.WithAttributes(c.tel.service, attribute.String("loom.runner", runner)))
+		}()
 		for _, evt := range events {
 			if contains(local, evt.Type) {
 				if err := c.reactWithRetry(ctx, p, evt); err != nil {
@@ -306,10 +325,17 @@ func (c *Client) react(ctx context.Context, p *ReactorDef, evt *Event) error {
 // dedup, react with retries, park on exhaustion.
 func (c *Client) subscribeForeign(ctx context.Context, p *ReactorDef, foreign []string) error {
 	group := c.reg.Service + "." + p.Name
-	return c.bus.Subscribe(ctx, group, func(ctx context.Context, env *Envelope) error {
+	return c.bus.Subscribe(ctx, group, func(ctx context.Context, env *Envelope) (retErr error) {
 		if !contains(foreign, env.Type) {
 			return nil // not ours; other services' events share the bus
 		}
+		// join the trace of the dispatch that published this event
+		ctx, end := c.tel.span(extractTrace(ctx, env), "loom.consume",
+			append(metaAttrs(env.Meta),
+				attribute.String("loom.process", p.Name), attribute.String("loom.event", env.Type),
+				attribute.String("loom.source", env.Service), attribute.Int64("loom.global_seq", env.GlobalSeq))...)
+		defer func() { end(retErr) }()
+
 		evt, err := c.eventFromEnvelope(env)
 		if err != nil {
 			c.log.ErrorContext(ctx, "undecodable foreign event", "process", p.Name, "type", env.Type, "error", err)
@@ -322,6 +348,7 @@ func (c *Client) subscribeForeign(ctx context.Context, p *ReactorDef, foreign []
 			return err
 		}
 		if done {
+			c.tel.count(ctx, c.tel.dedupHits, 1, attribute.String("loom.process", p.Name))
 			return nil
 		}
 		if err := c.reactWithRetry(ctx, p, evt); err != nil {
@@ -396,6 +423,7 @@ func (c *Client) park(ctx context.Context, runner string, evt *Event, cause erro
 		raw = []byte(fmt.Sprintf(`{"type":%q}`, evt.Type))
 	}
 	c.log.ErrorContext(ctx, "parking event to dead letters", "runner", runner, "type", evt.Type, "error", cause)
+	c.tel.count(ctx, c.tel.parked, 1, attribute.String("loom.runner", runner))
 	_, err = c.db.Exec(ctx, `
 		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
 		VALUES ($1,$2,$3,$4,$5)`,

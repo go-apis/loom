@@ -1,7 +1,7 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.21.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.22.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
@@ -26,17 +26,15 @@ generated EventUpcasts interface + stub, raw JSON n → n+1 chained in
 decode(); contiguous-coverage validation; strict-when-declared:
 unliftable or newer-than-registry stored versions are loud UpcastErrors,
 no-upcast events keep permissive decode so additive changes stay free;
-events only — commands at rest have no stored version, see Parked).
+events only — commands at rest have no stored version, see Parked),
+OTel (v0.22: API-only instrumentation, no-op without SDK providers —
+spans at every seam incl. loom.effect outcomes; W3C trace context rides
+Envelope.Trace so consumers join the producing dispatch's trace across
+the bus; counters/histograms + DB-observed gauges incl. per-runner lag;
+e2e proves one trace id across dispatch→publish→consume→reaction).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
-## 1. OTel
-
-Spans for Dispatch/UoW, runners, effects, bus publish/consume; metrics
-for the /stats numbers (outbox depth, lag, dead letters, effect states).
-Correlation/causation ids already flow — join them to trace ids. Was a
-day-one objective (#61 comment 3); becomes urgent with real deployments.
-
-## 2. Old-envelope compat codec for gpub
+## 1. Old-envelope compat codec for gpub
 
 `gpub.Codec` seam exists; implement the old eventsourcing Event JSON
 (service/namespace/aggregate_id/type/by/timestamp/data/metadata — no

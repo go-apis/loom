@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Effects are journaled external calls — the outbox's cousin for the
@@ -76,11 +77,25 @@ func Once[T any](ctx context.Context, key string, fn func(context.Context) (T, e
 		return zero, fmt.Errorf("loom: process %s does not declare effect %q — add `effect %s` to its schema block", es.p.Name, key, effectName(key))
 	}
 
+	tel := es.c.tel
+	ctx, end := tel.span(ctx, "loom.effect", attribute.String("loom.effect", effectName(key)))
+	outcome := func(o string, err error) {
+		tel.count(ctx, tel.effects, 1, attribute.String("loom.effect", effectName(key)), attribute.String("loom.outcome", o))
+		end(err)
+	}
+
 	replay, run, err := es.c.claimEffect(ctx, es.scope, key)
 	if err != nil {
+		var doubt *EffectInDoubtError
+		if errors.As(err, &doubt) {
+			outcome("in_doubt", err)
+		} else {
+			end(err)
+		}
 		return zero, err
 	}
 	if !run {
+		outcome("replayed", nil)
 		if err := json.Unmarshal(replay, &zero); err != nil {
 			return zero, fmt.Errorf("loom: effect %s %s: journaled result does not decode: %w", es.scope, key, err)
 		}
@@ -89,6 +104,7 @@ func Once[T any](ctx context.Context, key string, fn func(context.Context) (T, e
 
 	out, err := fn(ctx)
 	if err != nil {
+		defer outcome("failed", err)
 		if serr := es.c.settleEffect(ctx, es.scope, key, nil, err.Error()); serr != nil {
 			return zero, fmt.Errorf("loom: effect %s %s failed (%w) and the journal write also failed: %v", es.scope, key, err, serr)
 		}
@@ -96,13 +112,16 @@ func Once[T any](ctx context.Context, key string, fn func(context.Context) (T, e
 	}
 	raw, err := json.Marshal(out)
 	if err != nil {
+		outcome("executed", err)
 		return zero, fmt.Errorf("loom: effect %s %s: result does not serialize: %w", es.scope, key, err)
 	}
 	// if this write fails the effect stays 'running': in doubt, never
 	// silently re-executed
 	if err := es.c.settleEffect(ctx, es.scope, key, raw, ""); err != nil {
+		outcome("executed", err)
 		return zero, fmt.Errorf("loom: effect %s %s executed but recording the result failed: %w", es.scope, key, err)
 	}
+	outcome("executed", nil)
 	return out, nil
 }
 
