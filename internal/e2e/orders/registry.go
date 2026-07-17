@@ -15,5 +15,6 @@ func NewRegistry() *loom.Registry {
 		ScheduleAutoCancel: &ScheduleAutoCancel{},
 		DropAutoCancel:     &DropAutoCancel{},
 		CustomerSpend:      &CustomerSpend{},
+		Upcasts:            &Upcasts{},
 	})
 }

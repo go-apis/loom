@@ -40,15 +40,26 @@ type CustomerSpendFolds interface {
 	OnOrderPlaced(state *CustomerSpend, evt *loom.Event, data *OrderPlaced) error
 }
 
+// EventUpcasts lifts stored payloads written under older @v versions:
+// raw JSON of version n in, raw JSON of version n+1 out. Hops chain at
+// decode time.
+type EventUpcasts interface {
+	OrderCancelledFromV1(data []byte) ([]byte, error)
+}
+
 type Impl struct {
 	Order              OrderHandlers
 	DropAutoCancel     DropAutoCancelReactions
 	ScheduleAutoCancel ScheduleAutoCancelReactions
 	ShipOnPayment      ShipOnPaymentReactions
 	CustomerSpend      CustomerSpendFolds
+	Upcasts            EventUpcasts
 }
 
 func NewRegistry(impl Impl) *loom.Registry {
+	if impl.Upcasts == nil {
+		panic("loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)")
+	}
 	return &loom.Registry{
 		Service: "orders",
 		Aggregates: []*loom.AggregateDef{
@@ -110,7 +121,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
 			{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},
-			{Name: "OrderCancelled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderCancelled{} }},
+			{Name: "OrderCancelled", SchemaVersion: 2, Publish: false, Service: "", Aliases: nil, Upcasts: map[int]loom.UpcastFunc{1: impl.Upcasts.OrderCancelledFromV1}, New: func() any { return &OrderCancelled{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &OrderPlaced{} }},
 			{Name: "OrderShipped", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderShipped{} }},
 		},
@@ -186,6 +197,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 	"currency" text,
 	"customer_id" uuid,
 	"items" jsonb,
+	"reason" text,
 	"status" text,
 	"total_cents" bigint,
 	updated_at timestamptz NOT NULL DEFAULT now(),
@@ -195,6 +207,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 					{Name: "currency", Type: "text"},
 					{Name: "customer_id", Type: "uuid"},
 					{Name: "items", Type: "jsonb"},
+					{Name: "reason", Type: "text"},
 					{Name: "status", Type: "text"},
 					{Name: "total_cents", Type: "bigint"},
 				},
@@ -204,6 +217,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 						e.Currency,
 						e.CustomerId,
 						loom.JSONValue(e.Items),
+						e.Reason,
 						e.Status,
 						e.TotalCents,
 					}

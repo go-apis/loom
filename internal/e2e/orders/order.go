@@ -48,7 +48,7 @@ func (h *Order) CancelOrder(ctx context.Context, state *loomgen.Order, cmd *loom
 	if state.Status != "placed" {
 		return nil, fmt.Errorf("cannot cancel order in status %q", state.Status)
 	}
-	return []loom.DomainEvent{&loomgen.OrderCancelled{Status: "cancelled"}}, nil
+	return []loom.DomainEvent{&loomgen.OrderCancelled{Status: "cancelled", Reason: "requested"}}, nil
 }
 
 func (h *Order) RequestContract(ctx context.Context, state *loomgen.Order, cmd *loomgen.RequestContract) ([]loom.DomainEvent, error) {

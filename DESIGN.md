@@ -8,7 +8,7 @@ covers what's implemented and the decisions embedded in the code.
 ```
 schema      := "service" IDENT decl*
 decl        := aggregate | record | entity | event | consume | policy
-             | process | projection | type
+             | process | projection | type | upcast
 aggregate   := "aggregate" IDENT directives? "{" (state | command | event | upload)* "}"
 record      := "record" IDENT "{" (state | command | event | upload)* "}"
 state       := "state" fields
@@ -16,6 +16,7 @@ command     := "command" IDENT fields? "->" identList
 event       := "event" IDENT directives? fields?
 upload      := "upload" IDENT "{" ("on" ("started"|"uploaded") "->" IDENT)* "}"
 consume     := "consume" IDENT "." IDENT fields?
+upcast      := "upcast" eventRef "@from" "(" NUM ("," NUM)* ")"
 policy      := "policy" IDENT "{" on* "}"
 process     := "process" IDENT "{" (on | effect)* "}"
 effect      := "effect" IDENT
@@ -50,6 +51,19 @@ Rules enforced at parse/validate time:
   events cross the bus in plaintext (keep PII on a private event — the
   ten99 private/published pair pattern), foreign events belong to another
   service's keys, and named types would smuggle PII anywhere
+- `upcast X @from(n)` declares a hand-written migration hop n → n+1 for
+  stored events behind the current `@v`; hops are code-first (raw JSON in,
+  raw JSON of the next version out, generated `EventUpcasts` interface +
+  once-only stub) and chain at the decode chokepoint, so folds and
+  reactions only ever see the current shape. Coverage must be contiguous
+  up to the current version (a gap would strand older rows). Declaring
+  any upcast turns on strict version handling for that event — an
+  unliftable stored version (below coverage, failing hop, or NEWER than
+  the registry: deploy skew) is a loud `UpcastError`, never a silent
+  zero-value fold; events without upcasts keep the permissive
+  unmarshal-as-is behavior so additive changes stay free. Commands at
+  rest (timers, batch items) have no stored version — command-shape
+  migration is deliberately out of scope
 - an `upload` needs an `on uploaded` command; both lifecycle commands must
   belong to the enclosing aggregate/record and carry exactly one required
   `file` field (loom fills it); upload names are service-unique — they

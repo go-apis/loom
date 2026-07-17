@@ -55,6 +55,12 @@ type Event struct {
 	Publish bool     `yaml:"publish,omitempty" json:"publish,omitempty"`
 	Version int      `yaml:"version,omitempty" json:"version,omitempty"` // schema version, default 1
 	Aliases []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	// Upcasts lists the versions this event can be lifted FROM (`upcast X
+	// @from(n)`): each n names a hand-written hop n → n+1 run at decode
+	// time when a stored row's schema_version is behind. Declaring any
+	// upcast makes version handling strict for this event — undecodable
+	// old versions become loud errors instead of silent zero-value folds.
+	Upcasts []int    `yaml:"upcasts,omitempty" json:"upcasts,omitempty"`
 	Payload *Payload `yaml:"payload,omitempty" json:"payload,omitempty"`
 }
 
@@ -239,6 +245,9 @@ func (s *Schema) Sort() {
 	}
 	sort.Slice(s.Entities, func(i, j int) bool { return s.Entities[i].Name < s.Entities[j].Name })
 	sort.Slice(s.Events, func(i, j int) bool { return s.Events[i].Name < s.Events[j].Name })
+	for _, e := range s.Events {
+		sort.Ints(e.Upcasts)
+	}
 	sort.Slice(s.Policies, func(i, j int) bool { return s.Policies[i].Name < s.Policies[j].Name })
 	sort.Slice(s.Processes, func(i, j int) bool { return s.Processes[i].Name < s.Processes[j].Name })
 	sort.Slice(s.Projections, func(i, j int) bool { return s.Projections[i].Name < s.Projections[j].Name })
@@ -394,6 +403,38 @@ func (s *Schema) Validate() error {
 			}
 		}
 	}
+	// upcast coverage: each hop must sit below the current version, and the
+	// declared hops must run contiguously up to it — a gap would strand
+	// every version below the gap with no path to current.
+	for _, e := range s.Events {
+		if len(e.Upcasts) == 0 {
+			continue
+		}
+		version := e.Version
+		if version == 0 {
+			version = 1
+		}
+		seen := map[int]bool{}
+		lowest := e.Upcasts[0]
+		for _, from := range e.Upcasts {
+			if seen[from] {
+				fail("event %s declares upcast @from(%d) twice", e.Name, from)
+			}
+			seen[from] = true
+			if from < 1 || from >= version {
+				fail("event %s: upcast @from(%d) must name a version below the event's @v(%d)", e.Name, from, version)
+			}
+			if from < lowest {
+				lowest = from
+			}
+		}
+		for v := lowest; v < version; v++ {
+			if !seen[v] {
+				fail("event %s: upcast coverage has a gap — @from(%d) is missing, so versions %d and below cannot reach @v(%d)", e.Name, v, lowest, version)
+			}
+		}
+	}
+
 	// @table entities become real columns: field names must not shadow the
 	// meta columns, and @pii is incompatible (sealed ciphertext in a typed
 	// column defeats both — keep PII entities in the doc store).

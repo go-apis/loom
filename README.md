@@ -160,6 +160,41 @@ and redrives (`POST /dead_letters/{id}/redrive`). At-most-once, with loud
 ambiguity instead of silent duplicates. Undeclared effect keys are runtime
 errors — a typo must not mint a fresh journal identity.
 
+## Event versions and upcasts
+
+The log is append-only, so event shapes are forever — unless you migrate
+on read. `@v(n)` versions an event's schema (stored per row); `@alias`
+handles renames; `upcast` handles shape changes:
+
+```
+event OrderCancelled @v(2) {
+  status: string!
+  reason: string!      // new in v2
+}
+
+upcast OrderCancelled @from(1)
+```
+
+`loom generate` emits an `EventUpcasts` interface and a once-only stub;
+you write the hop — payload JSON of v1 in, payload JSON of v2 out:
+
+```go
+func (u *Upcasts) OrderCancelledFromV1(data []byte) ([]byte, error) {
+    var old struct{ Status string `json:"status"` }
+    if err := json.Unmarshal(data, &old); err != nil { return nil, err }
+    return json.Marshal(map[string]any{"status": old.Status, "reason": "unspecified"})
+}
+```
+
+Hops chain at decode time (v1→v2→v3), so replays, projection catch-up,
+bus deliveries, and redrives all see only the current shape; stored rows
+are never rewritten. Keep hops deterministic — rebuilds run them again.
+Declaring an upcast makes version handling strict for that event: a
+stored version with no path to current (or one newer than the registry —
+deploy skew) is a loud `UpcastError`, never a silent zero-value fold.
+Events without upcasts keep the permissive unmarshal, so purely additive
+changes don't need ceremony.
+
 ## PII: encrypted at rest, shreddable forever
 
 Mark the fields that identify a person and give the client a key wrapper:

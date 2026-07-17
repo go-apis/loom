@@ -40,6 +40,7 @@ type InvoicePaid struct {
 func (*InvoicePaid) LoomEvent() string { return "InvoicePaid" }
 
 type OrderCancelled struct {
+	Reason string `json:"reason"`
 	Status string `json:"status"`
 }
 
@@ -105,6 +106,7 @@ type Order struct {
 	Currency   string        `json:"currency"`
 	CustomerId uuid.UUID     `json:"customer_id"`
 	Items      []OrderItem   `json:"items"`
+	Reason     string        `json:"reason"`
 	ShippedAt  *time.Time    `json:"shipped_at"`
 	Status     string        `json:"status"`
 	TotalCents int64         `json:"total_cents"`
@@ -118,6 +120,7 @@ func (s *Order) Fold(eventType string, data any) error {
 	case *ContractRequested:
 		_ = e // no shared fields
 	case *OrderCancelled:
+		s.Reason = e.Reason
 		s.Status = e.Status
 	case *OrderPlaced:
 		s.Currency = e.Currency
@@ -156,6 +159,7 @@ type OrderSummary struct {
 	Currency   string      `json:"currency"`
 	CustomerId uuid.UUID   `json:"customer_id"`
 	Items      []OrderItem `json:"items"`
+	Reason     string      `json:"reason"`
 	Status     string      `json:"status"`
 	TotalCents int64       `json:"total_cents"`
 }
@@ -163,6 +167,7 @@ type OrderSummary struct {
 func (s *OrderSummary) Fold(eventType string, data any) error {
 	switch e := data.(type) {
 	case *OrderCancelled:
+		s.Reason = e.Reason
 		s.Status = e.Status
 	case *OrderPlaced:
 		s.Currency = e.Currency

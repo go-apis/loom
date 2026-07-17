@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS loom_t_orders_order_summary (
 	"currency" text,
 	"customer_id" uuid,
 	"items" jsonb,
+	"reason" text,
 	"status" text,
 	"total_cents" bigint,
 	updated_at timestamptz NOT NULL DEFAULT now(),

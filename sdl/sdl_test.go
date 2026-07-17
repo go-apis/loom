@@ -84,6 +84,8 @@ consume billing.InvoicePaid {
   paid_at: timestamp
 }
 
+upcast OrderPlaced @from(1)
+
 type OrderItem {
   sku: string!
   quantity: int!
@@ -101,6 +103,9 @@ func TestParse(t *testing.T) {
 	evt := s.FindEvent("OrderPlaced")
 	if evt == nil || !evt.Publish || evt.Version != 2 {
 		t.Fatalf("OrderPlaced misparsed: %+v", evt)
+	}
+	if len(evt.Upcasts) != 1 || evt.Upcasts[0] != 1 {
+		t.Fatalf("upcast misparsed: %+v", evt.Upcasts)
 	}
 	foreign := s.FindEvent("InvoicePaid")
 	if foreign == nil || foreign.Service != "billing" || !foreign.Publish {
@@ -229,6 +234,42 @@ aggregate A {
 type T { tin: string @pii }
 `,
 			wantErr: "only valid on commands, local unpublished events",
+		},
+		"upcast from at or above current version": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E @v(2) { x: string }
+}
+upcast E @from(2)
+`,
+			wantErr: "must name a version below",
+		},
+		"upcast coverage gap": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E @v(3) { x: string }
+}
+upcast E @from(1)
+`,
+			wantErr: "coverage has a gap",
+		},
+		"upcast on unversioned event": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+upcast E @from(1)
+`,
+			wantErr: "must name a version below",
 		},
 		"table field shadows meta column": {
 			src: `

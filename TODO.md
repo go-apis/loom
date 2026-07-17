@@ -1,7 +1,7 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.20.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.21.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
@@ -21,25 +21,22 @@ rejected; non-scalars ride jsonb columns and reject filters loudly),
 console topology graph (v0.20: Design tab draws the flow — hand-rolled
 layered SVG, longest-path layering + barycenter ordering, hover-to-trace,
 foreign/upload edges dashed; uploads table added; tabs deep-link via
-#hash). M6 still owes the Performance tab (throughput, lag, fold times).
+#hash), upcasters (v0.21: `upcast X @from(n)` — code-first hops via
+generated EventUpcasts interface + stub, raw JSON n → n+1 chained in
+decode(); contiguous-coverage validation; strict-when-declared:
+unliftable or newer-than-registry stored versions are loud UpcastErrors,
+no-upcast events keep permissive decode so additive changes stay free;
+events only — commands at rest have no stored version, see Parked).
+M6 still owes the Performance tab (throughput, lag, fold times).
 
-## 1. Upcasters beyond aliases
-
-Schema versions exist on events (`@v`) and aliases handle renames;
-payload-shape migration doesn't exist. Shape: schema-declared
-`upcast EventName @from(1) { ... }`? or generated hook interface the
-decode path calls when stored schema_version < registry version. Decide
-schema-first vs code-first; decode chokepoints are `decode()` +
-`decodeCommand()`.
-
-## 2. OTel
+## 1. OTel
 
 Spans for Dispatch/UoW, runners, effects, bus publish/consume; metrics
 for the /stats numbers (outbox depth, lag, dead letters, effect states).
 Correlation/causation ids already flow — join them to trace ids. Was a
 day-one objective (#61 comment 3); becomes urgent with real deployments.
 
-## 3. Old-envelope compat codec for gpub
+## 2. Old-envelope compat codec for gpub
 
 `gpub.Codec` seam exists; implement the old eventsourcing Event JSON
 (service/namespace/aggregate_id/type/by/timestamp/data/metadata — no
@@ -57,6 +54,10 @@ parked in favor of ten99).
 - Domain/integration event split as a language feature (today: the
   private/published pair convention, e.g. TaxDocRecorded /
   RecipientDocumented in ten99).
+- Command-shape migration: timers/batch items store command JSON with no
+  schema_version column; long-lived timers crossing a shape change rely
+  on additive compatibility today. Needs a version column + a
+  decodeCommand() hook if it ever bites.
 - Foreign-event projections (would collapse ten99's RecipientMirror
   aggregate+process into a plain projection).
 - TypeScript target for the schema (payloads are already JSON Schema).

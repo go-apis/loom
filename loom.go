@@ -223,7 +223,41 @@ type EventDef struct {
 	// PII names payload fields encrypted at rest in the log.
 	PII []string
 	New func() any
+	// Upcasts maps a schema version to the hop that lifts a payload of
+	// that version one version forward (raw JSON in, raw JSON out). decode
+	// chains hops until SchemaVersion. Declaring any upcast makes version
+	// handling strict for this event: a stored version with no path to
+	// current is a loud UpcastError, never a silent zero-value fold.
+	Upcasts map[int]UpcastFunc
 }
+
+// UpcastFunc is one hand-written migration hop: the payload JSON of one
+// schema version in, the payload JSON of the next version out.
+type UpcastFunc func(data []byte) ([]byte, error)
+
+// UpcastError is returned when a stored event cannot be lifted to the
+// registry's current schema version — a missing hop, a failing hop, or a
+// stored version newer than the registry (deploy skew).
+type UpcastError struct {
+	Type   string
+	Stored int // the stored schema_version
+	At     int // the hop that failed or is missing (Stored > current: 0)
+	To     int // the registry's current version
+	Err    error
+}
+
+func (e *UpcastError) Error() string {
+	switch {
+	case e.Err != nil:
+		return fmt.Sprintf("loom: upcast %s v%d→v%d (stored v%d, current v%d): %v", e.Type, e.At, e.At+1, e.Stored, e.To, e.Err)
+	case e.Stored > e.To:
+		return fmt.Sprintf("loom: stored %s is v%d but this registry only knows v%d — deploy skew?", e.Type, e.Stored, e.To)
+	default:
+		return fmt.Sprintf("loom: no upcast lifts %s from v%d (stored v%d, current v%d)", e.Type, e.At, e.Stored, e.To)
+	}
+}
+
+func (e *UpcastError) Unwrap() error { return e.Err }
 
 // ReactorDef backs both policies (in-transaction, local events only) and
 // processes (async, checkpointed on the local log or dedup'd off the bus).

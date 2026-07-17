@@ -455,6 +455,15 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("}\n\n")
 	}
 
+	// upcasts: the hand-written migration hops, one interface service-wide
+	if ups := g.upcastHops(); len(ups) > 0 {
+		b.WriteString("// EventUpcasts lifts stored payloads written under older @v versions:\n// raw JSON of version n in, raw JSON of version n+1 out. Hops chain at\n// decode time.\ntype EventUpcasts interface {\n")
+		for _, u := range ups {
+			fmt.Fprintf(&b, "\t%s(data []byte) ([]byte, error)\n", u.method)
+		}
+		b.WriteString("}\n\n")
+	}
+
 	// Impl: one field per thing the developer implements
 	b.WriteString("type Impl struct {\n")
 	for _, a := range g.s.Aggregates {
@@ -471,9 +480,18 @@ func loomErrNilEvent(eventType string) error {
 			fmt.Fprintf(&b, "\t%s %sFolds\n", exported(p.Name), exported(p.Name))
 		}
 	}
+	if len(g.upcastHops()) > 0 {
+		b.WriteString("\tUpcasts EventUpcasts\n")
+	}
 	b.WriteString("}\n\n")
 
-	fmt.Fprintf(&b, "func NewRegistry(impl Impl) *loom.Registry {\n\treturn &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
+	fmt.Fprintf(&b, "func NewRegistry(impl Impl) *loom.Registry {\n")
+	if len(g.upcastHops()) > 0 {
+		// an older hand-owned registry.go compiles with the new field unset;
+		// fail at boot with a pointed message instead of a nil-deref later
+		b.WriteString("\tif impl.Upcasts == nil {\n\t\tpanic(\"loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)\")\n\t}\n")
+	}
+	fmt.Fprintf(&b, "\treturn &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
 
 	b.WriteString("\t\tAggregates: []*loom.AggregateDef{\n")
 	for _, a := range g.s.Aggregates {
@@ -527,8 +545,16 @@ func loomErrNilEvent(eventType string) error {
 		if fields := e.Payload.PIIFields(); len(fields) > 0 {
 			pii = fmt.Sprintf(" PII: %s,", stringSlice(fields))
 		}
-		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q, Aliases: %s,%s New: func() any { return &%s{} }},\n",
-			e.Name, version, e.Publish, e.Service, stringSlice(e.Aliases), pii, e.Name)
+		ups := ""
+		if len(e.Upcasts) > 0 {
+			var hops []string
+			for _, from := range e.Upcasts {
+				hops = append(hops, fmt.Sprintf("%d: impl.Upcasts.%s", from, upcastMethod(e, from)))
+			}
+			ups = fmt.Sprintf(" Upcasts: map[int]loom.UpcastFunc{%s},", strings.Join(hops, ", "))
+		}
+		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q, Aliases: %s,%s%s New: func() any { return &%s{} }},\n",
+			e.Name, version, e.Publish, e.Service, stringSlice(e.Aliases), pii, ups, e.Name)
 	}
 	b.WriteString("\t\t},\n")
 
@@ -640,6 +666,28 @@ func (g *generator) tableDefs(b *strings.Builder) {
 	if any {
 		b.WriteString("\t\t},\n")
 	}
+}
+
+type upcastHop struct {
+	event  *schema.Event
+	from   int
+	method string
+}
+
+func upcastMethod(e *schema.Event, from int) string {
+	return fmt.Sprintf("%sFromV%d", exported(e.Name), from)
+}
+
+// upcastHops lists every declared migration hop across all events, in
+// schema order — the shape behind the EventUpcasts interface and stub.
+func (g *generator) upcastHops() []upcastHop {
+	var out []upcastHop
+	for _, e := range g.s.Events {
+		for _, from := range e.Upcasts {
+			out = append(out, upcastHop{event: e, from: from, method: upcastMethod(e, from)})
+		}
+	}
+	return out
 }
 
 // uploadDefs renders the registry entries for every `upload` block; the
@@ -800,6 +848,18 @@ func (g *generator) stubs() map[string]string {
 		out[path] = b.String()
 	}
 
+	// upcasts stub: service-wide, at the root in both layouts (hops cross
+	// events, so no kind package fits)
+	if ups := g.upcastHops(); len(ups) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "// Upcasts implements %s.EventUpcasts — migration for stored events\n// written under older @v versions. Each hop takes the payload JSON of one\n// version and returns the payload JSON of the next; loom chains hops at\n// decode time, so folds and reactions only ever see the current shape.\n// Keep hops deterministic: replays and rebuilds run them again.\n// Yours to edit.\ntype Upcasts struct{}\n\n", g.genPkg)
+		for _, u := range ups {
+			fmt.Fprintf(&b, "// %s lifts %s v%d → v%d.\nfunc (u *Upcasts) %s(data []byte) ([]byte, error) {\n\tpanic(\"not implemented\")\n}\n\n", u.method, u.event.Name, u.from, u.from+1, u.method)
+		}
+		out["upcasts.go"] = b.String()
+	}
+
 	// wiring, generated once so additions appear as compile errors on Impl
 	var b strings.Builder
 	fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
@@ -845,6 +905,9 @@ func (g *generator) stubs() map[string]string {
 		if p.Fold {
 			fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(p.Name), g.qualify(kindProjections, exported(p.Name)))
 		}
+	}
+	if len(g.upcastHops()) > 0 {
+		b.WriteString("\t\tUpcasts: &Upcasts{},\n")
 	}
 	b.WriteString("\t})\n}\n")
 	out["registry.go"] = b.String()

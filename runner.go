@@ -332,7 +332,7 @@ func (c *Client) subscribeForeign(ctx context.Context, p *ReactorDef, foreign []
 }
 
 func (c *Client) eventFromEnvelope(env *Envelope) (*Event, error) {
-	payload, err := c.decode(env.Type, env.Data)
+	payload, err := c.decode(env.Type, env.SchemaVersion, env.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -505,7 +505,7 @@ func (c *Client) redriveProcess(ctx context.Context, process string, raw []byte)
 	if err != nil {
 		return err
 	}
-	payload, err := c.decode(evt.Type, data)
+	payload, err := c.decode(evt.Type, evt.SchemaVersion, data)
 	if err != nil {
 		return err
 	}

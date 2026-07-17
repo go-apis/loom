@@ -8,6 +8,7 @@ aggregate Order @snapshot(5) {
     total_cents: int
     currency: string
     shipped_at: timestamp?
+    reason: string
     contract: file?
   }
 
@@ -41,8 +42,10 @@ aggregate Order @snapshot(5) {
     shipped_at: timestamp!
   }
 
-  event OrderCancelled {
+  // v2 added `reason`; the upcast below lifts stored v1 rows
+  event OrderCancelled @v(2) {
     status: string!
+    reason: string!
   }
 
   // a different field name than the state's `contract` on purpose: folds
@@ -71,6 +74,7 @@ entity OrderSummary @table {
   customer_id: uuid
   total_cents: int
   currency: string
+  reason: string
   items: [OrderItem]
 }
 
@@ -111,6 +115,9 @@ policy dropAutoCancel {
 consume billing.InvoicePaid {
   paid_at: timestamp
 }
+
+// stored v1 OrderCancelled rows predate `reason`
+upcast OrderCancelled @from(1)
 
 type OrderItem {
   sku: string!

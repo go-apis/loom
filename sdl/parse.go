@@ -86,6 +86,8 @@ func (p *parser) schema() error {
 			_, err = p.event()
 		case "consume":
 			err = p.consume()
+		case "upcast":
+			err = p.upcast()
 		case "policy":
 			err = p.reactor(&p.out.Policies, "policy")
 		case "process":
@@ -364,6 +366,41 @@ func (p *parser) consume() error {
 // entity parses a read-model declaration. `@table` stores it in a typed
 // per-entity table (real columns, SQL/BI-friendly) instead of the shared
 // jsonb doc table.
+// upcast declares payload migration for stored events written under older
+// schema versions; each @from(n) names a hand-written hop n → n+1:
+//
+//	upcast OrderPlaced @from(1)
+//	upcast OrderPlaced @from(2)     // or @from(1, 2)
+func (p *parser) upcast() error {
+	t := p.next()
+	name, err := p.eventRef()
+	if err != nil {
+		return err
+	}
+	evt := p.registerEvent(name, "")
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
+	for d := range dirs {
+		if d != "from" {
+			return p.errf(t, "upcast %s: unknown directive @%s (upcasts take @from)", name, d)
+		}
+	}
+	args := dirs["from"]
+	if len(args) == 0 {
+		return p.errf(t, "upcast %s needs @from(version)", name)
+	}
+	for _, a := range args {
+		v, err := strconv.Atoi(a)
+		if err != nil || v < 1 {
+			return p.errf(t, "upcast %s: @from wants a positive version, got %q", name, a)
+		}
+		evt.Upcasts = append(evt.Upcasts, v)
+	}
+	return nil
+}
+
 func (p *parser) entity() error {
 	p.next()
 	name, err := p.ident()

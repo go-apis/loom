@@ -263,7 +263,7 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 		if data, err = c.decryptEventData(ctx, namespace, id, typ, data); err != nil {
 			return nil, 0, err
 		}
-		payload, err := c.decode(typ, data)
+		payload, err := c.decode(typ, sv, data)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -275,10 +275,34 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 	return state, version, rows.Err()
 }
 
-func (c *Client) decode(eventType string, data []byte) (any, error) {
+// decode turns a stored payload into the typed current-version struct,
+// chaining upcast hops when the stored schema_version is behind. Events
+// with no declared upcasts keep the permissive behavior: any version
+// unmarshals as-is (additive changes stay free).
+func (c *Client) decode(eventType string, storedVersion int, data []byte) (any, error) {
 	def := c.reg.eventDef(eventType)
 	if def == nil {
 		return nil, &UnknownEventError{Type: eventType}
+	}
+	if len(def.Upcasts) > 0 {
+		v := storedVersion
+		if v == 0 {
+			v = 1 // rows from before @v existed
+		}
+		if v > def.SchemaVersion {
+			return nil, &UpcastError{Type: def.Name, Stored: v, To: def.SchemaVersion}
+		}
+		for ; v < def.SchemaVersion; v++ {
+			fn := def.Upcasts[v]
+			if fn == nil {
+				return nil, &UpcastError{Type: def.Name, Stored: storedVersion, At: v, To: def.SchemaVersion}
+			}
+			out, err := fn(data)
+			if err != nil {
+				return nil, &UpcastError{Type: def.Name, Stored: storedVersion, At: v, To: def.SchemaVersion, Err: err}
+			}
+			data = out
+		}
 	}
 	payload := def.New()
 	if err := json.Unmarshal(data, payload); err != nil {
@@ -329,7 +353,7 @@ func (c *Client) readLog(ctx context.Context, afterSeq int64, limit int) ([]*Eve
 		if data, err = c.decryptEventData(ctx, e.Namespace, e.AggregateID, e.Type, data); err != nil {
 			return nil, err
 		}
-		payload, err := c.decode(e.Type, data)
+		payload, err := c.decode(e.Type, e.SchemaVersion, data)
 		if err != nil {
 			return nil, err
 		}
