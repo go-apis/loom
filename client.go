@@ -50,6 +50,8 @@ type Client struct {
 	dekMu sync.Mutex
 	deks  map[string][]byte // unwrapped per-stream data keys
 
+	tables map[string]*tableSQL // @table entities: precomputed SQL by entity
+
 	retries int
 }
 
@@ -84,6 +86,7 @@ func New(cfg Config) (*Client, error) {
 		keys:       cfg.Keys,
 		blobs:      cfg.Blobs,
 		deks:       map[string][]byte{},
+		tables:     buildTables(cfg.Registry),
 		retries:    cfg.ConflictRetries,
 	}
 	// the dev store signals finalized uploads in-process; production
@@ -455,18 +458,25 @@ func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.U
 		return nil, fmt.Errorf("loom: no projection maintains entity %s", entity)
 	}
 	var data []byte
-	err := c.db.QueryRow(ctx, `
-		SELECT data FROM loom_entities
-		WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id=$4`,
-		c.reg.Service, namespace, entity, id).Scan(&data)
+	var err error
+	if table := c.tables[entity]; table != nil {
+		err = c.db.QueryRow(ctx, table.selectDoc, c.reg.Service, namespace, id).Scan(&data)
+	} else {
+		err = c.db.QueryRow(ctx, `
+			SELECT data FROM loom_entities
+			WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id=$4`,
+			c.reg.Service, namespace, entity, id).Scan(&data)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if data, err = c.decryptFields(ctx, namespace, id, data, proj.PII); err != nil {
-		return nil, err
+	if c.tables[entity] == nil { // @table excludes @pii by validation
+		if data, err = c.decryptFields(ctx, namespace, id, data, proj.PII); err != nil {
+			return nil, err
+		}
 	}
 	state := proj.NewState()
 	if err := json.Unmarshal(data, state); err != nil {

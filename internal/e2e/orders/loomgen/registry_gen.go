@@ -175,6 +175,41 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Uploads: []*loom.UploadDef{
 			{Name: "Contract", Owner: "Order", OnStarted: "RequestContract", StartedField: "contract", OnUploaded: "AttachContract", UploadedField: "contract"},
 		},
+		Tables: []*loom.TableDef{
+			{
+				Entity: "OrderSummary",
+				Name:   "loom_t_orders_order_summary",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_t_orders_order_summary (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	id         uuid NOT NULL,
+	"currency" text,
+	"customer_id" uuid,
+	"items" jsonb,
+	"status" text,
+	"total_cents" bigint,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, id)
+);`,
+				Columns: []loom.TableColumn{
+					{Name: "currency", Type: "text"},
+					{Name: "customer_id", Type: "uuid"},
+					{Name: "items", Type: "jsonb"},
+					{Name: "status", Type: "text"},
+					{Name: "total_cents", Type: "bigint"},
+				},
+				Values: func(state loom.EntityState) []any {
+					e := state.(*OrderSummary)
+					return []any{
+						e.Currency,
+						e.CustomerId,
+						loom.JSONValue(e.Items),
+						e.Status,
+						e.TotalCents,
+					}
+				},
+			},
+		},
 		Projections: []*loom.ProjectionDef{
 			{
 				Name:     "customerSpend",

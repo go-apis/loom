@@ -128,6 +128,7 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			return 0, nil
 		}
 
+		table := c.tables[p.Entity] // @table: typed columns, not the doc store
 		for _, evt := range events {
 			if !contains(p.Events, evt.Type) {
 				continue
@@ -135,14 +136,21 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			id := p.EntityID(evt)
 			state := p.NewState()
 			var data []byte
-			err := tx.QueryRow(ctx, `
-				SELECT data FROM loom_entities
-				WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id=$4
-				FOR UPDATE`,
-				c.reg.Service, evt.Namespace, p.Entity, id).Scan(&data)
+			var err error
+			if table != nil {
+				err = tx.QueryRow(ctx, table.selectForUpdate, c.reg.Service, evt.Namespace, id).Scan(&data)
+			} else {
+				err = tx.QueryRow(ctx, `
+					SELECT data FROM loom_entities
+					WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id=$4
+					FOR UPDATE`,
+					c.reg.Service, evt.Namespace, p.Entity, id).Scan(&data)
+			}
 			if err == nil {
-				if data, err = c.decryptFields(ctx, evt.Namespace, id, data, p.PII); err != nil {
-					return 0, fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
+				if table == nil { // @table excludes @pii by validation
+					if data, err = c.decryptFields(ctx, evt.Namespace, id, data, p.PII); err != nil {
+						return 0, fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
+					}
 				}
 				if err := json.Unmarshal(data, state); err != nil {
 					return 0, fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
@@ -154,6 +162,13 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			}
 			if err := fold(); err != nil {
 				return 0, fmt.Errorf("projection %s fold %s: %w", p.Name, evt.Type, err)
+			}
+			if table != nil {
+				args := append([]any{c.reg.Service, evt.Namespace, id}, table.def.Values(state)...)
+				if _, err := tx.Exec(ctx, table.upsert, args...); err != nil {
+					return 0, err
+				}
+				continue
 			}
 			out, err := json.Marshal(state)
 			if err != nil {
@@ -200,7 +215,11 @@ func (c *Client) Rebuild(ctx context.Context, projection string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM loom_entities WHERE service=$1 AND entity_type=$2`, c.reg.Service, def.Entity); err != nil {
+	if table := c.tables[def.Entity]; table != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s WHERE service=$1`, table.def.Name), c.reg.Service); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(ctx, `DELETE FROM loom_entities WHERE service=$1 AND entity_type=$2`, c.reg.Service, def.Entity); err != nil {
 		return err
 	}
 	if err := saveCheckpoint(ctx, tx, c.reg.Service, "projection:"+projection, 0); err != nil {

@@ -153,10 +153,11 @@ func (s *CustomerSpend) Fold(eventType string, data any) error {
 }
 
 type OrderSummary struct {
-	Currency   string    `json:"currency"`
-	CustomerId uuid.UUID `json:"customer_id"`
-	Status     string    `json:"status"`
-	TotalCents int64     `json:"total_cents"`
+	Currency   string      `json:"currency"`
+	CustomerId uuid.UUID   `json:"customer_id"`
+	Items      []OrderItem `json:"items"`
+	Status     string      `json:"status"`
+	TotalCents int64       `json:"total_cents"`
 }
 
 func (s *OrderSummary) Fold(eventType string, data any) error {
@@ -166,6 +167,7 @@ func (s *OrderSummary) Fold(eventType string, data any) error {
 	case *OrderPlaced:
 		s.Currency = e.Currency
 		s.CustomerId = e.CustomerId
+		s.Items = e.Items
 		s.Status = e.Status
 		s.TotalCents = e.TotalCents
 	case *OrderShipped:

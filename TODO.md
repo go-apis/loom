@@ -1,7 +1,7 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.17.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.19.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
@@ -12,24 +12,14 @@ public surface (Files + Streams passthrough + {x}Changed subscriptions
 over SSE on /graphql), Long everywhere (schema int emits/serves Long —
 money is int64, decided 2026-07-17), live lists + 1-* (v0.18:
 `{x}sChanged` filtered list subscriptions; projection `key(field)`
-routing + `@fold` hand-written fold stubs — the masspayout shape).
+routing + `@fold` hand-written fold stubs — the masspayout shape),
+`@table` typed per-entity tables (v0.19: opt-in `entity X @table` →
+generated DDL + tables_gen.sql artifact + typed upserts; queries/ORDER BY
+hit real columns; Migrate applies an additive-only declarative diff —
+type drift errors with the drop→Migrate→Rebuild remediation; @table+@pii
+rejected; non-scalars ride jsonb columns and reject filters loudly).
 
-## 1. `@table` — typed per-entity tables (the deferred perf milestone)
-
-Read models live in the `loom_entities` jsonb doc table; filters compile
-to `(data->>'x')::numeric` comparisons the GIN index can't accelerate.
-Fine at current volume, wrong at scale and for SQL/BI ergonomics.
-Deliberately deferred as "a perf milestone, not a semantic change":
-projections are rebuildable, so switching storage = create table, reset
-checkpoint, refold.
-
-Shape: opt-in `entity FormList @table` → `loom generate` emits
-`CREATE TABLE` DDL (schema knows every column and type), typed upsert
-code for projectionStep, a declarative diff against the live shape (NOT
-AutoMigrate — that lesson is paid for), and the query layer targets real
-columns. Cheaper interim: generated SQL views over the doc table.
-
-## 2. Console topology graph
+## 1. Console topology graph
 
 The Design tab is tabular; the design of record wanted the drawn graph
 (command → event → reaction → command, cross-service consumes). All data
@@ -38,7 +28,7 @@ Self-contained: hand-rolled SVG layered layout in console.html — no
 external libs (the console is dependency-free by rule). M6 adds the
 Performance tab (throughput, lag, fold times) later.
 
-## 3. Upcasters beyond aliases
+## 2. Upcasters beyond aliases
 
 Schema versions exist on events (`@v`) and aliases handle renames;
 payload-shape migration doesn't exist. Shape: schema-declared
@@ -47,14 +37,14 @@ decode path calls when stored schema_version < registry version. Decide
 schema-first vs code-first; decode chokepoints are `decode()` +
 `decodeCommand()`.
 
-## 4. OTel
+## 3. OTel
 
 Spans for Dispatch/UoW, runners, effects, bus publish/consume; metrics
 for the /stats numbers (outbox depth, lag, dead letters, effect states).
 Correlation/causation ids already flow — join them to trace ids. Was a
 day-one objective (#61 comment 3); becomes urgent with real deployments.
 
-## 5. Old-envelope compat codec for gpub
+## 4. Old-envelope compat codec for gpub
 
 `gpub.Codec` seam exists; implement the old eventsourcing Event JSON
 (service/namespace/aggregate_id/type/by/timestamp/data/metadata — no

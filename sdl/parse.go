@@ -361,17 +361,34 @@ func (p *parser) consume() error {
 	return nil
 }
 
+// entity parses a read-model declaration. `@table` stores it in a typed
+// per-entity table (real columns, SQL/BI-friendly) instead of the shared
+// jsonb doc table.
 func (p *parser) entity() error {
 	p.next()
 	name, err := p.ident()
 	if err != nil {
 		return err
 	}
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
+	ent := &schema.Entity{Name: name}
+	for d := range dirs {
+		if d != "table" {
+			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table)", name, d)
+		}
+	}
+	if _, ok := dirs["table"]; ok {
+		ent.Table = true
+	}
 	pl, err := p.fieldBlock()
 	if err != nil {
 		return err
 	}
-	p.out.Entities = append(p.out.Entities, &schema.Entity{Name: name, State: pl})
+	ent.State = pl
+	p.out.Entities = append(p.out.Entities, ent)
 	return nil
 }
 

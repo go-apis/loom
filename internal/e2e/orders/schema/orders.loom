@@ -63,11 +63,15 @@ aggregate Order @snapshot(5) {
   }
 }
 
-entity OrderSummary {
+// @table: this read model lives in its own typed table
+// (loom_t_orders_order_summary) — real columns for filters and BI, items
+// riding a jsonb column
+entity OrderSummary @table {
   status: string
   customer_id: uuid
   total_cents: int
   currency: string
+  items: [OrderItem]
 }
 
 projection orderSummary -> OrderSummary {

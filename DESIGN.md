@@ -24,7 +24,7 @@ projOn      := "on" eventRef ("key" "(" IDENT ")")?
 on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
 type        := "type" IDENT fields
-entity      := "entity" IDENT fields
+entity      := "entity" IDENT "@table"? fields
 fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
 builtin     := string int float bool uuid timestamp bytes any map file
@@ -107,8 +107,17 @@ generated switches, folds from generated assignments.
   implementations never hold a client and registries wire without the
   set-client-after-New dance. Reads only — dispatch from inside a handler
   would nest units of work; reactions return commands.
-- **Read models**: one `loom_entities` jsonb doc table (typed per-entity
-  tables are a perf milestone, not a semantic change).
+- **Read models**: one `loom_entities` jsonb doc table by default; `@table`
+  opts an entity into its own typed table (`loom_t_<service>_<entity>`, one
+  real column per state field, non-scalars as jsonb). Generated code owns
+  the shape — DDL, columns, typed upsert extractor — so the runtime never
+  reflects; reads come back doc-shaped via `to_jsonb(row)` minus the meta
+  columns, so folds and typed decodes share one path. `Migrate` applies the
+  DDL plus an additive-only declarative diff: missing columns added, type
+  drift a loud error, never an `ALTER TYPE` or drop (the remediation is
+  drop table → `Migrate` → `Rebuild`; a storage swap is exactly the same
+  move — a perf change, not a semantic one). `@table` + `@pii` is a
+  validation error.
 - **Records** (`loom_records`): state-of-record persistence for the
   ledger/balance class. Row-locked writes, version per write; emitted
   events enter the log with the record's stream identity (projections and

@@ -243,6 +243,7 @@ func loadSchemas(dir, glob string) (*schema.Schema, error) {
 			return nil, fmt.Errorf("%s declares service %s; expected %s", p, s.Service, merged.Service)
 		}
 		merged.Aggregates = append(merged.Aggregates, s.Aggregates...)
+		merged.Records = append(merged.Records, s.Records...)
 		merged.Entities = append(merged.Entities, s.Entities...)
 		merged.Events = append(merged.Events, s.Events...)
 		merged.Policies = append(merged.Policies, s.Policies...)

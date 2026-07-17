@@ -7,6 +7,7 @@ package loom
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -130,6 +131,47 @@ type Registry struct {
 	Processes   []*ReactorDef
 	Projections []*ProjectionDef
 	Uploads     []*UploadDef
+	Tables      []*TableDef
+}
+
+// TableDef backs an @table entity: the read model lives in its own typed
+// table (one real column per state field) instead of the shared jsonb doc
+// table. Generated code owns the shape — DDL, columns, and the typed value
+// extractor — so the runtime never reflects.
+type TableDef struct {
+	Entity string
+	// Name is the SQL table name (loom_t_<service>_<entity>).
+	Name string
+	// DDL is the full CREATE TABLE IF NOT EXISTS statement, also written to
+	// loomgen/tables_gen.sql for review. Migrate executes it and then diffs
+	// live columns against Columns (additive only, never a drop).
+	DDL string
+	// Columns lists the state columns in order, excluding the meta columns
+	// (service, namespace, id, updated_at).
+	Columns []TableColumn
+	// Values extracts the column values from the entity state, aligned with
+	// Columns. JSON-typed columns are pre-marshaled via JSONValue.
+	Values func(state EntityState) []any
+}
+
+type TableColumn struct {
+	// Name is both the column name and the state field's json name.
+	Name string
+	// Type is the Postgres type as written in the DDL (bigint, text, uuid,
+	// timestamptz, double precision, boolean, jsonb).
+	Type string
+}
+
+// JSONValue marshals a jsonb-column value explicitly, so strings and byte
+// slices are never mistaken for pre-encoded JSON by the driver. A marshal
+// error is returned as the value itself: the write then fails loudly and
+// the runner retries — never a silent drop.
+func JSONValue(v any) any {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("loom: JSONValue: %w", err)
+	}
+	return json.RawMessage(raw)
 }
 
 type AggregateDef struct {
@@ -239,6 +281,15 @@ func (r *Registry) recordForCommand(cmdName string) (*RecordDef, *RecordCommandD
 		}
 	}
 	return nil, nil
+}
+
+func (r *Registry) tableFor(entity string) *TableDef {
+	for _, t := range r.Tables {
+		if t.Entity == entity {
+			return t
+		}
+	}
+	return nil
 }
 
 func (r *Registry) eventDef(name string) *EventDef {

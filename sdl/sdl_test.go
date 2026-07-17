@@ -54,7 +54,7 @@ policy postOnPlace {
   on OrderPlaced -> PostLedger
 }
 
-entity OrderSummary {
+entity OrderSummary @table {
   status: string
 }
 
@@ -130,6 +130,10 @@ func TestParse(t *testing.T) {
 	// the effect
 	if _, c := s.FindRecordCommand("AdjustLedger"); c == nil || len(c.Emits) != 0 {
 		t.Fatalf("record command emit rules misparsed")
+	}
+	// entities sort by name: [OrderSummary, Spend]
+	if !s.Entities[0].Table || s.Entities[1].Table {
+		t.Fatalf("@table misparsed: %+v %+v", s.Entities[0], s.Entities[1])
 	}
 	if ups := s.Aggregates[0].Uploads; len(ups) != 1 || ups[0].Name != "Contract" || ups[0].OnUploaded != "AttachContract" || ups[0].OnStarted != "" {
 		t.Fatalf("upload misparsed: %+v", s.Aggregates[0].Uploads)
@@ -225,6 +229,36 @@ aggregate A {
 type T { tin: string @pii }
 `,
 			wantErr: "only valid on commands, local unpublished events",
+		},
+		"table field shadows meta column": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+entity Sum @table {
+  namespace: string
+}
+projection sum -> Sum { on E }
+`,
+			wantErr: "collides with a meta column",
+		},
+		"table with pii": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { tin: string @pii }
+}
+entity Sum @table {
+  tin: string @pii
+}
+projection sum -> Sum { on E }
+`,
+			wantErr: "@table and @pii are incompatible",
 		},
 		"upload without uploaded hook": {
 			src: `

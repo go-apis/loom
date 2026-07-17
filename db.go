@@ -170,11 +170,14 @@ CREATE TABLE IF NOT EXISTS loom_dead_letters (
 );
 `
 
-// Migrate applies the storage schema. Idempotent; meant for a deploy-time
+// Migrate applies the storage schema, including any @table entity tables
+// with their additive column diff. Idempotent; meant for a deploy-time
 // migration endpoint or command, never for application boot.
 func (c *Client) Migrate(ctx context.Context) error {
-	_, err := c.db.Exec(ctx, ddl)
-	return err
+	if _, err := c.db.Exec(ctx, ddl); err != nil {
+		return err
+	}
+	return c.migrateTables(ctx)
 }
 
 type storedEvent struct {

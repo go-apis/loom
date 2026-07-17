@@ -88,6 +88,27 @@ projection massPayoutProgress -> MassPayoutProgress @fold {
 }
 ```
 
+Read models live in a shared jsonb doc table by default. `@table` opts an
+entity into its own typed table — one real column per state field, filters
+and `ORDER BY` hitting real columns instead of `(data->>'x')::numeric`
+casts, and the table is plain SQL for BI:
+
+```
+entity OrderSummary @table {
+  status: string
+  total_cents: int
+  items: [OrderItem]     // non-scalars ride a jsonb column
+}
+```
+
+`loom generate` emits the `CREATE TABLE` DDL (reviewable in
+`loomgen/tables_gen.sql`) and a typed upsert; `Migrate` creates the table
+and applies a declarative, additive-only diff — missing columns are added,
+type drift is a loud error, nothing is ever altered or dropped behind your
+back. Projections are rebuildable, so switching storage (or fixing drift)
+is: drop table, `Migrate`, `Rebuild`. `@table` and `@pii` are incompatible
+by design — sealed ciphertext in a typed column would serve neither.
+
 ## Timers
 
 Durable scheduled commands, written in the same transaction that decided

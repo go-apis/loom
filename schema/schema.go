@@ -70,7 +70,12 @@ type Record struct {
 
 // Entity is a read model maintained by a projection.
 type Entity struct {
-	Name  string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Table (@table) stores the entity in a typed per-entity table with a
+	// real column per state field, instead of the shared jsonb doc table —
+	// filters and ORDER BY hit real columns, and the table is plain SQL for
+	// BI. Opt-in; switching is create table + Rebuild (projections refold).
+	Table bool     `yaml:"table,omitempty" json:"table,omitempty"`
 	State *Payload `yaml:"state" json:"state"`
 }
 
@@ -389,6 +394,24 @@ func (s *Schema) Validate() error {
 			}
 		}
 	}
+	// @table entities become real columns: field names must not shadow the
+	// meta columns, and @pii is incompatible (sealed ciphertext in a typed
+	// column defeats both — keep PII entities in the doc store).
+	for _, e := range s.Entities {
+		if !e.Table {
+			continue
+		}
+		for name := range payloadProps(e.State) {
+			switch name {
+			case "service", "namespace", "id", "updated_at":
+				fail("entity %s: field %s collides with a meta column of its @table — rename the field", e.Name, name)
+			}
+		}
+		if pii := e.State.PIIFields(); len(pii) > 0 {
+			fail("entity %s: @table and @pii are incompatible — typed columns cannot hold sealed values; keep this entity in the doc store (filters cannot match sealed fields anyway)", e.Name)
+		}
+	}
+
 	for _, p := range s.Projections {
 		if s.FindEntity(p.Entity) == nil {
 			fail("projection %s projects into undeclared entity %s", p.Name, p.Entity)

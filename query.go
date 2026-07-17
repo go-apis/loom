@@ -50,6 +50,9 @@ func (c *Client) QueryEntities(ctx context.Context, entity string, q Query) ([]R
 	if !found {
 		return nil, fmt.Errorf("loom: unknown entity %s", entity)
 	}
+	if table := c.tables[entity]; table != nil {
+		return c.queryTable(ctx, table, q)
+	}
 	return c.queryDocs(ctx, "loom_entities", "entity_type", entity, q)
 }
 
