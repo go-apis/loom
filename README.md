@@ -109,6 +109,11 @@ back. Projections are rebuildable, so switching storage (or fixing drift)
 is: drop table, `Migrate`, `Rebuild`. `@table` and `@pii` are incompatible
 by design — sealed ciphertext in a typed column would serve neither.
 
+Note `Migrate` is per service once `@table` is in play: the shared
+`loom_*` DDL is identical from any client, but each service's typed
+tables ride its own registry — deployments that share one database must
+call `Migrate` on every service's client, not just one.
+
 ## Timers
 
 Durable scheduled commands, written in the same transaction that decided
