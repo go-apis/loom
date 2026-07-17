@@ -147,7 +147,7 @@ func sortedTables(tables map[string]*tableSQL) []*tableSQL {
 // queryTable is the typed-table twin of queryDocs: same Query in, same Row
 // out, but filters and ORDER BY compile to real columns — no jsonb casts.
 func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, error) {
-	if q.Namespace == "" {
+	if q.Namespace == "" && !q.AllNamespaces {
 		return nil, fmt.Errorf("loom: query needs a namespace")
 	}
 	if q.Limit <= 0 {
@@ -162,10 +162,18 @@ func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, 
 	}
 
 	var b strings.Builder
-	args := []any{c.reg.Service, q.Namespace}
-	fmt.Fprintf(&b,
-		`SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM %s t WHERE service=$1 AND namespace=$2`,
-		ts.def.Name)
+	var args []any
+	if q.AllNamespaces {
+		args = []any{c.reg.Service}
+		fmt.Fprintf(&b,
+			`SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM %s t WHERE service=$1`,
+			ts.def.Name)
+	} else {
+		args = []any{c.reg.Service, q.Namespace}
+		fmt.Fprintf(&b,
+			`SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM %s t WHERE service=$1 AND namespace=$2`,
+			ts.def.Name)
+	}
 
 	for _, f := range q.Filters {
 		typ, ok := colType[f.Field]

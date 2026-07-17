@@ -1,7 +1,7 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.22.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.23.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
@@ -31,7 +31,13 @@ OTel (v0.22: API-only instrumentation, no-op without SDK providers —
 spans at every seam incl. loom.effect outcomes; W3C trace context rides
 Envelope.Trace so consumers join the producing dispatch's trace across
 the bus; counters/histograms + DB-observed gauges incl. per-runner lag;
-e2e proves one trace id across dispatch→publish→consume→reaction).
+e2e proves one trace id across dispatch→publish→consume→reaction),
+gateway auth (v0.23: Access{Namespaces, All, Mutate, Mutations} resolved
+per request by a Config.Auth hook or WithAccess middleware; namespace
+scoping on reads/writes/subscriptions/Files/Streams via Protect; god
+mode = All → namespace-less cross-namespace list queries
+(Query.AllNamespaces); denials are per-field errors, failed hook = 401;
+nil hook = open gateway for trusted mounts).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
 ## 1. Old-envelope compat codec for gpub
@@ -59,8 +65,8 @@ parked in favor of ten99).
 - Foreign-event projections (would collapse ten99's RecipientMirror
   aggregate+process into a plain projection).
 - TypeScript target for the schema (payloads are already JSON Schema).
-- Gateway: auth hooks? — auth stays deployment middleware by design;
-  revisit only if field-level authz becomes real.
+- Gateway auth follow-ons: rate limits, per-field read masking (@pii
+  fields for non-god callers?), playground header editor for tokens.
 
 ## Upload follow-ons (small, when needed)
 

@@ -355,6 +355,37 @@ services' own HTTP handlers on the private network. Schema `int` fields
 are served as the 64-bit `Long` scalar — GraphQL `Int` is 32-bit and
 cent totals are not.
 
+Because it's the public surface, the gateway carries the authorization
+model. Authentication stays yours — parse a JWT, API key, or session in
+the `Auth` hook (or your own middleware via `WithAccess`) — and return
+an `Access` saying what the caller may do:
+
+```go
+gateway, _ := loomgraphql.New(loomgraphql.Config{
+    Services: services,
+    Auth: func(r *http.Request) (loomgraphql.Access, error) {
+        claims, err := verify(r)               // your authentication
+        if err != nil { return loomgraphql.Access{}, err }  // → 401
+        if claims.Admin {
+            return loomgraphql.Access{All: true, Mutate: true}, nil // god mode
+        }
+        return loomgraphql.Access{Namespaces: claims.Orgs, Mutate: true}, nil
+    },
+})
+mux.Handle("/files", loomgraphql.Protect(auth, loomgraphql.Files(...)))
+mux.Handle("/streams/", http.StripPrefix("/streams", loomgraphql.Protect(auth, loomgraphql.Streams(...))))
+```
+
+`Namespaces` scopes every read, subscription, mutation, file download,
+and raw watch; `Mutate` gates writes (optionally narrowed to specific
+mutation fields via `Mutations`); `All` is god mode — every namespace,
+and list queries/subscriptions may omit `namespace` entirely to search
+across all of them (rows carry their namespace). Denials are per-field
+GraphQL errors; a failed hook is a 401 before anything executes. No
+hook = the open pre-auth gateway, for mounts behind trusted middleware.
+The playground page itself always serves — the queries it fires are
+enforced like any other.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service
@@ -374,7 +405,8 @@ SVG), auth is whatever wraps the mount.
 
 Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,
 compiled to parameterized jsonb SQL; `order`, `limit`, `offset` paginate.
-Auth is deliberately not Loom's job — mount behind your middleware.
+These per-service surfaces are ops-private by design — keep them off the
+public edge (the gateway carries the public authorization model).
 
 Streaming is SSE (browser-native, proxy/Workers friendly; deliberately not
 gRPC — see DESIGN.md):

@@ -42,6 +42,10 @@ type Join struct {
 type Config struct {
 	Services []*loom.Client
 	Joins    []Join
+	// Auth resolves each request's Access (see auth.go). Nil = open
+	// gateway: every namespace, all mutations — mount behind trusted
+	// middleware or keep it off the public edge.
+	Auth Auth
 }
 
 // New composes the services into one executable schema and returns the
@@ -80,7 +84,7 @@ func New(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &handler{schema: schema}, nil
+	return &handler{schema: schema, auth: cfg.Auth}, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -401,6 +405,9 @@ func nsIDArgs() gql.FieldConfigArgument {
 
 func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
+	if err := checkRead(p.Context, ns); err != nil {
+		return "", uuid.Nil, err
+	}
 	raw := fmt.Sprint(p.Args["id"])
 	id, err := uuid.Parse(raw)
 	if err != nil {
@@ -447,7 +454,9 @@ func docGet(obj *gql.Object, load func(ctx context.Context, ns string, id uuid.U
 
 func listArgs() gql.FieldConfigArgument {
 	return gql.FieldConfigArgument{
-		"namespace": {Type: gql.NewNonNull(gql.String)},
+		// nullable: omitting namespace is the cross-namespace query,
+		// allowed only for all-namespace (god) access
+		"namespace": {Type: gql.String},
 		"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
 		"order":     {Type: gql.String},
 		"limit":     {Type: gql.Int},
@@ -455,8 +464,16 @@ func listArgs() gql.FieldConfigArgument {
 	}
 }
 
-func queryFromArgs(args map[string]any) loom.Query {
-	q := loom.Query{Namespace: fmt.Sprint(args["namespace"])}
+func queryFromArgs(ctx context.Context, args map[string]any) (loom.Query, error) {
+	ns, _ := args["namespace"].(string)
+	if ns == "" {
+		if err := checkAll(ctx); err != nil {
+			return loom.Query{}, err
+		}
+	} else if err := checkRead(ctx, ns); err != nil {
+		return loom.Query{}, err
+	}
+	q := loom.Query{Namespace: ns, AllNamespaces: ns == ""}
 	if order, ok := args["order"].(string); ok {
 		q.OrderBy = order
 	}
@@ -479,7 +496,7 @@ func queryFromArgs(args map[string]any) loom.Query {
 			})
 		}
 	}
-	return q
+	return q, nil
 }
 
 func rowDocs(rows []loom.Row) []map[string]any {
@@ -500,7 +517,11 @@ func docList(obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]l
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			rows, err := query(p.Context, queryFromArgs(p.Args))
+			q, err := queryFromArgs(p.Context, p.Args)
+			if err != nil {
+				return nil, err
+			}
+			rows, err := query(p.Context, q)
 			if err != nil {
 				return nil, err
 			}
@@ -522,7 +543,10 @@ func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Conte
 			return p.Source, nil
 		},
 		Subscribe: func(p gql.ResolveParams) (any, error) {
-			q := queryFromArgs(p.Args)
+			q, err := queryFromArgs(p.Context, p.Args)
+			if err != nil {
+				return nil, err
+			}
 			ctx := p.Context
 			out := make(chan any)
 			go func() {
@@ -584,6 +608,10 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
+			ns, _ := args["namespace"].(string)
+			if err := checkMutate(p.Context, field, ns); err != nil {
+				return nil, err
+			}
 			raw, err := json.Marshal(conv(args))
 			if err != nil {
 				return nil, err
@@ -626,6 +654,10 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
+			ns, _ := args["namespace"].(string)
+			if err := checkMutate(p.Context, field, ns); err != nil {
+				return nil, err
+			}
 			id, err := uuid.Parse(fmt.Sprint(args["id"]))
 			if err != nil {
 				return nil, fmt.Errorf("bad id %q", args["id"])
@@ -715,6 +747,11 @@ func Streams(services ...*loom.Client) http.Handler {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return
 		}
+		// under Protect, the watch's namespace must be readable
+		if err := checkRead(r.Context(), r.URL.Query().Get("namespace")); err != nil {
+			http.Error(w, `{"error":"access denied"}`, http.StatusForbidden)
+			return
+		}
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = rest
 		h.ServeHTTP(w, r2)
@@ -745,6 +782,11 @@ func Files(services ...*loom.Client) http.Handler {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return
 		}
+		// under Protect, the key's namespace segment must be readable
+		if err := checkRead(r.Context(), namespaceOfKey(key)); err != nil {
+			http.Error(w, `{"error":"access denied"}`, http.StatusForbidden)
+			return
+		}
 		cli.ServeFile(w, r, key)
 	})
 }
@@ -761,7 +803,10 @@ func lowerFirst(s string) string {
 //go:embed playground.html
 var playgroundHTML []byte
 
-type handler struct{ schema gql.Schema }
+type handler struct {
+	schema gql.Schema
+	auth   Auth
+}
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -793,6 +838,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, `{"errors":[{"message":"POST a query"}]}`, http.StatusMethodNotAllowed)
 		return
+	}
+	// resolve access before anything executes (the static playground page
+	// above is exempt — its queries land back here and are enforced); a
+	// context Access set by the deployment's own middleware wins
+	if _, ok := AccessFrom(r.Context()); !ok && h.auth != nil {
+		access, err := h.auth(r)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"unauthenticated"}]}`))
+			return
+		}
+		r = r.WithContext(WithAccess(r.Context(), access))
 	}
 	params := gql.Params{
 		Schema:         h.schema,

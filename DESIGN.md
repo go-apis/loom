@@ -188,8 +188,16 @@ generated switches, folds from generated assignments.
 - **HTTP API** (`api.go` / `query.go`): the registry drives a complete
   mounted surface — command dispatch, filtered entity/record queries
   (validated field names, parameterized values, typed numeric/bool
-  comparisons), log browsing, ops stats. Transport-level auth stays with
-  the deployment.
+  comparisons), log browsing, ops stats. This surface is ops-private;
+  the deployment guards it. The GATEWAY is the public edge and carries
+  the authorization model: `graphql.Access{Namespaces, All, Mutate,
+  Mutations}` resolved per request by a `Config.Auth` hook (or the
+  deployment's own middleware via `WithAccess`) — namespace scoping on
+  every read/write/subscription and, via `Protect`, on Files downloads
+  and Streams watches; `All` is god mode, unlocking namespace-less
+  cross-namespace list queries (`Query.AllNamespaces`). Authentication
+  itself (JWT/API key/session parsing) stays the deployment's job —
+  loom only consumes the resulting capability.
 - **Streaming = SSE, deliberately not gRPC** (`stream.go`): every streaming
   need in the domain is one-directional (server → client) — progress, log
   tails, state watches — which SSE serves over plain HTTP with native

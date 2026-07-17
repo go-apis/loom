@@ -22,7 +22,10 @@ type Filter struct {
 
 type Query struct {
 	Namespace string
-	Filters   []Filter
+	// AllNamespaces searches across every namespace (Namespace empty) —
+	// the god-mode read; rows carry their namespace either way.
+	AllNamespaces bool
+	Filters       []Filter
 	// OrderBy is a state field, or "updated_at"; prefix "-" for descending.
 	OrderBy string
 	Limit   int
@@ -71,7 +74,7 @@ func (c *Client) QueryRecords(ctx context.Context, record string, q Query) ([]Ro
 }
 
 func (c *Client) queryDocs(ctx context.Context, table, typeCol, typeName string, q Query) ([]Row, error) {
-	if q.Namespace == "" {
+	if q.Namespace == "" && !q.AllNamespaces {
 		return nil, fmt.Errorf("loom: query needs a namespace")
 	}
 	if q.Limit <= 0 {
@@ -82,8 +85,14 @@ func (c *Client) queryDocs(ctx context.Context, table, typeCol, typeName string,
 	}
 
 	var b strings.Builder
-	args := []any{c.reg.Service, q.Namespace, typeName}
-	fmt.Fprintf(&b, `SELECT id, namespace, updated_at, data FROM %s WHERE service=$1 AND namespace=$2 AND %s=$3`, table, typeCol)
+	var args []any
+	if q.AllNamespaces {
+		args = []any{c.reg.Service, typeName}
+		fmt.Fprintf(&b, `SELECT id, namespace, updated_at, data FROM %s WHERE service=$1 AND %s=$2`, table, typeCol)
+	} else {
+		args = []any{c.reg.Service, q.Namespace, typeName}
+		fmt.Fprintf(&b, `SELECT id, namespace, updated_at, data FROM %s WHERE service=$1 AND namespace=$2 AND %s=$3`, table, typeCol)
+	}
 
 	for _, f := range q.Filters {
 		frag, arg, err := filterSQL(f)
