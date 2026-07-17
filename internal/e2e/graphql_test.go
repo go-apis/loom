@@ -131,7 +131,7 @@ func TestGraphQLGateway(t *testing.T) {
 
 	// filtered list query + camelCase fields + the cross-service join
 	waitFor(t, ctx, "summary queryable through the graph", func() bool {
-		data := gql(`query($ns: String!) {
+		data := gql(`query($ns: Namespace!) {
 			orderSummarys(namespace: $ns, where: [{field: "status", op: EQ, value: "shipped"}]) {
 				id totalCents status invoice { status amountCents }
 			}

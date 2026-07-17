@@ -18,7 +18,7 @@ func GraphQL(s *schema.Schema) ([]byte, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Generated from the %s service's .loom schema by loom graphql. DO NOT EDIT.\n\n", s.Service)
-	b.WriteString("scalar UUID\nscalar Time\nscalar Map\nscalar Long\n\n")
+	b.WriteString("scalar UUID\nscalar Time\nscalar Map\nscalar Long\n\n\"\"\"a namespace name, or * for every namespace (needs all-namespace access)\"\"\"\nscalar Namespace\n\n")
 
 	b.WriteString(`input FilterInput {
   field: String!
@@ -115,17 +115,17 @@ type UploadSession {
 	for _, r := range s.Records {
 		queries = append(queries,
 			fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(r.Name), r.Name),
-			fmt.Sprintf("  %ss(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
 		subscriptions = append(subscriptions,
-			fmt.Sprintf("  %ssChanged(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
+			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
 	}
 	for _, e := range s.Entities {
 		queries = append(queries,
 			fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(e.Name), e.Name),
-			fmt.Sprintf("  %ss(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
 		subscriptions = append(subscriptions,
 			fmt.Sprintf("  %sChanged(namespace: String!, id: UUID!): %s!", lowerFirst(e.Name), e.Name),
-			fmt.Sprintf("  %ssChanged(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
+			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
 	}
 
 	writeBlock(&b, "type Mutation", mutations)

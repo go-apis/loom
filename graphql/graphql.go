@@ -118,10 +118,19 @@ func coerceLong(v any) any {
 	return nil
 }
 
+// AllNamespaces is the Namespace scalar's special value: search every
+// namespace. Only callers with all-namespace (god) access may use it.
+const AllNamespaces = "*"
+
 var (
 	scalarUUID = passthrough("UUID", "UUID as a string")
 	scalarTime = passthrough("Time", "RFC 3339 timestamp")
 	scalarMap  = passthrough("Map", "arbitrary JSON object")
+	// Namespace documents the "*" convention where it is accepted (list
+	// queries and list subscriptions); single-doc fields take a concrete
+	// namespace.
+	scalarNamespace = passthrough("Namespace",
+		`a namespace name, or "*" for every namespace (needs all-namespace access)`)
 	// Long carries schema `int` (int64): GraphQL Int is 32-bit and cent
 	// totals are not. Real coercion (not passthrough) so inline literals
 	// in queries parse to int64.
@@ -405,6 +414,9 @@ func nsIDArgs() gql.FieldConfigArgument {
 
 func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
+	if ns == AllNamespaces {
+		return "", uuid.Nil, fmt.Errorf(`"*" is for lists — fetching one doc needs its namespace`)
+	}
 	if err := checkRead(p.Context, ns); err != nil {
 		return "", uuid.Nil, err
 	}
@@ -454,9 +466,7 @@ func docGet(obj *gql.Object, load func(ctx context.Context, ns string, id uuid.U
 
 func listArgs() gql.FieldConfigArgument {
 	return gql.FieldConfigArgument{
-		// nullable: omitting namespace is the cross-namespace query,
-		// allowed only for all-namespace (god) access
-		"namespace": {Type: gql.String},
+		"namespace": {Type: gql.NewNonNull(scalarNamespace)},
 		"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
 		"order":     {Type: gql.String},
 		"limit":     {Type: gql.Int},
@@ -465,11 +475,12 @@ func listArgs() gql.FieldConfigArgument {
 }
 
 func queryFromArgs(ctx context.Context, args map[string]any) (loom.Query, error) {
-	ns, _ := args["namespace"].(string)
-	if ns == "" {
+	ns := fmt.Sprint(args["namespace"])
+	if ns == AllNamespaces {
 		if err := checkAll(ctx); err != nil {
 			return loom.Query{}, err
 		}
+		ns = ""
 	} else if err := checkRead(ctx, ns); err != nil {
 		return loom.Query{}, err
 	}

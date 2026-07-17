@@ -99,7 +99,7 @@ func TestGatewayAuth(t *testing.T) {
 		return fmt.Sprint(res.Errors[0]["message"])
 	}
 
-	listQ := `query($ns: String) { orderSummarys(namespace: $ns) { id namespace } }`
+	listQ := `query($ns: Namespace!) { orderSummarys(namespace: $ns) { id namespace } }`
 	placeQ := `mutation($ns: String!, $id: UUID!) { placeOrder(input: {namespace: $ns, aggregateId: $id,
 		customerId: "` + uuid.NewString() + `", currency: "USD",
 		items: [{sku: "x", quantity: 1, priceCents: 5}]}) { status } }`
@@ -138,11 +138,11 @@ func TestGatewayAuth(t *testing.T) {
 		t.Fatalf("acme-place cancelOrder should fail allowlist, got %q", firstError(res))
 	}
 
-	// scoped callers cannot go cross-namespace; god can
-	if _, res := do("acme-rw", listQ, nil); !strings.Contains(firstError(res), "cross-namespace") {
-		t.Fatalf("acme-rw namespace-less list should fail, got %q", firstError(res))
+	// scoped callers cannot use namespace "*"; god can
+	if _, res := do("acme-rw", listQ, map[string]any{"ns": "*"}); !strings.Contains(firstError(res), `"*"`) {
+		t.Fatalf("acme-rw star list should fail, got %q", firstError(res))
 	}
-	_, res := do("root", listQ, nil)
+	_, res := do("root", listQ, map[string]any{"ns": "*"})
 	if firstError(res) != "" {
 		t.Fatalf("root cross-namespace list: %s", firstError(res))
 	}

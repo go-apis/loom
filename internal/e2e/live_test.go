@@ -88,7 +88,7 @@ func TestGraphQLListSubscription(t *testing.T) {
 	defer srv.Close()
 
 	customer := uuid.New()
-	q := `subscription($ns: String!, $cust: String!) {
+	q := `subscription($ns: Namespace!, $cust: String!) {
 		orderSummarysChanged(namespace: $ns, where: [{field: "customer_id", op: EQ, value: $cust}]) {
 			id status totalCents
 		}

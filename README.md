@@ -378,13 +378,14 @@ mux.Handle("/streams/", http.StripPrefix("/streams", loomgraphql.Protect(auth, l
 
 `Namespaces` scopes every read, subscription, mutation, file download,
 and raw watch; `Mutate` gates writes (optionally narrowed to specific
-mutation fields via `Mutations`); `All` is god mode — every namespace,
-and list queries/subscriptions may omit `namespace` entirely to search
-across all of them (rows carry their namespace). Denials are per-field
-GraphQL errors; a failed hook is a 401 before anything executes. No
-hook = the open pre-auth gateway, for mounts behind trusted middleware.
-The playground page itself always serves — the queries it fires are
-enforced like any other.
+mutation fields via `Mutations`); `All` is god mode. List queries and
+list subscriptions take the `Namespace` scalar, whose special value
+`"*"` searches every namespace at once — god access only, and rows
+carry their namespace (`orderSummarys(namespace: "*") { namespace … }`).
+Denials are per-field GraphQL errors; a failed hook is a 401 before
+anything executes. No hook = the open pre-auth gateway, for mounts
+behind trusted middleware. The playground page itself always serves —
+the queries it fires are enforced like any other.
 
 ## The console
 

@@ -87,13 +87,13 @@ func checkRead(ctx context.Context, ns string) error {
 	return fmt.Errorf("access denied: namespace %q", ns)
 }
 
-// checkAll gates namespace-less (cross-namespace) list queries.
+// checkAll gates namespace: "*" — the cross-namespace list query.
 func checkAll(ctx context.Context) error {
 	a, ok := AccessFrom(ctx)
 	if !ok || a.All {
 		return nil
 	}
-	return fmt.Errorf("access denied: cross-namespace queries need all-namespace access; pass namespace")
+	return fmt.Errorf(`access denied: namespace "*" needs all-namespace access`)
 }
 
 // checkMutate gates one mutation field into one namespace.
