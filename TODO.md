@@ -1,7 +1,7 @@
 # Loom — what's next
 
 The framework backlog, roughly ordered. Each item has enough context to
-pick up cold. Shipped so far (v0.19.0): runtime core, timers, records,
+pick up cold. Shipped so far (v0.20.0): runtime core, timers, records,
 HTTP/SSE surface, OpenAPI/GraphQL emitters, batches (+AsBatchKeyed),
 effects journal, @pii (states/events/commands) + crypto-shred, gpub on
 pubsub/v2, folders layout, context-injected reads, console (Overview/
@@ -17,18 +17,13 @@ routing + `@fold` hand-written fold stubs — the masspayout shape),
 generated DDL + tables_gen.sql artifact + typed upserts; queries/ORDER BY
 hit real columns; Migrate applies an additive-only declarative diff —
 type drift errors with the drop→Migrate→Rebuild remediation; @table+@pii
-rejected; non-scalars ride jsonb columns and reject filters loudly).
+rejected; non-scalars ride jsonb columns and reject filters loudly),
+console topology graph (v0.20: Design tab draws the flow — hand-rolled
+layered SVG, longest-path layering + barycenter ordering, hover-to-trace,
+foreign/upload edges dashed; uploads table added; tabs deep-link via
+#hash). M6 still owes the Performance tab (throughput, lag, fold times).
 
-## 1. Console topology graph
-
-The Design tab is tabular; the design of record wanted the drawn graph
-(command → event → reaction → command, cross-service consumes). All data
-is already in `/registry` (ReactorDef.Subs has dispatch contracts).
-Self-contained: hand-rolled SVG layered layout in console.html — no
-external libs (the console is dependency-free by rule). M6 adds the
-Performance tab (throughput, lag, fold times) later.
-
-## 2. Upcasters beyond aliases
+## 1. Upcasters beyond aliases
 
 Schema versions exist on events (`@v`) and aliases handle renames;
 payload-shape migration doesn't exist. Shape: schema-declared
@@ -37,14 +32,14 @@ decode path calls when stored schema_version < registry version. Decide
 schema-first vs code-first; decode chokepoints are `decode()` +
 `decodeCommand()`.
 
-## 3. OTel
+## 2. OTel
 
 Spans for Dispatch/UoW, runners, effects, bus publish/consume; metrics
 for the /stats numbers (outbox depth, lag, dead letters, effect states).
 Correlation/causation ids already flow — join them to trace ids. Was a
 day-one objective (#61 comment 3); becomes urgent with real deployments.
 
-## 4. Old-envelope compat codec for gpub
+## 3. Old-envelope compat codec for gpub
 
 `gpub.Codec` seam exists; implement the old eventsourcing Event JSON
 (service/namespace/aggregate_id/type/by/timestamp/data/metadata — no
@@ -87,8 +82,6 @@ parked in favor of ten99).
   before dispatching). UI: one new uploader adapter keyed off
   `protocol`; Uppy's @uppy/aws-s3 multipart plugin fits.
 
-- Console: render `uploads` from /registry in the Design tab (data
-  already served) and show them in the future topology graph.
 - Signed download URLs on gblob (`GET /files` streams through the
   service today — fine for docs, wrong for video-sized reads).
 - Upload progress SSE? The client knows its own progress; only needed

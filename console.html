@@ -60,6 +60,21 @@ pre { background:var(--panel); border:1px solid var(--line); border-radius:8px;
          border:1px dashed var(--line); border-radius:8px; }
 .flow { color:var(--muted); }
 .err { color:var(--bad); padding:8px 0; }
+.topo { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:auto; }
+.topo .legend { display:flex; gap:4px; flex-wrap:wrap; padding:10px 12px 0; }
+.topo svg { display:block; }
+.topo text { font:12px var(--mono); fill:var(--ink); pointer-events:none; }
+.topo text.sub { font:9.5px system-ui, sans-serif; fill:var(--muted); }
+.topo .n rect { fill:var(--bg); stroke:var(--line); stroke-width:1.2; }
+.topo .n.command rect { stroke:var(--accent); }
+.topo .n.event rect { stroke:var(--ok); }
+.topo .n.policy rect, .topo .n.process rect { stroke:var(--warn); }
+.topo .n.dash rect { stroke-dasharray:5 3; }
+.topo .ed { fill:none; stroke:var(--muted); stroke-width:1.1; opacity:.5; }
+.topo .ed.dash { stroke-dasharray:4 3; }
+.topo.focus .n, .topo.focus .ed { opacity:.14; }
+.topo.focus .n.hi { opacity:1; }
+.topo.focus .ed.hi { opacity:.95; stroke:var(--accent); }
 footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
 </style>
 </head>
@@ -82,11 +97,14 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
   </section>
 
   <section id="design">
+    <h2>Topology <span class="flow">— command → event → reaction → command; hover a node to trace it</span></h2>
+    <div id="dTopo" class="topo"></div>
     <h2>Aggregates</h2><div id="dAggregates"></div>
     <h2>Records</h2><div id="dRecords"></div>
     <h2>Policies <span class="flow">— in the producing transaction</span></h2><div id="dPolicies"></div>
     <h2>Processes <span class="flow">— async, retried, parked loudly</span></h2><div id="dProcesses"></div>
     <h2>Projections</h2><div id="dProjections"></div>
+    <h2>Uploads <span class="flow">— lifecycle commands fired by storage's finalize signal</span></h2><div id="dUploads"></div>
     <h2>Events</h2><div id="dEvents"></div>
   </section>
 
@@ -152,13 +170,21 @@ function table(headers, rows, empty) {
 }
 const tags = (list, cls) => (list||[]).map(x=>`<span class="tag ${cls||""}">${esc(x)}</span>`).join("");
 
-// --- tabs ---
+// --- tabs (deep-linkable: /console#design) ---
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button, main section").forEach(x => x.classList.remove("on"));
   b.classList.add("on"); $(b.dataset.tab).classList.add("on");
+  history.replaceState(null, "", "#" + b.dataset.tab);
   refresh();
 });
 const activeTab = () => document.querySelector("main section.on").id;
+{
+  const t = document.querySelector(`nav button[data-tab="${CSS.escape(location.hash.slice(1))}"]`);
+  if (t) {
+    document.querySelectorAll("nav button, main section").forEach(x => x.classList.remove("on"));
+    t.classList.add("on"); $(t.dataset.tab).classList.add("on");
+  }
+}
 
 // --- overview ---
 async function loadOverview() {
@@ -192,9 +218,159 @@ async function loadOverview() {
     "no events in the last 24h");
 }
 
+// --- topology graph: hand-rolled layered layout, no libraries ---
+// nodes: commands, events, policies/processes, projections, uploads;
+// edges: emit, subscribe, dispatch, project, upload lifecycle.
+function buildTopo(reg) {
+  const nodes = new Map(), edges = [];
+  const node = (key, props) => { if (!nodes.has(key)) nodes.set(key, {key, ...props}); };
+  const edge = (from, to, dash) => edges.push({from, to, dash: !!dash});
+  for (const [owners, okind] of [[reg.aggregates, "aggregate"], [reg.records, "record"]]) {
+    for (const o of (owners || [])) for (const c of (o.commands || [])) {
+      node("c:" + c.name, {label: c.name, sub: okind + " " + o.name, kind: "command"});
+      for (const e of (c.emits || [])) edge("c:" + c.name, "e:" + e);
+    }
+  }
+  for (const e of (reg.events || [])) {
+    node("e:" + e.name, {label: (e.service ? e.service + "." : "") + e.name,
+      sub: "event" + (e.publish ? " · published" : ""), kind: "event", dash: !!e.service});
+  }
+  for (const [reactors, kind] of [[reg.policies, "policy"], [reg.processes, "process"]]) {
+    for (const p of (reactors || [])) {
+      node("r:" + p.name, {label: p.name, sub: kind + ((p.effects || []).length ? " · effects" : ""), kind});
+      for (const s of (p.subs || [])) {
+        edge("e:" + s.event, "r:" + p.name);
+        for (const d of (s.dispatches || [])) edge("r:" + p.name, "c:" + d);
+      }
+    }
+  }
+  for (const p of (reg.projections || [])) {
+    node("p:" + p.name, {label: p.entity, sub: "projection " + p.name, kind: "projection"});
+    for (const e of (p.events || [])) edge("e:" + e, "p:" + p.name);
+  }
+  for (const u of (reg.uploads || [])) {
+    node("u:" + u.name, {label: u.name, sub: "upload " + u.owner, kind: "upload"});
+    if (u.on_started) edge("u:" + u.name, "c:" + u.on_started, true);
+    if (u.on_uploaded) edge("u:" + u.name, "c:" + u.on_uploaded, true);
+  }
+  const real = edges.filter(e => nodes.has(e.from) && nodes.has(e.to));
+  const used = new Set(real.flatMap(e => [e.from, e.to]));
+  return {nodes: [...nodes.values()].filter(n => used.has(n.key)), edges: real};
+}
+
+function layoutTopo(nodes, edges) {
+  const out = new Map(nodes.map(n => [n.key, []])), inn = new Map(nodes.map(n => [n.key, []]));
+  for (const e of edges) { out.get(e.from).push(e); inn.get(e.to).push(e); }
+
+  // depth-first pass: back edges (schema cycles are legal) are excluded
+  // from layering, and post-order gives a topological order of the rest
+  const state = new Map(), back = new Set(), post = [];
+  const visit = (k) => {
+    state.set(k, 1);
+    for (const e of out.get(k)) {
+      const s = state.get(e.to) || 0;
+      if (s === 1) back.add(e); else if (s === 0) visit(e.to);
+    }
+    state.set(k, 2); post.push(k);
+  };
+  for (const n of nodes) if (!state.get(n.key)) visit(n.key);
+
+  // longest-path layering: everything sits as far right as its causes force
+  const layer = new Map(nodes.map(n => [n.key, 0]));
+  for (const k of [...post].reverse())
+    for (const e of out.get(k)) if (!back.has(e))
+      layer.set(e.to, Math.max(layer.get(e.to), layer.get(k) + 1));
+
+  const layers = [];
+  for (const n of nodes) { const l = layer.get(n.key); (layers[l] = layers[l] || []).push(n); }
+
+  // barycenter sweeps to reduce edge crossings
+  const pos = new Map();
+  layers.forEach(col => col.forEach((n, i) => pos.set(n.key, i)));
+  for (let sweep = 0; sweep < 4; sweep++) {
+    const forward = sweep % 2 === 0;
+    for (const col of (forward ? layers : [...layers].reverse())) {
+      for (const n of col) {
+        const nb = (forward ? inn : out).get(n.key).map(e => pos.get(forward ? e.from : e.to));
+        n._b = nb.length ? nb.reduce((a, b) => a + b, 0) / nb.length : pos.get(n.key);
+      }
+      col.sort((a, b) => a._b - b._b);
+      col.forEach((n, i) => pos.set(n.key, i));
+    }
+  }
+
+  // geometry: column width from widest node, columns centered vertically
+  const NH = 38, VGAP = 18, HGAP = 64, PAD = 16;
+  const width = (n) => Math.max(90, 20 + 7.6 * n.label.length, 20 + 5.4 * (n.sub || "").length);
+  const rows = Math.max(...layers.map(c => c.length));
+  const height = rows * (NH + VGAP) - VGAP + 2 * PAD;
+  let x = PAD;
+  for (const col of layers) {
+    const w = Math.max(...col.map(width));
+    const y0 = PAD + (height - 2 * PAD - (col.length * (NH + VGAP) - VGAP)) / 2;
+    col.forEach((n, i) => { n.x = x; n.y = y0 + i * (NH + VGAP); n.w = w; n.h = NH; });
+    x += w + HGAP;
+  }
+  return {width: x - HGAP + PAD, height};
+}
+
+function renderTopo(reg) {
+  const {nodes, edges} = buildTopo(reg);
+  if (!nodes.length) { $("dTopo").innerHTML = `<div class="empty" style="border:none">nothing declared yet</div>`; return; }
+  const {width, height} = layoutTopo(nodes, edges);
+  const byKey = new Map(nodes.map(n => [n.key, n]));
+
+  const paths = edges.map((e, i) => {
+    const a = byKey.get(e.from), b = byKey.get(e.to);
+    const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2;
+    const dx = Math.max(36, Math.abs(x2 - x1) / 2);
+    return `<path class="ed${e.dash ? " dash" : ""}" data-i="${i}" d="M${x1} ${y1} C${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" marker-end="url(#arr)"/>`;
+  });
+  const boxes = nodes.map(n =>
+    `<g class="n ${n.kind}${n.dash ? " dash" : ""}" data-k="${esc(n.key)}">
+       <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="7"/>
+       <text x="${n.x + 10}" y="${n.y + 16}">${esc(n.label)}</text>
+       <text class="sub" x="${n.x + 10}" y="${n.y + 29}">${esc(n.sub || "")}</text>
+     </g>`);
+  const legend = ["command", "event", "policy", "process", "projection", "upload"]
+    .map(k => `<span class="tag ${{command: "pub", event: "ok", policy: "fx", process: "fx"}[k] || ""}">${k}</span>`)
+    .join("") + `<span class="tag">dashed = foreign / upload hook</span>`;
+
+  $("dTopo").innerHTML = `<div class="legend">${legend}</div>
+    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L8 4 L0 8 z" fill="var(--muted)"/></marker></defs>
+      ${paths.join("")}${boxes.join("")}
+    </svg>`;
+
+  // hover to trace: dim everything but the node and its edges + neighbors
+  const topo = $("dTopo");
+  topo.querySelectorAll("g.n").forEach(g => {
+    g.onmouseenter = () => {
+      const k = g.dataset.k;
+      topo.classList.add("focus");
+      topo.querySelectorAll(".ed").forEach(p => {
+        const e = edges[p.dataset.i];
+        const hit = e.from === k || e.to === k;
+        p.classList.toggle("hi", hit);
+        if (hit) {
+          topo.querySelector(`g.n[data-k="${CSS.escape(e.from)}"]`).classList.add("hi");
+          topo.querySelector(`g.n[data-k="${CSS.escape(e.to)}"]`).classList.add("hi");
+        }
+      });
+      g.classList.add("hi");
+    };
+    g.onmouseleave = () => {
+      topo.classList.remove("focus");
+      topo.querySelectorAll(".hi").forEach(x => x.classList.remove("hi"));
+    };
+  });
+}
+
 // --- design ---
 async function loadDesign() {
   const reg = await get("registry");
+  renderTopo(reg);
   const cmdRows = (a) => (a.commands||[]).map(c =>
     `<tr><td class="mono">${esc(a.name)}</td><td class="mono">${esc(c.name)}</td>
      <td>${tags(c.emits)}</td><td>${tags(a.pii, "pii")}</td></tr>`);
@@ -212,6 +388,9 @@ async function loadDesign() {
   $("dProjections").innerHTML = table(["projection","entity","folds","pii"],
     (reg.projections||[]).map(p => `<tr><td class="mono">${esc(p.name)}</td>
       <td class="mono">${esc(p.entity)}</td><td>${tags(p.events)}</td><td>${tags(p.pii,"pii")}</td></tr>`), "none");
+  $("dUploads").innerHTML = table(["upload","owner","on started","on uploaded"],
+    (reg.uploads||[]).map(u => `<tr><td class="mono">${esc(u.name)}</td><td class="mono">${esc(u.owner)}</td>
+      <td>${u.on_started?tags([u.on_started]):""}</td><td>${tags([u.on_uploaded])}</td></tr>`), "none");
   $("dEvents").innerHTML = table(["event","v","flags","pii fields"],
     (reg.events||[]).map(e => `<tr><td class="mono">${e.service?esc(e.service)+".":""}${esc(e.name)}</td>
       <td class="mono">${e.version}</td>

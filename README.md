@@ -322,17 +322,20 @@ cent totals are not.
 
 ## The console
 
-Every service carries its ops UI: open `/console` on any mounted service.
+Every service carries its ops UI: open `/console` on any mounted service
+(tabs deep-link: `/console#design`).
 **Overview** (outbox, dead letters, effects, batches, event volumes),
-**Design** (aggregates → commands → events, reactions with their dispatch
-contracts and effects, projections — the schema as the runtime runs it),
-**Data** (browse read models and records with filters, fetch any row or
-aggregate by id), **Events** (log browser: filter by
-type/aggregate/correlation, inspect payloads), **Issues** (runner lag
-against the log head, in-doubt effects with resolve, dead letters with
-redrive, overdue timers). One embedded
-self-contained page over the JSON endpoints — no build step, no external
-assets, auth is whatever wraps the mount.
+**Design** (the drawn topology — command → event → reaction → command,
+cross-service consumes dashed, uploads and projections in place, hover a
+node to trace its edges — plus the schema tables: aggregates, reactions
+with dispatch contracts and effects, projections, uploads), **Data**
+(browse read models and records with filters, fetch any row or aggregate
+by id), **Events** (log browser: filter by type/aggregate/correlation,
+inspect payloads), **Issues** (runner lag against the log head, in-doubt
+effects with resolve, dead letters with redrive, overdue timers). One
+embedded self-contained page over the JSON endpoints — no build step, no
+external assets (the topology layout is ~80 lines of hand-rolled layered
+SVG), auth is whatever wraps the mount.
 
 Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,
 compiled to parameterized jsonb SQL; `order`, `limit`, `offset` paginate.
