@@ -201,9 +201,14 @@ func (b *builder) service(cli *loom.Client) error {
 		})); err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
-			return cli.QueryRecords(ctx, rec.Name, q)
-		})); err != nil {
+		recName := rec.Name
+		recQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+			return cli.QueryRecords(ctx, recName, q)
+		}
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, recQuery)); err != nil {
+			return err
+		}
+		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, recQuery)); err != nil {
 			return err
 		}
 		for _, def := range rec.Commands {
@@ -237,9 +242,13 @@ func (b *builder) service(cli *loom.Client) error {
 		})); err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryEntities(ctx, entity, q)
-		})); err != nil {
+		}
+		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, entityQuery)); err != nil {
+			return err
+		}
+		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, entityQuery)); err != nil {
 			return err
 		}
 		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
@@ -436,53 +445,126 @@ func docGet(obj *gql.Object, load func(ctx context.Context, ns string, id uuid.U
 	}
 }
 
+func listArgs() gql.FieldConfigArgument {
+	return gql.FieldConfigArgument{
+		"namespace": {Type: gql.NewNonNull(gql.String)},
+		"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
+		"order":     {Type: gql.String},
+		"limit":     {Type: gql.Int},
+		"offset":    {Type: gql.Int},
+	}
+}
+
+func queryFromArgs(args map[string]any) loom.Query {
+	q := loom.Query{Namespace: fmt.Sprint(args["namespace"])}
+	if order, ok := args["order"].(string); ok {
+		q.OrderBy = order
+	}
+	if limit, ok := args["limit"].(int); ok {
+		q.Limit = limit
+	}
+	if offset, ok := args["offset"].(int); ok {
+		q.Offset = offset
+	}
+	if where, ok := args["where"].([]any); ok {
+		for _, w := range where {
+			f, _ := w.(map[string]any)
+			if f == nil {
+				continue
+			}
+			q.Filters = append(q.Filters, loom.Filter{
+				Field: fmt.Sprint(f["field"]),
+				Op:    fmt.Sprint(f["op"]),
+				Value: fmt.Sprint(f["value"]),
+			})
+		}
+	}
+	return q
+}
+
+func rowDocs(rows []loom.Row) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		doc := map[string]any{}
+		_ = json.Unmarshal(r.Data, &doc)
+		doc["id"] = r.ID
+		doc["namespace"] = r.Namespace
+		doc["updatedAt"] = r.UpdatedAt.Format(time.RFC3339Nano)
+		out = append(out, doc)
+	}
+	return out
+}
+
 func docList(obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
-		Args: gql.FieldConfigArgument{
-			"namespace": {Type: gql.NewNonNull(gql.String)},
-			"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
-			"order":     {Type: gql.String},
-			"limit":     {Type: gql.Int},
-			"offset":    {Type: gql.Int},
-		},
+		Args: listArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			q := loom.Query{Namespace: fmt.Sprint(p.Args["namespace"])}
-			if order, ok := p.Args["order"].(string); ok {
-				q.OrderBy = order
-			}
-			if limit, ok := p.Args["limit"].(int); ok {
-				q.Limit = limit
-			}
-			if offset, ok := p.Args["offset"].(int); ok {
-				q.Offset = offset
-			}
-			if where, ok := p.Args["where"].([]any); ok {
-				for _, w := range where {
-					f, _ := w.(map[string]any)
-					if f == nil {
-						continue
-					}
-					q.Filters = append(q.Filters, loom.Filter{
-						Field: fmt.Sprint(f["field"]),
-						Op:    fmt.Sprint(f["op"]),
-						Value: fmt.Sprint(f["value"]),
-					})
-				}
-			}
-			rows, err := query(p.Context, q)
+			rows, err := query(p.Context, queryFromArgs(p.Args))
 			if err != nil {
 				return nil, err
 			}
-			out := make([]map[string]any, 0, len(rows))
-			for _, r := range rows {
-				doc := map[string]any{}
-				_ = json.Unmarshal(r.Data, &doc)
-				doc["id"] = r.ID
-				doc["namespace"] = r.Namespace
-				doc["updatedAt"] = r.UpdatedAt.Format(time.RFC3339Nano)
-				out = append(out, doc)
-			}
+			return rowDocs(rows), nil
+		},
+	}
+}
+
+// listChanged is the {x}sChanged subscription: the filtered list as it
+// stands, then the whole fresh list on every change — a live query.
+// Requery-and-diff per log wake-up; no delta bookkeeping, so rows
+// entering and leaving the filter just work. Sized for UI tables, not
+// unbounded feeds — use where/limit.
+func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+	return &gql.Field{
+		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
+		Args: listArgs(),
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			return p.Source, nil
+		},
+		Subscribe: func(p gql.ResolveParams) (any, error) {
+			q := queryFromArgs(p.Args)
+			ctx := p.Context
+			out := make(chan any)
+			go func() {
+				defer close(out)
+				wake, cancel := cli.Watch()
+				defer cancel()
+				poll := time.NewTicker(2 * time.Second)
+				defer poll.Stop()
+				var last []byte
+				step := func() bool {
+					rows, err := query(ctx, q)
+					if err != nil {
+						return false
+					}
+					docs := rowDocs(rows)
+					raw, err := json.Marshal(docs)
+					if err != nil || bytes.Equal(raw, last) {
+						return err == nil
+					}
+					last = raw
+					select {
+					case out <- any(docs):
+						return true
+					case <-ctx.Done():
+						return false
+					}
+				}
+				if !step() {
+					return
+				}
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-wake:
+					case <-poll.C:
+					}
+					if !step() {
+						return
+					}
+				}
+			}()
 			return out, nil
 		},
 	}

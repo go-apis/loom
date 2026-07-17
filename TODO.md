@@ -10,40 +10,9 @@ uploads (`file` type + `upload` blocks, BlobStore seam, gblob resumable
 GCS + Watch, DirBlobStore, shred deletes stream files), gateway-only
 public surface (Files + Streams passthrough + {x}Changed subscriptions
 over SSE on /graphql), Long everywhere (schema int emits/serves Long —
-money is int64, decided 2026-07-17).
-
-## 0. List subscriptions — NEXT UP (decided with Chris, 2026-07-17)
-
-The inflow masspayout screen: MassPayout 1-* Payout 1-* Payment; click
-"process", watch the payments change live. The 1-* aggregate answer is
-NOT parent-folds-children (consistency lie / contention hotspot):
-child events carry the parent id, read models re-group by parent, a
-process drives the parent's own transitions.
-
-The screen needs subscribing to a FILTERED LIST, not one doc:
-
-    subscription { paymentSummarysChanged(namespace: $ns,
-      where: [{field: "mass_payout_id", op: EQ, value: $mpId}]) { … } }
-
-Build: `{x}sChanged(namespace, where, order, limit)` alongside every
-list query — same shape as docChanged (graphql/graphql.go) but requery
-QueryEntities/QueryRecords per Client.Watch wake-up, byte-diff the
-marshaled list, re-send whole list on change (no delta bookkeeping;
-fine at table sizes). Emit in gen/graphql.go SDL too. ~A day.
-
-## 0.5 Keyed projections (the 1-* companion, after list subs)
-
-`projection massPayoutProgress -> MassPayoutProgress { on
-PaymentSettled key(mass_payout_id) }` — route child events onto a
-parent-keyed row. Runtime seam already exists (ProjectionDef.EntityID);
-missing pieces are (a) schema syntax + gen for the key, (b) an escape
-hatch for folds that assignment-by-shared-name can't express
-(settled_count++): mark the projection's fold hand-written — a stub,
-generated once then owned, like handlers; checkpoint/rebuild machinery
-stays framework-owned. Also collapses ten99's RecipientMirror
-aggregate+process (see Parked) and pairs with foreign-event
-projections. Note "click process" itself = the existing batches
-feature (durable fan-out + per-item failures + progress stream).
+money is int64, decided 2026-07-17), live lists + 1-* (v0.18:
+`{x}sChanged` filtered list subscriptions; projection `key(field)`
+routing + `@fold` hand-written fold stubs — the masspayout shape).
 
 ## 1. `@table` — typed per-entity tables (the deferred perf milestone)
 

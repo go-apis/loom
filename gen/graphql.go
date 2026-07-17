@@ -116,12 +116,16 @@ type UploadSession {
 		queries = append(queries,
 			fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(r.Name), r.Name),
 			fmt.Sprintf("  %ss(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
+		subscriptions = append(subscriptions,
+			fmt.Sprintf("  %ssChanged(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
 	}
 	for _, e := range s.Entities {
 		queries = append(queries,
 			fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(e.Name), e.Name),
 			fmt.Sprintf("  %ss(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
-		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: String!, id: UUID!): %s!", lowerFirst(e.Name), e.Name))
+		subscriptions = append(subscriptions,
+			fmt.Sprintf("  %sChanged(namespace: String!, id: UUID!): %s!", lowerFirst(e.Name), e.Name),
+			fmt.Sprintf("  %ssChanged(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
 	}
 
 	writeBlock(&b, "type Mutation", mutations)

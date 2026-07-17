@@ -36,11 +36,16 @@ type ShipOnPaymentReactions interface {
 	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
 }
 
+type CustomerSpendFolds interface {
+	OnOrderPlaced(state *CustomerSpend, evt *loom.Event, data *OrderPlaced) error
+}
+
 type Impl struct {
 	Order              OrderHandlers
 	DropAutoCancel     DropAutoCancelReactions
 	ScheduleAutoCancel ScheduleAutoCancelReactions
 	ShipOnPayment      ShipOnPaymentReactions
+	CustomerSpend      CustomerSpendFolds
 }
 
 func NewRegistry(impl Impl) *loom.Registry {
@@ -171,6 +176,26 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{Name: "Contract", Owner: "Order", OnStarted: "RequestContract", StartedField: "contract", OnUploaded: "AttachContract", UploadedField: "contract"},
 		},
 		Projections: []*loom.ProjectionDef{
+			{
+				Name:     "customerSpend",
+				Entity:   "CustomerSpend",
+				Events:   []string{"OrderPlaced"},
+				NewState: func() loom.EntityState { return &CustomerSpend{} },
+				EntityID: func(evt *loom.Event) uuid.UUID {
+					switch e := evt.Data.(type) {
+					case *OrderPlaced:
+						return e.CustomerId
+					}
+					return evt.AggregateID
+				},
+				Fold: func(state loom.EntityState, evt *loom.Event) error {
+					switch data := evt.Data.(type) {
+					case *OrderPlaced:
+						return impl.CustomerSpend.OnOrderPlaced(state.(*CustomerSpend), evt, data)
+					}
+					return fmt.Errorf("projection customerSpend: unroutable event %s", evt.Type)
+				},
+			},
 			{
 				Name:     "orderSummary",
 				Entity:   "OrderSummary",

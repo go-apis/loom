@@ -211,8 +211,12 @@ type ProjectionDef struct {
 	PII      []string
 	NewState func() EntityState
 	// EntityID picks the read-model row an event lands in; generated code
-	// defaults to the event's aggregate id.
+	// defaults to the event's aggregate id, or the `key(field)` payload
+	// field for keyed subscriptions.
 	EntityID func(evt *Event) uuid.UUID
+	// Fold, when set (@fold projections), replaces the state's generated
+	// assignment fold with the hand-written one wired through Impl.
+	Fold func(state EntityState, evt *Event) error
 }
 
 func (r *Registry) aggregateForCommand(cmdName string) (*AggregateDef, *CommandDef) {

@@ -72,6 +72,7 @@ func TestGraphQL(t *testing.T) {
 		"placeOrder(input: PlaceOrderInput!): DispatchResult!",
 		"orderSummarys(namespace: String!, where: [FilterInput!]",
 		"orderSummaryChanged(namespace: String!, id: UUID!): OrderSummary!",
+		"orderSummarysChanged(namespace: String!, where: [FilterInput!], order: String, limit: Int, offset: Int): [OrderSummary!]!",
 		"items: [OrderItemInput!]!",
 		"customerId: UUID!",
 		"scalar Long",
@@ -106,6 +107,7 @@ func TestFoldersLayout(t *testing.T) {
 		"aggregates/order.go",
 		"policies/scheduleautocancel.go",
 		"processes/shiponpayment.go",
+		"projections/customerspend.go", // @fold projections get stubs
 		"registry.go",
 	} {
 		found := false
@@ -129,7 +131,7 @@ func TestFoldersLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"package orders", `"example.com/orders/aggregates"`, "&aggregates.Order{}", "&processes.ShipOnPayment{}", "&policies.ScheduleAutoCancel{}"} {
+	for _, want := range []string{"package orders", `"example.com/orders/aggregates"`, "&aggregates.Order{}", "&processes.ShipOnPayment{}", "&policies.ScheduleAutoCancel{}", "&projections.CustomerSpend{}"} {
 		if !strings.Contains(string(reg), want) {
 			t.Fatalf("registry missing %q:\n%s", want, reg)
 		}

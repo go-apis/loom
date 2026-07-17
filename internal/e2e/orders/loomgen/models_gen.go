@@ -136,6 +136,22 @@ func (s *Order) Fold(eventType string, data any) error {
 	return nil
 }
 
+type CustomerSpend struct {
+	OrderCount int64 `json:"order_count"`
+	SpendCents int64 `json:"spend_cents"`
+}
+
+func (s *CustomerSpend) Fold(eventType string, data any) error {
+	switch e := data.(type) {
+	case *OrderPlaced:
+		_ = e // no shared fields
+	case nil:
+		_ = e
+		return loomErrNilEvent(eventType)
+	}
+	return nil
+}
+
 type OrderSummary struct {
 	Currency   string    `json:"currency"`
 	CustomerId uuid.UUID `json:"customer_id"`

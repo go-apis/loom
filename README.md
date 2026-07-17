@@ -76,6 +76,18 @@ events, state folds) and `record` (state-of-record: ledgers, balances —
 handlers mutate state directly; emitted events are announcements into the
 log, never a rebuild source).
 
+Projections handle parent–child (1-\*) shapes without the parent
+aggregate folding its children: `key(field)` routes an event onto the
+row named by that payload field, and `@fold` hands the fold to a
+once-generated stub for what assignment can't express:
+
+```
+projection massPayoutProgress -> MassPayoutProgress @fold {
+  on MassPayoutStarted
+  on PaymentSettled key(mass_payout_id)   // child event → parent's row
+}
+```
+
 ## Timers
 
 Durable scheduled commands, written in the same transaction that decided
@@ -269,10 +281,13 @@ mux.Handle("/files", loomgraphql.Files(recipientsCli, filingsCli)) // FileRef.do
 Mutations dispatch commands (`placeOrder(input: {...}) { status }`),
 queries serve aggregates and filtered read-model lists, and Join fields
 are the hand-written cross-service edges no generator should guess.
-Subscriptions (`orderChanged(namespace, id) { status }`) are served on
-the same endpoint over SSE — send `Accept: text/event-stream` (GET with
-`?query=&variables=` works with the browser's native EventSource) and
-each change arrives as an `event: next` execution result. Raw
+Subscriptions are served on the same endpoint over SSE — send
+`Accept: text/event-stream` (GET with `?query=&variables=` works with
+the browser's native EventSource) and each change arrives as an
+`event: next` execution result. `{x}Changed(namespace, id)` watches one
+doc; `{x}sChanged(namespace, where, order, limit)` is a live filtered
+list — the whole fresh list on every change, which is how a masspayout
+screen watches its payments settle. Raw
 resumable watches also pass through via `loomgraphql.Streams`. Together
 with `Files`, the gateway is the whole public surface: keep the
 services' own HTTP handlers on the private network. Schema `int` fields

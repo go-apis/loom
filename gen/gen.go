@@ -357,6 +357,17 @@ func loomErrNilEvent(eventType string) error {
 		}
 		b.WriteString("}\n\n")
 	}
+	// @fold projections: the fold is hand-written against this interface
+	for _, p := range g.s.Projections {
+		if !p.Fold {
+			continue
+		}
+		fmt.Fprintf(&b, "type %sFolds interface {\n", exported(p.Name))
+		for _, sub := range p.Subscriptions {
+			fmt.Fprintf(&b, "\tOn%s(state *%s, evt *loom.Event, data *%s) error\n", sub.Event, p.Entity, sub.Event)
+		}
+		b.WriteString("}\n\n")
+	}
 
 	// Impl: one field per thing the developer implements
 	b.WriteString("type Impl struct {\n")
@@ -368,6 +379,11 @@ func loomErrNilEvent(eventType string) error {
 	}
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		fmt.Fprintf(&b, "\t%s %sReactions\n", exported(r.Name), exported(r.Name))
+	}
+	for _, p := range g.s.Projections {
+		if p.Fold {
+			fmt.Fprintf(&b, "\t%s %sFolds\n", exported(p.Name), exported(p.Name))
+		}
 	}
 	b.WriteString("}\n\n")
 
@@ -448,7 +464,31 @@ func loomErrNilEvent(eventType string) error {
 			}
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
-		b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },\n\t\t\t},\n")
+		keyed := false
+		for _, sub := range p.Subscriptions {
+			keyed = keyed || sub.Key != ""
+		}
+		if keyed {
+			// key(field): child events land on the parent-keyed row
+			b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID {\n\t\t\t\t\tswitch e := evt.Data.(type) {\n")
+			for _, sub := range p.Subscriptions {
+				if sub.Key == "" {
+					continue
+				}
+				fmt.Fprintf(&b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn e.%s\n", sub.Event, exported(sub.Key))
+			}
+			b.WriteString("\t\t\t\t\t}\n\t\t\t\t\treturn evt.AggregateID\n\t\t\t\t},\n")
+		} else {
+			b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },\n")
+		}
+		if p.Fold {
+			fmt.Fprintf(&b, "\t\t\t\tFold: func(state loom.EntityState, evt *loom.Event) error {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
+			for _, sub := range p.Subscriptions {
+				fmt.Fprintf(&b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn impl.%s.On%s(state.(*%s), evt, data)\n", sub.Event, exported(p.Name), sub.Event, p.Entity)
+			}
+			fmt.Fprintf(&b, "\t\t\t\t\t}\n\t\t\t\t\treturn fmt.Errorf(\"projection %s: unroutable event %%s\", evt.Type)\n\t\t\t\t},\n", p.Name)
+		}
+		b.WriteString("\t\t\t},\n")
 	}
 	b.WriteString("\t\t},\n\t}\n}\n\n")
 
@@ -540,12 +580,13 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 // --- stubs ---
 
 // stubKinds maps schema kinds to their folder/package when Layout is
-// "folders". Projections generate no stubs, so they have no folder.
+// "folders". Only @fold projections generate stubs.
 const (
-	kindAggregates = "aggregates"
-	kindRecords    = "records"
-	kindPolicies   = "policies"
-	kindProcesses  = "processes"
+	kindAggregates  = "aggregates"
+	kindRecords     = "records"
+	kindPolicies    = "policies"
+	kindProcesses   = "processes"
+	kindProjections = "projections"
 )
 
 func (g *generator) folders() bool { return g.cfg.Layout == "folders" }
@@ -619,10 +660,33 @@ func (g *generator) stubs() map[string]string {
 		reactorStub(kindProcesses, r)
 	}
 
+	for _, p := range g.s.Projections {
+		if !p.Fold {
+			continue
+		}
+		path, pkg := g.place(kindProjections, strings.ToLower(p.Name)+".go")
+		var b strings.Builder
+		fmt.Fprintf(&b, "package %s\n\n", pkg)
+		fmt.Fprintf(&b, "import (\n\t\"github.com/go-apis/loom\"\n\n\t%q\n)\n\n", genImport)
+		fmt.Fprintf(&b, "// %s implements %s.%sFolds — the @fold projection's hand-written\n// fold. Runs on the checkpointed projection runner; rebuild refolds the\n// whole log, so keep it deterministic. Yours to edit.\n", exported(p.Name), g.genPkg, exported(p.Name))
+		fmt.Fprintf(&b, "type %s struct{}\n\n", exported(p.Name))
+		for _, sub := range p.Subscriptions {
+			fmt.Fprintf(&b, "func (f *%s) On%s(state *%s.%s, evt *loom.Event, data *%s.%s) error {\n\tpanic(\"not implemented\")\n}\n\n",
+				exported(p.Name), sub.Event, g.genPkg, p.Entity, g.genPkg, sub.Event)
+		}
+		out[path] = b.String()
+	}
+
 	// wiring, generated once so additions appear as compile errors on Impl
 	var b strings.Builder
 	fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
 	b.WriteString("import (\n\t\"github.com/go-apis/loom\"\n\n")
+	foldProjections := 0
+	for _, p := range g.s.Projections {
+		if p.Fold {
+			foldProjections++
+		}
+	}
 	if g.folders() {
 		for _, kind := range []struct {
 			name string
@@ -631,6 +695,7 @@ func (g *generator) stubs() map[string]string {
 			{kindAggregates, len(g.s.Aggregates) > 0},
 			{kindPolicies, len(g.s.Policies) > 0},
 			{kindProcesses, len(g.s.Processes) > 0},
+			{kindProjections, foldProjections > 0},
 			{kindRecords, len(g.s.Records) > 0},
 		} {
 			if kind.used {
@@ -652,6 +717,11 @@ func (g *generator) stubs() map[string]string {
 	}
 	for _, r := range g.s.Processes {
 		fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(r.Name), g.qualify(kindProcesses, exported(r.Name)))
+	}
+	for _, p := range g.s.Projections {
+		if p.Fold {
+			fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(p.Name), g.qualify(kindProjections, exported(p.Name)))
+		}
 	}
 	b.WriteString("\t})\n}\n")
 	out["registry.go"] = b.String()

@@ -23,6 +23,7 @@ aggregate Order @snapshot(5) {
   } -> ContractAttached
   event OrderPlaced @publish @v(2) {
     status: string!
+    customer_id: uuid!
     items: [OrderItem]!
   }
   event ContractAttached {
@@ -61,6 +62,14 @@ projection orderSummary -> OrderSummary {
   on OrderPlaced
 }
 
+entity Spend {
+  order_count: int
+}
+
+projection spend -> Spend @fold {
+  on OrderPlaced key(customer_id)
+}
+
 policy noteLocally {
   on OrderPlaced -> PlaceOrder
 }
@@ -97,8 +106,15 @@ func TestParse(t *testing.T) {
 	if foreign == nil || foreign.Service != "billing" || !foreign.Publish {
 		t.Fatalf("foreign event misparsed: %+v", foreign)
 	}
-	if len(s.Policies) != 2 || len(s.Processes) != 1 || len(s.Projections) != 1 {
+	if len(s.Policies) != 2 || len(s.Processes) != 1 || len(s.Projections) != 2 {
 		t.Fatalf("reactors misparsed")
+	}
+	// projections sort by name: [orderSummary, spend]
+	if spend := s.Projections[1]; !spend.Fold || spend.Subscriptions[0].Key != "customer_id" {
+		t.Fatalf("@fold/key misparsed: %+v", spend)
+	}
+	if plain := s.Projections[0]; plain.Fold || plain.Subscriptions[0].Key != "" {
+		t.Fatalf("plain projection contaminated: %+v", plain)
 	}
 	if len(s.Records) != 1 || len(s.Records[0].Commands) != 2 {
 		t.Fatalf("record misparsed: %+v", s.Records)
@@ -255,6 +271,51 @@ aggregate B {
 }
 `,
 			wantErr: "not a command of B",
+		},
+		"projection key on missing field": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+entity Y { x: string }
+projection p -> Y {
+  on E key(parent_id)
+}
+`,
+			wantErr: "key(parent_id) is not a field of event E",
+		},
+		"projection key on non-uuid field": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { parent_id: string! }
+}
+entity Y { x: string }
+projection p -> Y {
+  on E key(parent_id)
+}
+`,
+			wantErr: "must be a required uuid field",
+		},
+		"projection key on optional field": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { parent_id: uuid }
+}
+entity Y { x: string }
+projection p -> Y {
+  on E key(parent_id)
+}
+`,
+			wantErr: "must be a required uuid field",
 		},
 		"duplicate effect": {
 			src: `

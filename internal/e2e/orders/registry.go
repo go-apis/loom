@@ -14,5 +14,6 @@ func NewRegistry() *loom.Registry {
 		ShipOnPayment:      &ShipOnPayment{},
 		ScheduleAutoCancel: &ScheduleAutoCancel{},
 		DropAutoCancel:     &DropAutoCancel{},
+		CustomerSpend:      &CustomerSpend{},
 	})
 }

@@ -148,7 +148,11 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 					return 0, fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
 				}
 			}
-			if err := state.Fold(evt.Type, evt.Data); err != nil {
+			fold := func() error { return state.Fold(evt.Type, evt.Data) }
+			if p.Fold != nil { // @fold: the hand-written fold
+				fold = func() error { return p.Fold(state, evt) }
+			}
+			if err := fold(); err != nil {
 				return 0, fmt.Errorf("projection %s fold %s: %w", p.Name, evt.Type, err)
 			}
 			out, err := json.Marshal(state)

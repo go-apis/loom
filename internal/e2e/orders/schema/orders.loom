@@ -76,6 +76,18 @@ projection orderSummary -> OrderSummary {
   on OrderCancelled
 }
 
+// one row per CUSTOMER, folded from many orders' events: key() routes
+// each event to the customer's row, @fold hands the counting to code
+// assignment folds can't express
+entity CustomerSpend {
+  order_count: int
+  spend_cents: int
+}
+
+projection customerSpend -> CustomerSpend @fold {
+  on OrderPlaced key(customer_id)
+}
+
 // billing's InvoicePaid arrives off the bus; the invoice shares the order's
 // aggregate id, so the reaction ships that order.
 process shipOnPayment {

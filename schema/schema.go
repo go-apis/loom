@@ -92,13 +92,22 @@ type Subscription struct {
 }
 
 type Projection struct {
-	Name          string            `yaml:"name" json:"name"`
-	Entity        string            `yaml:"entity" json:"entity"`
+	Name   string `yaml:"name" json:"name"`
+	Entity string `yaml:"entity" json:"entity"`
+	// Fold marks the projection's fold hand-written (@fold): loom
+	// generates a Folds interface and a once-only stub instead of the
+	// assignment fold — for shapes assignment can't express (counters,
+	// per-child maps). Checkpointing/rebuild stay framework-owned.
+	Fold          bool              `yaml:"fold,omitempty" json:"fold,omitempty"`
 	Subscriptions []*ProjectionShot `yaml:"on" json:"on"`
 }
 
 type ProjectionShot struct {
 	Event string `yaml:"event" json:"event"`
+	// Key routes the event to the entity row named by this payload field
+	// (a uuid) instead of the event's own aggregate id — how child
+	// events land on a parent-keyed row (the 1-* read-model answer).
+	Key string `yaml:"key,omitempty" json:"key,omitempty"`
 }
 
 type NamedType struct {
@@ -385,8 +394,26 @@ func (s *Schema) Validate() error {
 			fail("projection %s projects into undeclared entity %s", p.Name, p.Entity)
 		}
 		for _, sub := range p.Subscriptions {
-			if s.FindEvent(sub.Event) == nil {
+			evt := s.FindEvent(sub.Event)
+			if evt == nil {
 				fail("projection %s subscribes to undeclared event %s", p.Name, sub.Event)
+			}
+			if sub.Key == "" || evt == nil {
+				continue
+			}
+			// key(field) routing needs a required uuid field on the event
+			// payload — a missing key would route to the nil row
+			field := payloadProps(evt.Payload)[sub.Key]
+			required := false
+			if evt.Payload != nil {
+				for _, r := range evt.Payload.Required {
+					required = required || r == sub.Key
+				}
+			}
+			if field == nil {
+				fail("projection %s: key(%s) is not a field of event %s", p.Name, sub.Key, sub.Event)
+			} else if field.Type != "string" || field.Format != "uuid" || field.Nullable || !required {
+				fail("projection %s: key(%s) on %s must be a required uuid field", p.Name, sub.Key, sub.Event)
 			}
 		}
 	}

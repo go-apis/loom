@@ -418,6 +418,14 @@ func (p *parser) reactor(into *[]*schema.Reactor, kind string) error {
 	return nil
 }
 
+// projection parses a read-model maintainer. `@fold` hands the fold to
+// a stub; `key(field)` routes an event to the row named by that payload
+// field instead of the event's aggregate id:
+//
+//	projection massPayoutProgress -> MassPayoutProgress @fold {
+//	  on MassPayoutStarted
+//	  on PaymentSettled key(mass_payout_id)
+//	}
 func (p *parser) projection() error {
 	p.next()
 	name, err := p.ident()
@@ -431,7 +439,19 @@ func (p *parser) projection() error {
 	if err != nil {
 		return err
 	}
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
 	proj := &schema.Projection{Name: name, Entity: entity}
+	for d := range dirs {
+		if d != "fold" {
+			return fmt.Errorf("projection %s: unknown directive @%s (projections take @fold)", name, d)
+		}
+	}
+	if _, ok := dirs["fold"]; ok {
+		proj.Fold = true
+	}
 	if err := p.expect("{"); err != nil {
 		return err
 	}
@@ -443,7 +463,19 @@ func (p *parser) projection() error {
 		if err != nil {
 			return err
 		}
-		proj.Subscriptions = append(proj.Subscriptions, &schema.ProjectionShot{Event: evt})
+		shot := &schema.ProjectionShot{Event: evt}
+		if p.accept("key") {
+			if err := p.expect("("); err != nil {
+				return err
+			}
+			if shot.Key, err = p.ident(); err != nil {
+				return err
+			}
+			if err := p.expect(")"); err != nil {
+				return err
+			}
+		}
+		proj.Subscriptions = append(proj.Subscriptions, shot)
 	}
 	p.out.Projections = append(p.out.Projections, proj)
 	return nil

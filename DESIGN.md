@@ -19,7 +19,8 @@ consume     := "consume" IDENT "." IDENT fields?
 policy      := "policy" IDENT "{" on* "}"
 process     := "process" IDENT "{" (on | effect)* "}"
 effect      := "effect" IDENT
-projection  := "projection" IDENT "->" IDENT "{" ("on" eventRef)* "}"
+projection  := "projection" IDENT "->" IDENT "@fold"? "{" projOn* "}"
+projOn      := "on" eventRef ("key" "(" IDENT ")")?
 on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
 type        := "type" IDENT fields
@@ -53,6 +54,8 @@ Rules enforced at parse/validate time:
   belong to the enclosing aggregate/record and carry exactly one required
   `file` field (loom fills it); upload names are service-unique — they
   become API surface (`create{Name}Upload`)
+- a projection's `key(field)` must name a required uuid field on that
+  event's payload — a missing key would route to the nil row
 
 ## Generated code
 
@@ -167,6 +170,32 @@ generated switches, folds from generated assignments.
   (`listenLoop`), which also makes runners multi-instance-responsive. A
   gRPC transport can be added from the same registry later if a genuine
   internal-RPC need appears.
+
+## Parent–child (1-*) across aggregates
+
+The MassPayout problem: a parent with many child aggregates, and a UI
+that wants to watch the children as a group. Aggregates are consistency
+boundaries, so the parent must NOT fold its children (contention
+hotspot, consistency lie). The relationship lives in three places:
+
+1. Child events carry the parent id (`PaymentSettled { mass_payout_id }`).
+2. Read models re-group children by parent — `key(field)` routes an
+   event to the row named by that payload field instead of the event's
+   own aggregate id, and `@fold` hands the projection's fold to a
+   once-generated stub for shapes assignment folds can't express
+   (`settled_count++`, per-child status maps). Checkpointing, the
+   advisory lock, and rebuild stay framework-owned; hand-written folds
+   must stay deterministic because rebuild refolds the whole log.
+3. A process drives the parent's own transitions (`on PaymentSettled ->
+   RecordPaymentOutcome`); the process runner serializes the commands,
+   so no conflict storm.
+
+The UI watches either the parent-keyed progress row (`{x}Changed`) or a
+live filtered list: `{x}sChanged(namespace, where, order, limit)` is a
+subscription form of every list query — requery on log wake-ups, diff,
+re-send the whole list. No delta bookkeeping, so rows entering and
+leaving the filter just work; size it with where/limit (tables, not
+unbounded feeds).
 
 ## The gateway is the public surface
 
