@@ -67,6 +67,9 @@ parked in favor of ten99).
   schema_version column; long-lived timers crossing a shape change rely
   on additive compatibility today. Needs a version column + a
   decodeCommand() hook if it ever bites.
+- Projection Rebuild has no HTTP/console surface — the ten99 @table
+  cutover needed hand-SQL (truncate + delete checkpoint row). Add
+  POST /projections/{name}/rebuild + a console button.
 - Foreign-event projections (would collapse ten99's RecipientMirror
   aggregate+process into a plain projection).
 - TypeScript target for the schema (payloads are already JSON Schema).
