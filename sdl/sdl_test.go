@@ -56,6 +56,9 @@ policy postOnPlace {
 
 entity OrderSummary @table {
   status: string
+  customer_id: uuid
+  join spend -> Spend via customer_id
+  join invoices -> [billing.InvoiceSummary] via customer_id
 }
 
 projection orderSummary -> OrderSummary {
@@ -143,6 +146,13 @@ func TestParse(t *testing.T) {
 	if ups := s.Aggregates[0].Uploads; len(ups) != 1 || ups[0].Name != "Contract" || ups[0].OnUploaded != "AttachContract" || ups[0].OnStarted != "" {
 		t.Fatalf("upload misparsed: %+v", s.Aggregates[0].Uploads)
 	}
+	// declared joins: local single + cross-service list
+	joins := s.Entities[0].Joins
+	if len(joins) != 2 ||
+		joins[0].Field != "spend" || joins[0].Service != "" || joins[0].Entity != "Spend" || joins[0].List || joins[0].Via != "customer_id" ||
+		joins[1].Field != "invoices" || joins[1].Service != "billing" || joins[1].Entity != "InvoiceSummary" || !joins[1].List || joins[1].Via != "customer_id" {
+		t.Fatalf("joins misparsed: %+v %+v", joins[0], joins[1])
+	}
 	if _, c := s.FindCommand("AttachContract"); c == nil || c.FileField() != "contract" {
 		t.Fatalf("file field misparsed")
 	}
@@ -153,6 +163,40 @@ func TestValidationErrors(t *testing.T) {
 		src     string
 		wantErr string
 	}{
+		"join targets undeclared local entity": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { customer_id: uuid! }
+}
+entity P {
+  customer_id: uuid
+  join spend -> Missing via customer_id
+}
+projection p -> P { on E }
+`,
+			wantErr: "targets undeclared entity",
+		},
+		"join via unknown field": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { customer_id: uuid! }
+}
+entity P {
+  customer_id: uuid
+  join other -> P2 via nope
+}
+entity P2 { customer_id: uuid }
+projection p -> P { on E }
+projection p2 -> P2 { on E }
+`,
+			wantErr: "no such field on the entity",
+		},
 		"policy on foreign event": {
 			src: `
 service s

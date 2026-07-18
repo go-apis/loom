@@ -148,6 +148,29 @@ type LedgerEntry struct {
 	PostedAt    time.Time `json:"posted_at"`
 }
 
+type InvoiceSummary struct {
+	AmountCents int64     `json:"amount_cents"`
+	CustomerId  uuid.UUID `json:"customer_id"`
+	Status      string    `json:"status"`
+}
+
+func (s *InvoiceSummary) Fold(eventType string, data any) error {
+	switch e := data.(type) {
+	case *InvoicePaid:
+		s.AmountCents = e.AmountCents
+		s.CustomerId = e.CustomerId
+		s.Status = e.Status
+	case *InvoiceRaised:
+		s.AmountCents = e.AmountCents
+		s.CustomerId = e.CustomerId
+		s.Status = e.Status
+	case nil:
+		_ = e
+		return loomErrNilEvent(eventType)
+	}
+	return nil
+}
+
 type PayeeDirectory struct {
 	Name     string `json:"name"`
 	Tin      string `json:"tin"`

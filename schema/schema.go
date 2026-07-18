@@ -83,6 +83,28 @@ type Entity struct {
 	// BI. Opt-in; switching is create table + Rebuild (projections refold).
 	Table bool     `yaml:"table,omitempty" json:"table,omitempty"`
 	State *Payload `yaml:"state" json:"state"`
+	// Joins are gateway-resolved edges to other entities (declared with
+	// `join`); the runtime ignores them — only the GraphQL gateway wires
+	// them up, erroring at compose time if the target isn't mounted.
+	Joins []*Join `yaml:"joins,omitempty" json:"joins,omitempty"`
+}
+
+// Join declares a gateway edge from one entity to another, possibly in
+// another service:
+//
+//	join recipient -> recipients.RecipientSummary via recipient_id
+//	join forms -> [filings.FormList] via recipient_id
+//
+// A single join follows a local uuid field (Via) to the target's row id.
+// A list join collects the target rows whose Via field equals this row's
+// id. Cross-service targets resolve when the gateway composes the
+// services; same-service targets are validated here.
+type Join struct {
+	Field   string `yaml:"field" json:"field"`
+	Service string `yaml:"service,omitempty" json:"service,omitempty"` // empty = this service
+	Entity  string `yaml:"entity" json:"entity"`
+	List    bool   `yaml:"list,omitempty" json:"list,omitempty"`
+	Via     string `yaml:"via" json:"via"`
 }
 
 // Reactor backs policies (in-transaction, local events only) and processes
@@ -450,6 +472,32 @@ func (s *Schema) Validate() error {
 		}
 		if pii := e.State.PIIFields(); len(pii) > 0 {
 			fail("entity %s: @table and @pii are incompatible — typed columns cannot hold sealed values; keep this entity in the doc store (filters cannot match sealed fields anyway)", e.Name)
+		}
+	}
+
+	for _, e := range s.Entities {
+		for _, j := range e.Joins {
+			if payloadProps(e.State)[j.Field] != nil {
+				fail("entity %s: join %s collides with a state field", e.Name, j.Field)
+			}
+			if !j.List {
+				// a single join follows a local field to the target's id
+				f := payloadProps(e.State)[j.Via]
+				if f == nil {
+					fail("entity %s: join %s via %s — no such field on the entity", e.Name, j.Field, j.Via)
+				} else if f.Type != "string" || f.Format != "uuid" {
+					fail("entity %s: join %s via %s must follow a uuid field", e.Name, j.Field, j.Via)
+				}
+			}
+			if j.Service != "" && j.Service != s.Service {
+				continue // foreign target: the gateway validates at compose time
+			}
+			target := s.FindEntity(j.Entity)
+			if target == nil {
+				fail("entity %s: join %s targets undeclared entity %s", e.Name, j.Field, j.Entity)
+			} else if j.List && payloadProps(target.State)[j.Via] == nil {
+				fail("entity %s: join %s via %s — no such field on %s", e.Name, j.Field, j.Via, j.Entity)
+			}
 		}
 	}
 

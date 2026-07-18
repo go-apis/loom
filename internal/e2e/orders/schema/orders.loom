@@ -86,10 +86,14 @@ projection orderSummary -> OrderSummary {
 
 // one row per CUSTOMER, folded from many orders' events: key() routes
 // each event to the customer's row, @fold hands the counting to code
-// assignment folds can't express
+// assignment folds can't express. The declared joins fan back out: this
+// row's id IS the customer id, so list joins collect by customer_id —
+// `orders` locally, `invoices` across the bus in billing.
 entity CustomerSpend {
   order_count: int
   spend_cents: int
+  join orders -> [OrderSummary] via customer_id
+  join invoices -> [billing.InvoiceSummary] via customer_id
 }
 
 projection customerSpend -> CustomerSpend @fold {

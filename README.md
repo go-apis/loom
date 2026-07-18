@@ -340,8 +340,30 @@ mux.Handle("/files", loomgraphql.Files(recipientsCli, filingsCli)) // FileRef.do
 ```
 
 Mutations dispatch commands (`placeOrder(input: {...}) { status }`),
-queries serve aggregates and filtered read-model lists, and Join fields
-are the hand-written cross-service edges no generator should guess.
+queries serve aggregates and filtered read-model lists. Cross-entity
+edges are declared in the schema with `join` — the gateway wires the
+resolvers at compose time:
+
+```
+entity FormList @table {
+  recipient_id: uuid
+  join recipient -> recipients.RecipientSummary via recipient_id
+}
+
+entity RecipientSummary @table {
+  join forms -> [filings.FormList] via recipient_id
+}
+```
+
+A single join follows the local `via` field to the target's row id (a
+dangling or null reference resolves to null); a `[list]` join collects
+the target rows whose `via` field equals this row's id. Targets may
+live in another service (`service.Entity`) — the edge only materializes
+on a gateway that mounts both sides, so partial gateways stay valid,
+same-namespace scoping applies, and same-service targets are validated
+by `loom check`. The `Joins` config hook remains for resolvers no
+declaration can express — hand-written entries land after declared ones,
+so they can override a field.
 Subscriptions are served on the same endpoint over SSE — send
 `Accept: text/event-stream` (GET with `?query=&variables=` works with
 the browser's native EventSource) and each change arrives as an

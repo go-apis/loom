@@ -181,7 +181,17 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 			},
 		},
+		Joins: []*loom.JoinDef{
+			{OnEntity: "InvoiceSummary", Field: "spend", Service: "orders", Entity: "CustomerSpend", List: false, Via: "customer_id"},
+		},
 		Projections: []*loom.ProjectionDef{
+			{
+				Name:     "invoiceSummary",
+				Entity:   "InvoiceSummary",
+				Events:   []string{"InvoicePaid", "InvoiceRaised"},
+				NewState: func() loom.EntityState { return &InvoiceSummary{} },
+				EntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },
+			},
 			{
 				Name:     "payeeDirectory",
 				Entity:   "PayeeDirectory",

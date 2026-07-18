@@ -186,6 +186,10 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Uploads: []*loom.UploadDef{
 			{Name: "Contract", Owner: "Order", OnStarted: "RequestContract", StartedField: "contract", OnUploaded: "AttachContract", UploadedField: "contract"},
 		},
+		Joins: []*loom.JoinDef{
+			{OnEntity: "CustomerSpend", Field: "orders", Service: "", Entity: "OrderSummary", List: true, Via: "customer_id"},
+			{OnEntity: "CustomerSpend", Field: "invoices", Service: "billing", Entity: "InvoiceSummary", List: true, Via: "customer_id"},
+		},
 		Tables: []*loom.TableDef{
 			{
 				Entity: "OrderSummary",

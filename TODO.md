@@ -42,7 +42,11 @@ admin UI (v0.24: loomgraphql.UI("/graphql") — self-contained page built
 from introspection at load: list views w/ filters + live {x}sChanged
 toggle (fetch-streamed SSE so the Bearer header works), doc detail,
 mutation forms from input types, token/namespace header incl. "*",
-?token=&ns=&view= dev links).
+?token=&ns=&view= dev links), declared joins (v0.25: `join field ->
+[service.Entity] via fk` on entities — gateway auto-wires single/list
+resolvers at compose time, skips edges whose target service isn't
+mounted, cfg.Joins still overrides; kills the hand-written Join closures
+in ten99's main.go).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
 ## 1. Old-envelope compat codec for gpub

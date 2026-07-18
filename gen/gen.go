@@ -567,6 +567,21 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("\t\t},\n")
 	}
 
+	joins := false
+	for _, e := range g.s.Entities {
+		joins = joins || len(e.Joins) > 0
+	}
+	if joins {
+		b.WriteString("\t\tJoins: []*loom.JoinDef{\n")
+		for _, e := range g.s.Entities {
+			for _, j := range e.Joins {
+				fmt.Fprintf(&b, "\t\t\t{OnEntity: %q, Field: %q, Service: %q, Entity: %q, List: %v, Via: %q},\n",
+					e.Name, j.Field, j.Service, j.Entity, j.List, j.Via)
+			}
+		}
+		b.WriteString("\t\t},\n")
+	}
+
 	g.tableDefs(&b)
 
 	b.WriteString("\t\tProjections: []*loom.ProjectionDef{\n")

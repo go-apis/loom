@@ -132,6 +132,22 @@ type Registry struct {
 	Projections []*ProjectionDef
 	Uploads     []*UploadDef
 	Tables      []*TableDef
+	Joins       []*JoinDef
+}
+
+// JoinDef is a schema-declared gateway edge between entities (`join` in
+// the DSL). The runtime ignores these — the GraphQL gateway wires them
+// into resolvers when it composes services, erroring if the target
+// entity isn't mounted.
+type JoinDef struct {
+	OnEntity string // the entity the field hangs off
+	Field    string
+	Service  string // owning service of the target; "" = same service
+	Entity   string // target entity
+	List     bool
+	// Via: single joins follow this local field to the target's row id;
+	// list joins collect target rows whose Via field equals this row's id.
+	Via string
 }
 
 // TableDef backs an @table entity: the read model lives in its own typed

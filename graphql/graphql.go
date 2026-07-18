@@ -66,6 +66,27 @@ func New(cfg Config) (http.Handler, error) {
 			return nil, err
 		}
 	}
+	// schema-declared joins (`join` in the DSL) wire first; explicit
+	// cfg.Joins land after, so a hand-written resolver can override a
+	// declared one field-for-field
+	byService := map[string]*loom.Client{}
+	for _, cli := range cfg.Services {
+		byService[cli.Registry().Service] = cli
+	}
+	for _, cli := range cfg.Services {
+		reg := cli.Registry()
+		for _, jd := range reg.Joins {
+			target := cli
+			if jd.Service != "" && jd.Service != reg.Service {
+				if target = byService[jd.Service]; target == nil {
+					continue // target service not composed here — the field just doesn't exist on this gateway
+				}
+			}
+			if err := b.join(declaredJoin(jd, target)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for _, j := range cfg.Joins {
 		if err := b.join(j); err != nil {
 			return nil, err
@@ -354,6 +375,52 @@ func (b *builder) addQuery(name string, f *gql.Field) error {
 	}
 	b.queries[name] = f
 	return nil
+}
+
+// declaredJoin turns a schema-declared JoinDef into a Join with the
+// generic resolver: single joins follow the local Via field to the
+// target's row id (dangling or null FK → null edge); list joins collect
+// the target rows whose Via field equals this row's id. Both stay inside
+// the source row's namespace — the parent query's Access already vetted
+// it.
+func declaredJoin(jd *loom.JoinDef, target *loom.Client) Join {
+	j := Join{OnType: jd.OnEntity, Field: jd.Field, Returns: jd.Entity, List: jd.List}
+	entity, via := jd.Entity, jd.Via
+	if jd.List {
+		j.Resolve = func(ctx context.Context, src map[string]any) (any, error) {
+			rows, err := target.QueryEntities(ctx, entity, loom.Query{
+				Namespace: fmt.Sprint(src["namespace"]),
+				Filters:   []loom.Filter{{Field: via, Value: fmt.Sprint(src["id"])}},
+			})
+			if err != nil {
+				return nil, err
+			}
+			out := make([]map[string]any, 0, len(rows))
+			for _, r := range rows {
+				doc := map[string]any{}
+				if err := json.Unmarshal(r.Data, &doc); err != nil {
+					return nil, err
+				}
+				doc["id"], doc["namespace"] = r.ID, r.Namespace
+				out = append(out, doc)
+			}
+			return out, nil
+		}
+		return j
+	}
+	j.Resolve = func(ctx context.Context, src map[string]any) (any, error) {
+		id, err := uuid.Parse(fmt.Sprint(src[via]))
+		if err != nil {
+			return nil, nil // null or malformed FK → null edge
+		}
+		ns := fmt.Sprint(src["namespace"])
+		state, err := target.Entity(ctx, entity, ns, id)
+		if state == nil || err != nil {
+			return nil, err
+		}
+		return toDoc(state, ns, id.String())
+	}
+	return j
 }
 
 func (b *builder) join(j Join) error {

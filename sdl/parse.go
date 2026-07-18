@@ -32,6 +32,14 @@ type parser struct {
 }
 
 func (p *parser) peek() token { return p.toks[p.pos] }
+
+// peekAt looks n tokens past the cursor, clamping to the trailing EOF.
+func (p *parser) peekAt(n int) token {
+	if p.pos+n >= len(p.toks) {
+		return p.toks[len(p.toks)-1]
+	}
+	return p.toks[p.pos+n]
+}
 func (p *parser) next() token { t := p.toks[p.pos]; p.pos++; return t }
 
 func (p *parser) errf(t token, format string, args ...any) error {
@@ -420,12 +428,105 @@ func (p *parser) entity() error {
 	if _, ok := dirs["table"]; ok {
 		ent.Table = true
 	}
-	pl, err := p.fieldBlock()
+	pl, err := p.entityBlock(ent)
 	if err != nil {
 		return err
 	}
 	ent.State = pl
 	p.out.Entities = append(p.out.Entities, ent)
+	return nil
+}
+
+// entityBlock is fieldBlock plus join declarations:
+//
+//	join recipient -> recipients.RecipientSummary via recipient_id
+//	join forms -> [filings.FormList] via recipient_id
+//
+// `join` followed by `:` still parses as a field named join.
+func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
+	if err := p.expect("{"); err != nil {
+		return nil, err
+	}
+	out := &schema.Payload{Type: "object", Properties: map[string]*schema.Payload{}}
+	for !p.accept("}") {
+		if p.peek().text == "join" && p.peekAt(1).text != ":" {
+			p.next()
+			if err := p.join(ent); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		name, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect(":"); err != nil {
+			return nil, err
+		}
+		ft, err := p.fieldType()
+		if err != nil {
+			return nil, err
+		}
+		if p.accept("!") {
+			out.Required = append(out.Required, name)
+		}
+		dirs, err := p.directives()
+		if err != nil {
+			return nil, err
+		}
+		for d := range dirs {
+			if d != "pii" {
+				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii)", name, d)
+			}
+		}
+		if _, ok := dirs["pii"]; ok {
+			ft.PII = true
+		}
+		out.Properties[name] = ft
+	}
+	return out, nil
+}
+
+func (p *parser) join(ent *schema.Entity) error {
+	t := p.peek()
+	field, err := p.ident()
+	if err != nil {
+		return err
+	}
+	if err := p.expect("->"); err != nil {
+		return err
+	}
+	j := &schema.Join{Field: field}
+	j.List = p.accept("[")
+	first, err := p.ident()
+	if err != nil {
+		return err
+	}
+	if p.accept(".") {
+		j.Service = first
+		if j.Entity, err = p.ident(); err != nil {
+			return err
+		}
+	} else {
+		j.Entity = first
+	}
+	if j.List {
+		if err := p.expect("]"); err != nil {
+			return err
+		}
+	}
+	if err := p.expect("via"); err != nil {
+		return err
+	}
+	if j.Via, err = p.ident(); err != nil {
+		return err
+	}
+	for _, prev := range ent.Joins {
+		if prev.Field == field {
+			return p.errf(t, "entity %s declares join %s twice", ent.Name, field)
+		}
+	}
+	ent.Joins = append(ent.Joins, j)
 	return nil
 }
 

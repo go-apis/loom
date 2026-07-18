@@ -56,6 +56,20 @@ aggregate Payee @snapshot(1) {
   }
 }
 
+// declared joins: `spend` follows the invoice's customer over to the
+// orders service (CustomerSpend rows are keyed by customer id)
+entity InvoiceSummary {
+  status: string
+  customer_id: uuid
+  amount_cents: int
+  join spend -> orders.CustomerSpend via customer_id
+}
+
+projection invoiceSummary -> InvoiceSummary {
+  on InvoiceRaised
+  on InvoicePaid
+}
+
 entity PayeeDirectory {
   name: string
   tin: string @pii

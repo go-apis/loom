@@ -146,6 +146,36 @@ func TestGraphQLGateway(t *testing.T) {
 			inv["status"] == "paid" && inv["amountCents"] == float64(1500)
 	})
 
+	// schema-declared joins, all three shapes: local list
+	// (CustomerSpend.orders), cross-service list (CustomerSpend.invoices),
+	// cross-service single (InvoiceSummary.spend)
+	waitFor(t, ctx, "declared joins resolve through the graph", func() bool {
+		data := gql(`query($ns: Namespace!) {
+			customerSpends(namespace: $ns) {
+				id spendCents
+				orders { id status }
+				invoices { id amountCents }
+			}
+			invoiceSummarys(namespace: $ns) {
+				id spend { orderCount spendCents }
+			}
+		}`, map[string]any{"ns": "default"})
+		spends, _ := data["customerSpends"].([]any)
+		invoices, _ := data["invoiceSummarys"].([]any)
+		if len(spends) != 1 || len(invoices) != 1 {
+			return false
+		}
+		spend := spends[0].(map[string]any)
+		orderRows, _ := spend["orders"].([]any)
+		invoiceRows, _ := spend["invoices"].([]any)
+		if len(orderRows) != 1 || orderRows[0].(map[string]any)["id"] != orderID.String() ||
+			len(invoiceRows) != 1 || invoiceRows[0].(map[string]any)["amountCents"] != float64(1500) {
+			return false
+		}
+		back, _ := invoices[0].(map[string]any)["spend"].(map[string]any)
+		return back != nil && back["spendCents"] == float64(1500) && back["orderCount"] == float64(1)
+	})
+
 	// aggregate get through the graph
 	data = gql(`query($ns: String!, $id: UUID!) { order(namespace: $ns, id: $id) { status currency } }`,
 		map[string]any{"ns": "default", "id": orderID.String()})
