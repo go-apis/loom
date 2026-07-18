@@ -88,6 +88,16 @@ parked in favor of ten99).
 - TypeScript target for the schema (payloads are already JSON Schema).
 - Gateway auth follow-ons: rate limits, per-field read masking (@pii
   fields for non-god callers?), playground header editor for tokens.
+- Entity nullability inconsistency (found via ten99 payer #19): the
+  runtime gateway wraps non-optional entity fields in NonNull
+  (graphql/types.go), but `loom graphql` writes the SDL fragment with
+  every entity field nullable — contract and runtime disagree. Also
+  `ALTER ... ADD COLUMN` on @table entities emits no DEFAULT/backfill,
+  so a non-optional column added to an existing table serves NULL for
+  old rows and non-null reads explode ("Cannot return null for
+  non-nullable field"). Either align the SDL with declared nullability
+  + emit defaults on added columns, or force added-later columns to be
+  declared optional (ten99 chose the latter, 4a91ca1).
 
 ## Upload follow-ons (small, when needed)
 
