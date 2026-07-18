@@ -557,6 +557,25 @@ func (s *Schema) Validate() error {
 		}
 	}
 
+	// command payload fields must not collide with the dispatch envelope:
+	// CommandBase marshals aggregate_id + namespace at the same JSON level,
+	// so a payload field with either name is unreachable over HTTP/GraphQL.
+	envelope := func(cmds []*Command, owner string) {
+		for _, c := range cmds {
+			for name := range payloadProps(c.Payload) {
+				if name == "aggregate_id" || name == "namespace" {
+					fail("%s command %s: field %s collides with the command envelope — rename the field", owner, c.Name, name)
+				}
+			}
+		}
+	}
+	for _, a := range s.Aggregates {
+		envelope(a.Commands, "aggregate "+a.Name)
+	}
+	for _, r := range s.Records {
+		envelope(r.Commands, "record "+r.Name)
+	}
+
 	// enums: closed string sets. Names share the type namespace (a ref
 	// resolves to exactly one of them); values must be legal GraphQL enum
 	// value names so the gateway can serve them as real enum types.
