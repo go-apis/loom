@@ -176,6 +176,21 @@ func TestGraphQLGateway(t *testing.T) {
 		return back != nil && back["spendCents"] == float64(1500) && back["orderCount"] == float64(1)
 	})
 
+	// joins compose recursively: every joined row carries id+namespace,
+	// so the target type's own joins keep resolving — including cycles
+	// (spend → invoices → spend), bounded only by the query the client
+	// writes
+	data = gql(`query($ns: Namespace!) {
+		invoiceSummarys(namespace: $ns) {
+			spend { invoices { spend { orderCount orders { status } } } }
+		}
+	}`, map[string]any{"ns": "default"})
+	rows, _ := data["invoiceSummarys"].([]any)
+	inner := rows[0].(map[string]any)["spend"].(map[string]any)["invoices"].([]any)[0].(map[string]any)["spend"].(map[string]any)
+	if inner["orderCount"] != float64(1) || inner["orders"].([]any)[0].(map[string]any)["status"] != "shipped" {
+		t.Fatalf("cyclic nested joins: %v", data)
+	}
+
 	// aggregate get through the graph
 	data = gql(`query($ns: String!, $id: UUID!) { order(namespace: $ns, id: $id) { status currency } }`,
 		map[string]any{"ns": "default", "id": orderID.String()})
