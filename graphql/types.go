@@ -136,6 +136,12 @@ func (b *builder) outputType(t reflect.Type) (gql.Output, error) {
 	}
 	switch t.Kind() {
 	case reflect.String:
+		// generated enums are named string types; resolve by type name
+		if t.Name() != "string" {
+			if e, ok := b.enums[t.Name()]; ok {
+				return e, nil
+			}
+		}
 		return gql.String, nil
 	case reflect.Int, reflect.Int32, reflect.Int64:
 		// schema int is int64: Long, matching the emitted SDL
@@ -271,7 +277,10 @@ func (b *builder) commandInput(name string, cmd loom.Command) (gql.Input, conver
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s.%s: %w", name, f.snake, err)
 		}
-		if !f.nullable {
+		// enum fields stay nullable: their zero value means "unset" (the
+		// schema's optional middle ground), and the generated Validate()
+		// rejects an empty required enum at dispatch
+		if _, isEnum := in.(*gql.Enum); !f.nullable && !isEnum {
 			in = gql.NewNonNull(in)
 		}
 		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in}
@@ -331,6 +340,11 @@ func (b *builder) inputType(t reflect.Type) (gql.Input, converter, error) {
 	}
 	switch t.Kind() {
 	case reflect.String:
+		if t.Name() != "string" {
+			if e, ok := b.enums[t.Name()]; ok {
+				return e, identity, nil
+			}
+		}
 		return gql.String, identity, nil
 	case reflect.Int, reflect.Int32, reflect.Int64:
 		return scalarLong, identity, nil

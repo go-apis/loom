@@ -3,6 +3,7 @@
 package loomgen
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/go-apis/loom"
@@ -10,10 +11,42 @@ import (
 )
 
 var (
+	_ = fmt.Sprintf
 	_ = time.Time{}
 	_ = uuid.UUID{}
 	_ = loom.CommandBase{}
 )
+
+type OrderStatus string
+
+const (
+	OrderStatusPlaced    OrderStatus = "placed"
+	OrderStatusShipped   OrderStatus = "shipped"
+	OrderStatusCancelled OrderStatus = "cancelled"
+)
+
+func (v OrderStatus) Valid() bool {
+	switch v {
+	case OrderStatusPlaced, OrderStatusShipped, OrderStatusCancelled:
+		return true
+	}
+	return false
+}
+
+type Priority string
+
+const (
+	PriorityStandard Priority = "standard"
+	PriorityRush     Priority = "rush"
+)
+
+func (v Priority) Valid() bool {
+	switch v {
+	case PriorityStandard, PriorityRush:
+		return true
+	}
+	return false
+}
 
 type OrderItem struct {
 	PriceCents int64  `json:"price_cents"`
@@ -40,8 +73,8 @@ type InvoicePaid struct {
 func (*InvoicePaid) LoomEvent() string { return "InvoicePaid" }
 
 type OrderCancelled struct {
-	Reason string `json:"reason"`
-	Status string `json:"status"`
+	Reason string      `json:"reason"`
+	Status OrderStatus `json:"status"`
 }
 
 func (*OrderCancelled) LoomEvent() string { return "OrderCancelled" }
@@ -50,15 +83,15 @@ type OrderPlaced struct {
 	Currency   string      `json:"currency"`
 	CustomerId uuid.UUID   `json:"customer_id"`
 	Items      []OrderItem `json:"items"`
-	Status     string      `json:"status"`
+	Status     OrderStatus `json:"status"`
 	TotalCents int64       `json:"total_cents"`
 }
 
 func (*OrderPlaced) LoomEvent() string { return "OrderPlaced" }
 
 type OrderShipped struct {
-	ShippedAt time.Time `json:"shipped_at"`
-	Status    string    `json:"status"`
+	ShippedAt time.Time   `json:"shipped_at"`
+	Status    OrderStatus `json:"status"`
 }
 
 func (*OrderShipped) LoomEvent() string { return "OrderShipped" }
@@ -83,9 +116,17 @@ type PlaceOrder struct {
 	Currency   string      `json:"currency"`
 	CustomerId uuid.UUID   `json:"customer_id"`
 	Items      []OrderItem `json:"items"`
+	Priority   Priority    `json:"priority"`
 }
 
 func (*PlaceOrder) LoomCommand() string { return "PlaceOrder" }
+
+func (c *PlaceOrder) Validate() error {
+	if c.Priority != "" && !c.Priority.Valid() {
+		return fmt.Errorf("priority must be one of the Priority values")
+	}
+	return nil
+}
 
 type RequestContract struct {
 	loom.CommandBase
@@ -108,7 +149,7 @@ type Order struct {
 	Items      []OrderItem   `json:"items"`
 	Reason     string        `json:"reason"`
 	ShippedAt  *time.Time    `json:"shipped_at"`
-	Status     string        `json:"status"`
+	Status     OrderStatus   `json:"status"`
 	TotalCents int64         `json:"total_cents"`
 }
 
@@ -160,7 +201,7 @@ type OrderSummary struct {
 	CustomerId uuid.UUID   `json:"customer_id"`
 	Items      []OrderItem `json:"items"`
 	Reason     string      `json:"reason"`
-	Status     string      `json:"status"`
+	Status     OrderStatus `json:"status"`
 	TotalCents int64       `json:"total_cents"`
 }
 

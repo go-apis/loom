@@ -10,6 +10,8 @@ import (
 const valid = `
 service orders
 
+enum OrderStatus { placed shipped cancelled }
+
 aggregate Order @snapshot(5) {
   state {
     status: string
@@ -146,6 +148,9 @@ func TestParse(t *testing.T) {
 	if ups := s.Aggregates[0].Uploads; len(ups) != 1 || ups[0].Name != "Contract" || ups[0].OnUploaded != "AttachContract" || ups[0].OnStarted != "" {
 		t.Fatalf("upload misparsed: %+v", s.Aggregates[0].Uploads)
 	}
+	if len(s.Enums) != 1 || s.Enums[0].Name != "OrderStatus" || len(s.Enums[0].Values) != 3 || s.Enums[0].Values[1] != "shipped" {
+		t.Fatalf("enum misparsed: %+v", s.Enums)
+	}
 	// declared joins: local single + cross-service list
 	joins := s.Entities[0].Joins
 	if len(joins) != 2 ||
@@ -163,6 +168,31 @@ func TestValidationErrors(t *testing.T) {
 		src     string
 		wantErr string
 	}{
+		"enum duplicate value": {
+			src: `
+service s
+enum X { a a }
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+`,
+			wantErr: "declares value a twice",
+		},
+		"enum collides with type": {
+			src: `
+service s
+enum X { a }
+type X { y: string! }
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+`,
+			wantErr: "collides with type",
+		},
 		"join targets undeclared local entity": {
 			src: `
 service s

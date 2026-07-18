@@ -23,7 +23,7 @@ func (h *Order) PlaceOrder(ctx context.Context, state *loomgen.Order, cmd *loomg
 		total += item.PriceCents * item.Quantity
 	}
 	return []loom.DomainEvent{&loomgen.OrderPlaced{
-		Status:     "placed",
+		Status:     loomgen.OrderStatusPlaced,
 		CustomerId: cmd.CustomerId,
 		Items:      cmd.Items,
 		TotalCents: total,
@@ -32,23 +32,23 @@ func (h *Order) PlaceOrder(ctx context.Context, state *loomgen.Order, cmd *loomg
 }
 
 func (h *Order) ShipOrder(ctx context.Context, state *loomgen.Order, cmd *loomgen.ShipOrder) ([]loom.DomainEvent, error) {
-	if state.Status == "shipped" {
+	if state.Status == loomgen.OrderStatusShipped {
 		return nil, nil // redelivery after we already shipped: converge
 	}
-	if state.Status != "placed" {
+	if state.Status != loomgen.OrderStatusPlaced {
 		return nil, fmt.Errorf("cannot ship order in status %q", state.Status)
 	}
 	return []loom.DomainEvent{&loomgen.OrderShipped{
-		Status:    "shipped",
+		Status:    loomgen.OrderStatusShipped,
 		ShippedAt: time.Now().UTC(),
 	}}, nil
 }
 
 func (h *Order) CancelOrder(ctx context.Context, state *loomgen.Order, cmd *loomgen.CancelOrder) ([]loom.DomainEvent, error) {
-	if state.Status != "placed" {
+	if state.Status != loomgen.OrderStatusPlaced {
 		return nil, fmt.Errorf("cannot cancel order in status %q", state.Status)
 	}
-	return []loom.DomainEvent{&loomgen.OrderCancelled{Status: "cancelled", Reason: "requested"}}, nil
+	return []loom.DomainEvent{&loomgen.OrderCancelled{Status: loomgen.OrderStatusCancelled, Reason: "requested"}}, nil
 }
 
 func (h *Order) RequestContract(ctx context.Context, state *loomgen.Order, cmd *loomgen.RequestContract) ([]loom.DomainEvent, error) {

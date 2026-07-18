@@ -113,10 +113,22 @@ const maxPolicyDepth = 10
 // events (checked against each command's emit contract), run subscribed
 // policies in the same transaction, write outbox rows for published events,
 // snapshot, commit. Conflicts retry the whole unit against fresh state.
+// Validator lets generated commands reject bad payloads (enum values
+// outside their set) before any handler runs. loom generate emits it on
+// commands that need it; hand-written commands may implement it too.
+type Validator interface {
+	Validate() error
+}
+
 func (c *Client) Dispatch(ctx context.Context, cmds ...Command) (err error) {
 	names := make([]string, len(cmds))
 	for i, cmd := range cmds {
 		names[i] = cmd.LoomCommand()
+		if v, ok := cmd.(Validator); ok {
+			if err := v.Validate(); err != nil {
+				return fmt.Errorf("loom: %s: %w", cmd.LoomCommand(), err)
+			}
+		}
 	}
 	attrs := append(metaAttrs(MetaFrom(ctx)), attribute.StringSlice("loom.commands", names))
 	ctx, end := c.tel.span(ctx, "loom.dispatch", attrs...)

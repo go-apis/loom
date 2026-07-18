@@ -18,6 +18,13 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 	}
 
 	components := map[string]any{}
+	for _, e := range s.Enums {
+		vals := make([]any, len(e.Values))
+		for i, v := range e.Values {
+			vals[i] = v
+		}
+		components[e.Name] = map[string]any{"type": "string", "enum": vals}
+	}
 	for _, t := range s.Types {
 		components[t.Name] = oaSchema(t.Payload)
 	}

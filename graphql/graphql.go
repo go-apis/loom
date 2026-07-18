@@ -202,13 +202,42 @@ type typeEntry struct {
 type builder struct {
 	types   map[string]*typeEntry
 	inputs  map[string]gql.Input
+	enums   map[string]*gql.Enum
+	enumVal map[string][]string // for cross-service collision checks
 	queries gql.Fields
 	muts    gql.Fields
 	subs    gql.Fields
 }
 
+// registerEnums turns the registry's EnumDefs into shared GraphQL enum
+// types; generated named string types resolve to them by Go type name.
+func (b *builder) registerEnums(reg *loom.Registry) error {
+	if b.enums == nil {
+		b.enums = map[string]*gql.Enum{}
+		b.enumVal = map[string][]string{}
+	}
+	for _, e := range reg.Enums {
+		if prev, ok := b.enumVal[e.Name]; ok {
+			if strings.Join(prev, ",") != strings.Join(e.Values, ",") {
+				return fmt.Errorf("graphql: enum %s declared differently by two services", e.Name)
+			}
+			continue
+		}
+		values := gql.EnumValueConfigMap{}
+		for _, v := range e.Values {
+			values[v] = &gql.EnumValueConfig{Value: v}
+		}
+		b.enums[e.Name] = gql.NewEnum(gql.EnumConfig{Name: e.Name, Values: values})
+		b.enumVal[e.Name] = e.Values
+	}
+	return nil
+}
+
 func (b *builder) service(cli *loom.Client) error {
 	reg := cli.Registry()
+	if err := b.registerEnums(reg); err != nil {
+		return err
+	}
 
 	for _, agg := range reg.Aggregates {
 		obj, err := b.objectFor(agg.Name, agg.NewState())

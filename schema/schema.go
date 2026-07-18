@@ -5,6 +5,7 @@ package schema
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 )
 
@@ -21,6 +22,7 @@ type Schema struct {
 	Processes   []*Reactor    `yaml:"processes,omitempty" json:"processes,omitempty"`
 	Projections []*Projection `yaml:"projections,omitempty" json:"projections,omitempty"`
 	Types       []*NamedType  `yaml:"types,omitempty" json:"types,omitempty"`
+	Enums       []*Enum       `yaml:"enums,omitempty" json:"enums,omitempty"`
 }
 
 type Aggregate struct {
@@ -87,6 +89,21 @@ type Entity struct {
 	// `join`); the runtime ignores them — only the GraphQL gateway wires
 	// them up, erroring at compose time if the target isn't mounted.
 	Joins []*Join `yaml:"joins,omitempty" json:"joins,omitempty"`
+}
+
+// Enum is a closed set of string values, declared top-level and
+// referenced by fields like a named type:
+//
+//	enum TinStatus { unknown pending_match matched mismatched }
+//	...
+//	tin_status: TinStatus
+//
+// On the wire and at rest an enum is its string value; generated code
+// gets a named string type with constants and validation, the GraphQL
+// surfaces get real enum types, OpenAPI gets the value list.
+type Enum struct {
+	Name   string   `yaml:"name" json:"name"`
+	Values []string `yaml:"values" json:"values"`
 }
 
 // Join declares a gateway edge from one entity to another, possibly in
@@ -232,6 +249,15 @@ func (s *Schema) FindType(name string) *NamedType {
 	return nil
 }
 
+func (s *Schema) FindEnum(name string) *Enum {
+	for _, e := range s.Enums {
+		if e.Name == name {
+			return e
+		}
+	}
+	return nil
+}
+
 func (s *Schema) FindCommand(name string) (*Aggregate, *Command) {
 	for _, a := range s.Aggregates {
 		for _, c := range a.Commands {
@@ -273,6 +299,7 @@ func (s *Schema) Sort() {
 	sort.Slice(s.Policies, func(i, j int) bool { return s.Policies[i].Name < s.Policies[j].Name })
 	sort.Slice(s.Processes, func(i, j int) bool { return s.Processes[i].Name < s.Processes[j].Name })
 	sort.Slice(s.Projections, func(i, j int) bool { return s.Projections[i].Name < s.Projections[j].Name })
+	sort.Slice(s.Enums, func(i, j int) bool { return s.Enums[i].Name < s.Enums[j].Name })
 	sort.Slice(s.Types, func(i, j int) bool { return s.Types[i].Name < s.Types[j].Name })
 	for _, r := range s.Policies {
 		sort.Slice(r.Subscriptions, func(i, j int) bool { return r.Subscriptions[i].Event < r.Subscriptions[j].Event })
@@ -530,6 +557,29 @@ func (s *Schema) Validate() error {
 		}
 	}
 
+	// enums: closed string sets. Names share the type namespace (a ref
+	// resolves to exactly one of them); values must be legal GraphQL enum
+	// value names so the gateway can serve them as real enum types.
+	enumValueRe := regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+	for _, e := range s.Enums {
+		if len(e.Values) == 0 {
+			fail("enum %s has no values", e.Name)
+		}
+		if s.FindType(e.Name) != nil {
+			fail("enum %s collides with type %s", e.Name, e.Name)
+		}
+		seenVals := map[string]bool{}
+		for _, v := range e.Values {
+			if !enumValueRe.MatchString(v) {
+				fail("enum %s: value %q is not a legal enum value name", e.Name, v)
+			}
+			if seenVals[v] {
+				fail("enum %s declares value %s twice", e.Name, v)
+			}
+			seenVals[v] = true
+		}
+	}
+
 	// @pii placement: encrypt-at-rest applies to what the runtime persists
 	// under a stream's data key — states, local unpublished events, and
 	// command payloads (commands rest in timers and batch items).
@@ -567,7 +617,7 @@ func (s *Schema) Validate() error {
 		if pl == nil {
 			return
 		}
-		if pl.Ref != "" && s.FindType(pl.Ref) == nil && !seen[pl.Ref] {
+		if pl.Ref != "" && s.FindType(pl.Ref) == nil && s.FindEnum(pl.Ref) == nil && !seen[pl.Ref] {
 			seen[pl.Ref] = true
 			missing = append(missing, pl.Ref)
 		}

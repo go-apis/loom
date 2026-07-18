@@ -252,6 +252,48 @@ func TestGraphQLGateway(t *testing.T) {
 		t.Fatalf("expected depth rejection, got %d %+v", resp.StatusCode, deepOut)
 	}
 
+	// enums: a value outside the set is rejected — by generated
+	// Validate() on direct dispatch, and by GraphQL input coercion at
+	// the gateway (Priority is a real enum type there)
+	if err := ordersCli.Dispatch(ctx, &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: uuid.New(), Namespace: "default"},
+		CustomerId:  uuid.New(), Currency: "USD", Priority: "bogus",
+		Items: []ordersgen.OrderItem{{Sku: "w", Quantity: 1, PriceCents: 1}},
+	}); err == nil || !strings.Contains(err.Error(), "Priority") {
+		t.Fatalf("expected enum validation error, got %v", err)
+	}
+	body, _ = json.Marshal(map[string]any{
+		"query": `mutation($in: PlaceOrderInput!) { placeOrder(input: $in) { status } }`,
+		"variables": map[string]any{"in": map[string]any{
+			"aggregateId": uuid.NewString(), "namespace": "default",
+			"customerId": uuid.NewString(), "currency": "USD", "priority": "bogus",
+			"items": []any{map[string]any{"sku": "w", "quantity": 1, "priceCents": 1}},
+		}},
+	})
+	resp, err = http.Post(srv.URL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enumOut struct {
+		Errors []struct{ Message string }
+	}
+	json.NewDecoder(resp.Body).Decode(&enumOut)
+	resp.Body.Close()
+	if len(enumOut.Errors) == 0 {
+		t.Fatalf("expected gateway enum coercion error")
+	}
+	// and a valid enum value dispatches fine end to end
+	data = gql(`mutation($in: PlaceOrderInput!) { placeOrder(input: $in) { status } }`, map[string]any{
+		"in": map[string]any{
+			"aggregateId": uuid.NewString(), "namespace": "enumns",
+			"customerId": uuid.NewString(), "currency": "USD", "priority": "rush",
+			"items": []any{map[string]any{"sku": "w", "quantity": 1, "priceCents": 1}},
+		},
+	})
+	if data["placeOrder"].(map[string]any)["status"] != "ok" {
+		t.Fatalf("enum-valued placeOrder: %+v", data)
+	}
+
 	// batched read-model lookups: one query, many rows (@table and doc paths)
 	summaries, err := ordersCli.Entities(ctx, "OrderSummary", "default", []uuid.UUID{orderID, uuid.New()})
 	if err != nil {

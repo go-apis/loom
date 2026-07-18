@@ -133,6 +133,15 @@ type Registry struct {
 	Uploads     []*UploadDef
 	Tables      []*TableDef
 	Joins       []*JoinDef
+	Enums       []*EnumDef
+}
+
+// EnumDef mirrors a schema `enum`: the closed value set behind a
+// generated named string type. The gateway serves these as real GraphQL
+// enum types; the runtime treats the values as strings.
+type EnumDef struct {
+	Name   string
+	Values []string
 }
 
 // JoinDef is a schema-declared gateway edge between entities (`join` in

@@ -104,6 +104,8 @@ func (p *parser) schema() error {
 			err = p.projection()
 		case "type":
 			err = p.typeDecl()
+		case "enum":
+			err = p.enumDecl()
 		default:
 			return p.errf(t, "unexpected %q at top level", t.text)
 		}
@@ -647,6 +649,33 @@ func (p *parser) typeDecl() error {
 		return err
 	}
 	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, Payload: pl})
+	return nil
+}
+
+// enumDecl parses a closed value set:
+//
+//	enum TinStatus { unknown pending_match matched mismatched }
+func (p *parser) enumDecl() error {
+	t := p.next()
+	name, err := p.ident()
+	if err != nil {
+		return err
+	}
+	if err := p.expect("{"); err != nil {
+		return err
+	}
+	e := &schema.Enum{Name: name}
+	for !p.accept("}") {
+		v, err := p.ident()
+		if err != nil {
+			return err
+		}
+		e.Values = append(e.Values, v)
+	}
+	if len(e.Values) == 0 {
+		return p.errf(t, "enum %s has no values", name)
+	}
+	p.out.Enums = append(p.out.Enums, e)
 	return nil
 }
 

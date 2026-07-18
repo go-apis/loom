@@ -50,6 +50,23 @@ dependencies, and there's no client to plumb into the registry. Reads are
 the only injected capability: dispatching from inside a handler would nest
 units of work, so reactions return commands instead.
 
+Closed value sets are `enum` declarations, referenced like named types:
+
+```
+enum TinStatus { unknown pending_match matched mismatched }
+...
+tin_status: TinStatus
+```
+
+An enum is its string value at rest and on the wire; generated code gets
+a named string type with constants (`TinStatusMatched`) and `Valid()`,
+commands with enum fields get a generated `Validate()` the dispatcher
+runs before any handler (a value outside the set never reaches the
+domain), the gateway serves real GraphQL enum types (invalid inputs die
+at coercion), the SDL/OpenAPI contracts carry the value sets, and
+`@table` columns stay `text`. Values must be legal GraphQL enum names —
+`1099-NEC` stays a plain string.
+
 Stubs land flat in the service root by default; `layout: folders` in
 loom.yml gives each kind its own package instead —
 

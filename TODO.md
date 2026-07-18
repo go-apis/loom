@@ -50,7 +50,12 @@ in ten99's main.go), gateway depth limit + join loader (v0.26:
 Config.MaxDepth AST pre-check, default 20, negative disables;
 per-execution memo on declared-join reads, subscriptions exempt;
 Client.Entities batched read — thunk-based sibling batching deferred:
-graphql-go thunks are `func() interface{}` with no error path).
+graphql-go thunks are `func() interface{}` with no error path), enums
+(v0.27: `enum Name { values }` + field refs — generated named string
+type w/ constants + Valid(), command Validate() enforced at Dispatch,
+gateway GraphQL enum types incl. input coercion (enum inputs stay
+nullable — zero value = unset, Validate owns required), SDL/OpenAPI
+value sets, @table text columns; values must be GraphQL-legal names).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
 ## 1. Old-envelope compat codec for gpub

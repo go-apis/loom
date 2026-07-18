@@ -13,6 +13,10 @@ import (
 // generic filter input, entity watches → subscriptions. The gateway's
 // resolvers are thin calls to the service's Loom HTTP API.
 func GraphQL(s *schema.Schema) ([]byte, error) {
+	enums := map[string]bool{}
+	for _, e := range s.Enums {
+		enums[e.Name] = true
+	}
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -71,24 +75,31 @@ type UploadSession {
 `)
 	}
 
+	for _, e := range s.Enums {
+		fmt.Fprintf(&b, "enum %s {\n", e.Name)
+		for _, v := range e.Values {
+			fmt.Fprintf(&b, "  %s\n", v)
+		}
+		b.WriteString("}\n\n")
+	}
 	for _, t := range s.Types {
-		gqlType(&b, "type", t.Name, t.Payload)
-		gqlType(&b, "input", t.Name+"Input", t.Payload)
+		gqlType(&b, "type", t.Name, t.Payload, enums)
+		gqlType(&b, "input", t.Name+"Input", t.Payload, enums)
 	}
 	for _, a := range s.Aggregates {
-		gqlType(&b, "type", a.Name, a.State)
+		gqlType(&b, "type", a.Name, a.State, enums)
 	}
 	for _, r := range s.Records {
-		gqlType(&b, "type", r.Name, r.State)
+		gqlType(&b, "type", r.Name, r.State, enums)
 	}
 	for _, e := range s.Entities {
-		gqlType(&b, "type", e.Name, e.State)
+		gqlType(&b, "type", e.Name, e.State, enums)
 	}
 
 	var mutations []string
 	addCommands := func(cmds []*schema.Command) {
 		for _, c := range cmds {
-			gqlCommandInput(&b, c)
+			gqlCommandInput(&b, c, enums)
 			mutations = append(mutations, fmt.Sprintf("  %s(input: %sInput!): DispatchResult!", lowerFirst(c.Name), c.Name))
 		}
 	}
@@ -134,30 +145,30 @@ type UploadSession {
 	return []byte(b.String()), nil
 }
 
-func gqlType(b *strings.Builder, kind, name string, pl *schema.Payload) {
+func gqlType(b *strings.Builder, kind, name string, pl *schema.Payload, enums map[string]bool) {
 	fmt.Fprintf(b, "%s %s {\n", kind, name)
 	suffix := ""
 	if kind == "input" {
 		suffix = "Input"
 	}
 	for _, field := range sortedFieldNames(pl) {
-		fmt.Fprintf(b, "  %s: %s\n", gqlFieldName(field), gqlFieldType(pl.Properties[field], pl, field, suffix))
+		fmt.Fprintf(b, "  %s: %s\n", gqlFieldName(field), gqlFieldType(pl.Properties[field], pl, field, suffix, enums))
 	}
 	b.WriteString("}\n\n")
 }
 
-func gqlCommandInput(b *strings.Builder, c *schema.Command) {
+func gqlCommandInput(b *strings.Builder, c *schema.Command, enums map[string]bool) {
 	fmt.Fprintf(b, "input %sInput {\n  aggregateId: UUID!\n  namespace: String!\n", c.Name)
 	if c.Payload != nil {
 		for _, field := range sortedFieldNames(c.Payload) {
-			fmt.Fprintf(b, "  %s: %s\n", gqlFieldName(field), gqlFieldType(c.Payload.Properties[field], c.Payload, field, "Input"))
+			fmt.Fprintf(b, "  %s: %s\n", gqlFieldName(field), gqlFieldType(c.Payload.Properties[field], c.Payload, field, "Input", enums))
 		}
 	}
 	b.WriteString("}\n\n")
 }
 
-func gqlFieldType(p *schema.Payload, parent *schema.Payload, field, refSuffix string) string {
-	t := gqlTypeCore(p, refSuffix)
+func gqlFieldType(p *schema.Payload, parent *schema.Payload, field, refSuffix string, enums map[string]bool) string {
+	t := gqlTypeCore(p, refSuffix, enums)
 	required := false
 	for _, r := range parent.Required {
 		if r == field {
@@ -170,11 +181,14 @@ func gqlFieldType(p *schema.Payload, parent *schema.Payload, field, refSuffix st
 	return t
 }
 
-func gqlTypeCore(p *schema.Payload, refSuffix string) string {
+func gqlTypeCore(p *schema.Payload, refSuffix string, enums map[string]bool) string {
 	if p == nil {
 		return "Map"
 	}
 	if p.Ref != "" {
+		if enums[p.Ref] {
+			return p.Ref // enums are shared between type and input positions
+		}
 		return p.Ref + refSuffix
 	}
 	switch p.Type {
@@ -196,7 +210,7 @@ func gqlTypeCore(p *schema.Payload, refSuffix string) string {
 	case "boolean":
 		return "Boolean"
 	case "array":
-		return "[" + gqlTypeCore(p.Items, refSuffix) + "!]"
+		return "[" + gqlTypeCore(p.Items, refSuffix, enums) + "!]"
 	case "object":
 		if p.Format == "file" {
 			return "FileRef" + refSuffix

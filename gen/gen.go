@@ -120,6 +120,7 @@ func (g *generator) models() string {
 	b.WriteString(header)
 	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
 	b.WriteString(`import (
+	"fmt"
 	"time"
 
 	"github.com/go-apis/loom"
@@ -127,6 +128,7 @@ func (g *generator) models() string {
 )
 
 var (
+	_ = fmt.Sprintf
 	_ = time.Time{}
 	_ = uuid.UUID{}
 	_ = loom.CommandBase{}
@@ -134,6 +136,9 @@ var (
 
 `)
 
+	for _, e := range g.s.Enums {
+		g.enumDef(&b, e)
+	}
 	for _, t := range g.s.Types {
 		g.structDef(&b, t.Name, t.Payload)
 	}
@@ -210,6 +215,61 @@ func (g *generator) commandDef(b *strings.Builder, c *schema.Command) {
 	}
 	b.WriteString("}\n\n")
 	fmt.Fprintf(b, "func (*%s) LoomCommand() string { return %q }\n\n", c.Name, c.Name)
+	g.commandValidate(b, c)
+}
+
+// enumDef generates the named string type, its constants, and Valid().
+func (g *generator) enumDef(b *strings.Builder, e *schema.Enum) {
+	fmt.Fprintf(b, "type %s string\n\nconst (\n", e.Name)
+	for _, v := range e.Values {
+		fmt.Fprintf(b, "\t%s%s %s = %q\n", e.Name, exported(v), e.Name, v)
+	}
+	b.WriteString(")\n\n")
+	fmt.Fprintf(b, "func (v %s) Valid() bool {\n\tswitch v {\n\tcase ", e.Name)
+	for i, v := range e.Values {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%s%s", e.Name, exported(v))
+	}
+	b.WriteString(":\n\t\treturn true\n\t}\n\treturn false\n}\n\n")
+}
+
+// commandValidate generates Validate() for commands with enum fields:
+// the dispatcher rejects values outside the set before the handler runs.
+// Optional (nullable, non-required) fields may be empty.
+func (g *generator) commandValidate(b *strings.Builder, c *schema.Command) {
+	if c.Payload == nil {
+		return
+	}
+	required := map[string]bool{}
+	for _, r := range c.Payload.Required {
+		required[r] = true
+	}
+	var checks []string
+	for _, field := range sortedKeys(boolKeys(c.Payload.Properties)) {
+		pl := c.Payload.Properties[field]
+		switch {
+		case pl.Ref != "" && g.s.FindEnum(pl.Ref) != nil:
+			cond := fmt.Sprintf("!c.%s.Valid()", exported(field))
+			if !required[field] && !pl.Nullable {
+				cond = fmt.Sprintf("c.%s != \"\" && ", exported(field)) + cond
+			} else if pl.Nullable {
+				cond = fmt.Sprintf("c.%s != nil && !c.%s.Valid()", exported(field), exported(field))
+			}
+			checks = append(checks, fmt.Sprintf("\tif %s {\n\t\treturn fmt.Errorf(\"%s must be one of the %s values\")\n\t}\n", cond, field, pl.Ref))
+		case pl.Type == "array" && pl.Items != nil && pl.Items.Ref != "" && g.s.FindEnum(pl.Items.Ref) != nil:
+			checks = append(checks, fmt.Sprintf("\tfor _, v := range c.%s {\n\t\tif !v.Valid() {\n\t\t\treturn fmt.Errorf(\"%s must hold %s values\")\n\t\t}\n\t}\n", exported(field), field, pl.Items.Ref))
+		}
+	}
+	if len(checks) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "func (c *%s) Validate() error {\n", c.Name)
+	for _, ch := range checks {
+		b.WriteString(ch)
+	}
+	b.WriteString("\treturn nil\n}\n\n")
 }
 
 // foldDef generates the state's Fold: per event, assignments for every
@@ -329,18 +389,21 @@ func (g *generator) goTypeCore(pl *schema.Payload) string {
 // buy ADD COLUMN pain on shape changes.
 type tableColumn struct{ Name, Type string }
 
-func tableColumns(e *schema.Entity) []tableColumn {
+func (g *generator) tableColumns(e *schema.Entity) []tableColumn {
 	var out []tableColumn
 	if e.State == nil {
 		return out
 	}
 	for _, field := range sortedKeys(boolKeys(e.State.Properties)) {
-		out = append(out, tableColumn{Name: field, Type: sqlType(e.State.Properties[field])})
+		out = append(out, tableColumn{Name: field, Type: g.sqlType(e.State.Properties[field])})
 	}
 	return out
 }
 
-func sqlType(pl *schema.Payload) string {
+func (g *generator) sqlType(pl *schema.Payload) string {
+	if pl != nil && pl.Ref != "" && g.s.FindEnum(pl.Ref) != nil {
+		return "text" // an enum is its string value at rest
+	}
 	if pl == nil || pl.Ref != "" {
 		return "jsonb"
 	}
@@ -375,7 +438,7 @@ func (g *generator) tableDDL(e *schema.Entity) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CREATE TABLE IF NOT EXISTS %s (\n", g.tableName(e))
 	b.WriteString("\tservice    text NOT NULL,\n\tnamespace  text NOT NULL,\n\tid         uuid NOT NULL,\n")
-	for _, col := range tableColumns(e) {
+	for _, col := range g.tableColumns(e) {
 		fmt.Fprintf(&b, "\t%q %s,\n", col.Name, col.Type)
 	}
 	b.WriteString("\tupdated_at timestamptz NOT NULL DEFAULT now(),\n\tPRIMARY KEY (service, namespace, id)\n);")
@@ -567,6 +630,14 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("\t\t},\n")
 	}
 
+	if len(g.s.Enums) > 0 {
+		b.WriteString("\t\tEnums: []*loom.EnumDef{\n")
+		for _, e := range g.s.Enums {
+			fmt.Fprintf(&b, "\t\t\t{Name: %q, Values: %s},\n", e.Name, stringSlice(e.Values))
+		}
+		b.WriteString("\t\t},\n")
+	}
+
 	joins := false
 	for _, e := range g.s.Entities {
 		joins = joins || len(e.Joins) > 0
@@ -664,12 +735,12 @@ func (g *generator) tableDefs(b *strings.Builder) {
 		}
 		fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tEntity: %q,\n\t\t\t\tName: %q,\n\t\t\t\tDDL: `%s`,\n", e.Name, g.tableName(e), g.tableDDL(e))
 		b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
-		for _, col := range tableColumns(e) {
+		for _, col := range g.tableColumns(e) {
 			fmt.Fprintf(b, "\t\t\t\t\t{Name: %q, Type: %q},\n", col.Name, col.Type)
 		}
 		b.WriteString("\t\t\t\t},\n")
 		fmt.Fprintf(b, "\t\t\t\tValues: func(state loom.EntityState) []any {\n\t\t\t\t\te := state.(*%s)\n\t\t\t\t\treturn []any{\n", e.Name)
-		for _, col := range tableColumns(e) {
+		for _, col := range g.tableColumns(e) {
 			if col.Type == "jsonb" {
 				fmt.Fprintf(b, "\t\t\t\t\t\tloom.JSONValue(e.%s),\n", exported(col.Name))
 			} else {

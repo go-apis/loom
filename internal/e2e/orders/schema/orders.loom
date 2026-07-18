@@ -1,8 +1,11 @@
 service orders
 
+enum OrderStatus { placed shipped cancelled }
+enum Priority { standard rush }
+
 aggregate Order @snapshot(5) {
   state {
-    status: string
+    status: OrderStatus
     customer_id: uuid
     items: [OrderItem]
     total_cents: int
@@ -16,6 +19,7 @@ aggregate Order @snapshot(5) {
     customer_id: uuid!
     items: [OrderItem]!
     currency: string!
+    priority: Priority
   } -> OrderPlaced
 
   command ShipOrder -> OrderShipped
@@ -30,7 +34,7 @@ aggregate Order @snapshot(5) {
   } -> ContractAttached
 
   event OrderPlaced @publish {
-    status: string!
+    status: OrderStatus!
     customer_id: uuid!
     items: [OrderItem]!
     total_cents: int!
@@ -38,13 +42,13 @@ aggregate Order @snapshot(5) {
   }
 
   event OrderShipped {
-    status: string!
+    status: OrderStatus!
     shipped_at: timestamp!
   }
 
   // v2 added `reason`; the upcast below lifts stored v1 rows
   event OrderCancelled @v(2) {
-    status: string!
+    status: OrderStatus!
     reason: string!
   }
 
@@ -70,7 +74,7 @@ aggregate Order @snapshot(5) {
 // (loom_t_orders_order_summary) — real columns for filters and BI, items
 // riding a jsonb column
 entity OrderSummary @table {
-  status: string
+  status: OrderStatus
   customer_id: uuid
   total_cents: int
   currency: string
