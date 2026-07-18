@@ -104,11 +104,11 @@ func TestGraphQLGateway(t *testing.T) {
 	}
 
 	// mutation → command dispatch, nested input list included
-	orderID := uuid.New()
+	orderID, customerID := uuid.New(), uuid.New()
 	data := gql(`mutation($in: PlaceOrderInput!) { placeOrder(input: $in) { status } }`, map[string]any{
 		"in": map[string]any{
 			"aggregateId": orderID.String(), "namespace": "default",
-			"customerId": uuid.NewString(), "currency": "USD",
+			"customerId": customerID.String(), "currency": "USD",
 			"items": []any{map[string]any{"sku": "widget", "quantity": 2, "priceCents": 750}},
 		},
 	})
@@ -231,6 +231,41 @@ func TestGraphQLGateway(t *testing.T) {
 	data = gql(`{ __schema { queryType { name } } }`, nil)
 	if data["__schema"].(map[string]any)["queryType"].(map[string]any)["name"] != "Query" {
 		t.Fatalf("introspection: %+v", data)
+	}
+
+	// the default depth limit rejects a wound-up cyclic join query
+	// before execution (DefaultMaxDepth field levels; this one is 22)
+	deep := "{ invoiceSummarys(namespace: \"default\") " +
+		strings.Repeat("{ spend { invoices ", 10) + "{ id }" + strings.Repeat(" } }", 10) + " }"
+	body, _ := json.Marshal(map[string]any{"query": deep})
+	resp, err := http.Post(srv.URL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deepOut struct {
+		Errors []struct{ Message string }
+	}
+	json.NewDecoder(resp.Body).Decode(&deepOut)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || len(deepOut.Errors) == 0 ||
+		!strings.Contains(deepOut.Errors[0].Message, "exceeds the limit") {
+		t.Fatalf("expected depth rejection, got %d %+v", resp.StatusCode, deepOut)
+	}
+
+	// batched read-model lookups: one query, many rows (@table and doc paths)
+	summaries, err := ordersCli.Entities(ctx, "OrderSummary", "default", []uuid.UUID{orderID, uuid.New()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[orderID] == nil {
+		t.Fatalf("Entities @table: %+v", summaries)
+	}
+	spends, err := ordersCli.Entities(ctx, "CustomerSpend", "default", []uuid.UUID{customerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spends) != 1 {
+		t.Fatalf("Entities doc-store: %+v", spends)
 	}
 }
 

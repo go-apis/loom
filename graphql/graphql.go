@@ -46,6 +46,11 @@ type Config struct {
 	// gateway: every namespace, all mutations — mount behind trusted
 	// middleware or keep it off the public edge.
 	Auth Auth
+	// MaxDepth bounds query nesting (fields, through fragments). Zero
+	// means DefaultMaxDepth; negative disables the check. Declared joins
+	// make the type graph cyclic, so an unbounded public gateway would
+	// let one request multiply reads without limit.
+	MaxDepth int
 }
 
 // New composes the services into one executable schema and returns the
@@ -105,7 +110,11 @@ func New(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &handler{schema: schema, auth: cfg.Auth}, nil
+	maxDepth := cfg.MaxDepth
+	if maxDepth == 0 {
+		maxDepth = DefaultMaxDepth
+	}
+	return &handler{schema: schema, auth: cfg.Auth, maxDepth: maxDepth}, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -388,10 +397,17 @@ func declaredJoin(jd *loom.JoinDef, target *loom.Client) Join {
 	entity, via := jd.Entity, jd.Via
 	if jd.List {
 		j.Resolve = func(ctx context.Context, src map[string]any) (any, error) {
-			rows, err := target.QueryEntities(ctx, entity, loom.Query{
-				Namespace: fmt.Sprint(src["namespace"]),
-				Filters:   []loom.Filter{{Field: via, Value: fmt.Sprint(src["id"])}},
-			})
+			ns, val := fmt.Sprint(src["namespace"]), fmt.Sprint(src["id"])
+			var rows []loom.Row
+			var err error
+			if l := loaderFrom(ctx); l != nil {
+				rows, err = l.list(ctx, target, entity, ns, via, val)
+			} else {
+				rows, err = target.QueryEntities(ctx, entity, loom.Query{
+					Namespace: ns,
+					Filters:   []loom.Filter{{Field: via, Value: val}},
+				})
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -414,7 +430,12 @@ func declaredJoin(jd *loom.JoinDef, target *loom.Client) Join {
 			return nil, nil // null or malformed FK → null edge
 		}
 		ns := fmt.Sprint(src["namespace"])
-		state, err := target.Entity(ctx, entity, ns, id)
+		var state loom.EntityState
+		if l := loaderFrom(ctx); l != nil {
+			state, err = l.entity(ctx, target, entity, ns, id)
+		} else {
+			state, err = target.Entity(ctx, entity, ns, id)
+		}
 		if state == nil || err != nil {
 			return nil, err
 		}
@@ -882,8 +903,9 @@ func lowerFirst(s string) string {
 var playgroundHTML []byte
 
 type handler struct {
-	schema gql.Schema
-	auth   Auth
+	schema   gql.Schema
+	auth     Auth
+	maxDepth int
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -930,6 +952,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r = r.WithContext(WithAccess(r.Context(), access))
 	}
+	if h.maxDepth > 0 {
+		if d := queryDepth(req.Query); d > h.maxDepth {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, `{"errors":[{"message":"query depth %d exceeds the limit of %d"}]}`, d, h.maxDepth)
+			return
+		}
+	}
 	params := gql.Params{
 		Schema:         h.schema,
 		RequestString:  req.Query,
@@ -946,6 +976,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveSSE(w, r, params)
 		return
 	}
+	// one join loader per execution: dedupes repeated entity lookups
+	// (cyclic joins, shared foreign keys) within this request only.
+	// Subscriptions skip it — their context outlives one execution and
+	// a memo would serve stale rows across ticks.
+	params.Context = withLoader(params.Context)
 	result := gql.Do(params)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)

@@ -504,6 +504,61 @@ func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.U
 	return state, nil
 }
 
+// Entities is the batched Entity: one query for many read-model rows.
+// Ids that have no row are simply absent from the result — callers
+// treat a missing key as the same null edge Entity's (nil, nil) means.
+func (c *Client) Entities(ctx context.Context, entity, namespace string, ids []uuid.UUID) (map[uuid.UUID]EntityState, error) {
+	if len(ids) == 0 {
+		return map[uuid.UUID]EntityState{}, nil
+	}
+	var proj *ProjectionDef
+	for _, p := range c.reg.Projections {
+		if p.Entity == entity {
+			proj = p
+			break
+		}
+	}
+	if proj == nil {
+		return nil, fmt.Errorf("loom: no projection maintains entity %s", entity)
+	}
+	var rows pgx.Rows
+	var err error
+	if table := c.tables[entity]; table != nil {
+		rows, err = c.db.Query(ctx, fmt.Sprintf(
+			`SELECT id, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM %s t
+			 WHERE service=$1 AND namespace=$2 AND id = ANY($3)`, table.def.Name),
+			c.reg.Service, namespace, ids)
+	} else {
+		rows, err = c.db.Query(ctx, `
+			SELECT id, data FROM loom_entities
+			WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id = ANY($4)`,
+			c.reg.Service, namespace, entity, ids)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[uuid.UUID]EntityState, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		if c.tables[entity] == nil { // @table excludes @pii by validation
+			if data, err = c.decryptFields(ctx, namespace, id, data, proj.PII); err != nil {
+				return nil, err
+			}
+		}
+		state := proj.NewState()
+		if err := json.Unmarshal(data, state); err != nil {
+			return nil, err
+		}
+		out[id] = state
+	}
+	return out, rows.Err()
+}
+
 func (c *Client) eventNameOf(payload any) (string, int, error) {
 	de, ok := payload.(DomainEvent)
 	if !ok {

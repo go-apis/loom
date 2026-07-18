@@ -364,6 +364,17 @@ same-namespace scoping applies, and same-service targets are validated
 by `loom check`. The `Joins` config hook remains for resolvers no
 declaration can express — hand-written entries land after declared ones,
 so they can override a field.
+
+Joins compose recursively (every joined row carries `id`/`namespace`,
+so the target's own joins keep resolving — cycles included), which is
+why the gateway bounds query nesting: `Config.MaxDepth` (default
+`DefaultMaxDepth` = 20, deep enough for GraphiQL's introspection;
+negative disables) rejects over-deep requests before execution. Within
+one execution a per-request loader memoizes join lookups, so a cyclic
+traversal or a list sharing one foreign key reads each row once —
+`Client.Entities` (the batched `Entity`) is there when a hot path wants
+one round-trip for many rows. Subscriptions skip the memo: their
+context outlives a single execution.
 Subscriptions are served on the same endpoint over SSE — send
 `Accept: text/event-stream` (GET with `?query=&variables=` works with
 the browser's native EventSource) and each change arrives as an

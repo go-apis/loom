@@ -46,7 +46,11 @@ mutation forms from input types, token/namespace header incl. "*",
 [service.Entity] via fk` on entities — gateway auto-wires single/list
 resolvers at compose time, skips edges whose target service isn't
 mounted, cfg.Joins still overrides; kills the hand-written Join closures
-in ten99's main.go).
+in ten99's main.go), gateway depth limit + join loader (v0.26:
+Config.MaxDepth AST pre-check, default 20, negative disables;
+per-execution memo on declared-join reads, subscriptions exempt;
+Client.Entities batched read — thunk-based sibling batching deferred:
+graphql-go thunks are `func() interface{}` with no error path).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
 ## 1. Old-envelope compat codec for gpub
