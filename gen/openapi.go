@@ -112,6 +112,11 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 		paths["/entities/"+e.Name+"/{id}"] = getDocPath("get"+e.Name, e.Name)
 		paths["/entities/"+e.Name] = listPath("list"+e.Name+"s", e.Name)
 	}
+	for _, a := range s.Aggregates {
+		if a.Table { // the state mirror lists like an entity
+			paths["/entities/"+a.Name] = listPath("list"+a.Name+"s", a.Name)
+		}
+	}
 
 	if hasUploads(s) {
 		components["Upload"] = map[string]any{

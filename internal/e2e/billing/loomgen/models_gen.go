@@ -3,6 +3,7 @@
 package loomgen
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/go-apis/loom"
@@ -10,6 +11,7 @@ import (
 )
 
 var (
+	_ = fmt.Sprintf
 	_ = time.Time{}
 	_ = uuid.UUID{}
 	_ = loom.CommandBase{}

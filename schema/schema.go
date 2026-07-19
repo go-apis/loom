@@ -26,8 +26,13 @@ type Schema struct {
 }
 
 type Aggregate struct {
-	Name     string     `yaml:"name" json:"name"`
-	Snapshot int        `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
+	Name     string   `yaml:"name" json:"name"`
+	Snapshot int      `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
+	// Table (@table) materializes the aggregate's state (minus @pii
+	// fields) into a typed per-aggregate table, written in the same
+	// transaction as the events — a queryable state mirror with no
+	// projection lag and no entity+projection boilerplate.
+	Table    bool       `yaml:"table,omitempty" json:"table,omitempty"`
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
@@ -499,6 +504,41 @@ func (s *Schema) Validate() error {
 		}
 		if pii := e.State.PIIFields(); len(pii) > 0 {
 			fail("entity %s: @table and @pii are incompatible — typed columns cannot hold sealed values; keep this entity in the doc store (filters cannot match sealed fields anyway)", e.Name)
+		}
+	}
+
+	// @table aggregates materialize state into typed columns too: the same
+	// meta-column rules apply, @pii state fields are simply excluded from
+	// the table (the sealed value stays in events/snapshots; keep a plain
+	// derived field like ein_last4 for the queryable fact), and the
+	// aggregate's name becomes a query surface — it must not collide with
+	// an entity's.
+	for _, a := range s.Aggregates {
+		if !a.Table {
+			continue
+		}
+		pii := map[string]bool{}
+		for _, f := range a.State.PIIFields() {
+			pii[f] = true
+		}
+		hasPlain := false
+		for name := range payloadProps(a.State) {
+			if pii[name] {
+				continue
+			}
+			hasPlain = true
+			switch name {
+			case "service", "namespace", "id", "updated_at":
+				fail("aggregate %s: state field %s collides with a meta column of its @table — rename the field", a.Name, name)
+			}
+		}
+		if !hasPlain {
+			fail("aggregate %s: @table needs at least one non-@pii state field — sealed values never land in typed columns", a.Name)
+		}
+		for _, e := range s.Entities {
+			if e.Name == a.Name {
+				fail("aggregate %s: @table shares the entity query surface — entity %s must be renamed or dropped", a.Name, e.Name)
+			}
 		}
 	}
 

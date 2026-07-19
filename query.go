@@ -42,8 +42,12 @@ type Row struct {
 
 var fieldRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
-// QueryEntities searches a projection's read model.
+// QueryEntities searches a read model: a projection's entity, or a @table
+// aggregate's state mirror (registered under the aggregate's name).
 func (c *Client) QueryEntities(ctx context.Context, entity string, q Query) ([]Row, error) {
+	if table := c.tables[entity]; table != nil {
+		return c.queryTable(ctx, table, q)
+	}
 	found := false
 	for _, p := range c.reg.Projections {
 		if p.Entity == entity {
@@ -52,9 +56,6 @@ func (c *Client) QueryEntities(ctx context.Context, entity string, q Query) ([]R
 	}
 	if !found {
 		return nil, fmt.Errorf("loom: unknown entity %s", entity)
-	}
-	if table := c.tables[entity]; table != nil {
-		return c.queryTable(ctx, table, q)
 	}
 	return c.queryDocs(ctx, "loom_entities", "entity_type", entity, q)
 }

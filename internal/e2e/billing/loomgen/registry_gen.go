@@ -184,6 +184,32 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Joins: []*loom.JoinDef{
 			{OnEntity: "InvoiceSummary", Field: "spend", Service: "orders", Entity: "CustomerSpend", List: false, Via: "customer_id"},
 		},
+		Tables: []*loom.TableDef{
+			{
+				Entity: "Payee",
+				Name:   "loom_t_billing_payee",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_t_billing_payee (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	id         uuid NOT NULL,
+	"name" text,
+	"tin_last4" text,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, id)
+);`,
+				Columns: []loom.TableColumn{
+					{Name: "name", Type: "text"},
+					{Name: "tin_last4", Type: "text"},
+				},
+				Values: func(state loom.EntityState) []any {
+					e := state.(*Payee)
+					return []any{
+						e.Name,
+						e.TinLast4,
+					}
+				},
+			},
+		},
 		Projections: []*loom.ProjectionDef{
 			{
 				Name:     "invoiceSummary",

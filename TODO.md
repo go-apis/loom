@@ -55,7 +55,13 @@ graphql-go thunks are `func() interface{}` with no error path), enums
 type w/ constants + Valid(), command Validate() enforced at Dispatch,
 gateway GraphQL enum types incl. input coercion (enum inputs stay
 nullable — zero value = unset, Validate owns required), SDL/OpenAPI
-value sets, @table text columns; values must be GraphQL-legal names).
+value sets, @table text columns; values must be GraphQL-legal names),
+@table on aggregates (v0.28: `aggregate X @table` mirrors state minus
+@pii into loom_t_<svc>_<x>, upserted in the SAME transaction as the
+events — no projection, no lag; QueryEntities/gateway `<x>s` list +
+`<x>sChanged` sub serve it, @pii fields have no column and read null;
+a freshly created mirror backfills from the log on Migrate; kills the
+entity+projection boilerplate when the read model is just the state).
 M6 still owes the Performance tab (throughput, lag, fold times).
 
 ## 1. Old-envelope compat codec for gpub

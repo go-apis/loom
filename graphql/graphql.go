@@ -262,6 +262,22 @@ func (b *builder) service(cli *loom.Client) error {
 				return err
 			}
 		}
+		// @table aggregate: the state mirror serves entity-style list
+		// reads (@pii state fields have no column and resolve null)
+		for _, td := range reg.Tables {
+			if td.Entity != agg.Name {
+				continue
+			}
+			aggQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+				return cli.QueryEntities(ctx, name, q)
+			}
+			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, aggQuery)); err != nil {
+				return err
+			}
+			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, aggQuery)); err != nil {
+				return err
+			}
+		}
 	}
 	for _, rec := range reg.Records {
 		obj, err := b.objectFor(rec.Name, rec.NewState())

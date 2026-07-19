@@ -122,6 +122,11 @@ type UploadSession {
 	for _, a := range s.Aggregates {
 		queries = append(queries, fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(a.Name), a.Name))
 		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: String!, id: UUID!): %s!", lowerFirst(a.Name), a.Name))
+		if a.Table {
+			// @table: the state mirror serves entity-style list reads
+			queries = append(queries, fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(a.Name), a.Name))
+			subscriptions = append(subscriptions, fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(a.Name), a.Name))
+		}
 	}
 	for _, r := range s.Records {
 		queries = append(queries,

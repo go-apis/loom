@@ -308,6 +308,15 @@ func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta
 		return nil, err
 	}
 
+	// @table aggregate: mirror the folded state into the typed row in the
+	// same transaction — the read model can never lag the command
+	if ts := c.tables[agg.Name]; ts != nil {
+		args := append([]any{c.reg.Service, namespace, id}, ts.def.Values(state)...)
+		if _, err := tx.Exec(ctx, ts.upsert, args...); err != nil {
+			return nil, fmt.Errorf("loom: %s table mirror: %w", agg.Name, err)
+		}
+	}
+
 	if agg.SnapshotEvery > 0 {
 		first := events[0].Version - 1
 		if version/agg.SnapshotEvery > first/agg.SnapshotEvery {

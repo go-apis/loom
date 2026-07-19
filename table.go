@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Typed entity tables (@table). The generated TableDef owns the shape —
@@ -75,8 +77,20 @@ func (c *Client) migrateTables(ctx context.Context) error {
 	var drift []string
 	for _, ts := range sortedTables(c.tables) {
 		def := ts.def
+		pre, err := c.liveColumns(ctx, def.Name)
+		if err != nil {
+			return err
+		}
+		existed := len(pre) > 0
 		if _, err := c.db.Exec(ctx, def.DDL); err != nil {
 			return fmt.Errorf("loom: create %s: %w", def.Name, err)
+		}
+		// a @table aggregate's mirror created after the aggregate has
+		// history starts empty — replay every stream into it once
+		if !existed {
+			if err := c.backfillAggregateTable(ctx, ts); err != nil {
+				return err
+			}
 		}
 		live, err := c.liveColumns(ctx, def.Name)
 		if err != nil {
@@ -102,6 +116,59 @@ func (c *Client) migrateTables(ctx context.Context) error {
 		return fmt.Errorf(
 			"loom: incompatible table drift (the read model is rebuildable — drop the table, Migrate, then Rebuild the projection):\n  - %s",
 			strings.Join(drift, "\n  - "))
+	}
+	return nil
+}
+
+// backfillAggregateTable fills a freshly created @table aggregate mirror
+// from the event log: every stream of the aggregate type is loaded
+// (snapshot + events) and upserted. Entity tables are skipped — their
+// remediation is projection Rebuild.
+func (c *Client) backfillAggregateTable(ctx context.Context, ts *tableSQL) error {
+	var agg *AggregateDef
+	for _, a := range c.reg.Aggregates {
+		if a.Name == ts.def.Entity {
+			agg = a
+		}
+	}
+	if agg == nil {
+		return nil
+	}
+	rows, err := c.db.Query(ctx, `
+		SELECT DISTINCT namespace, aggregate_id FROM loom_events
+		WHERE service=$1 AND aggregate_type=$2`, c.reg.Service, agg.Name)
+	if err != nil {
+		return err
+	}
+	type stream struct {
+		ns string
+		id uuid.UUID
+	}
+	var streams []stream
+	for rows.Next() {
+		var s stream
+		if err := rows.Scan(&s.ns, &s.id); err != nil {
+			rows.Close()
+			return err
+		}
+		streams = append(streams, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, s := range streams {
+		state, version, err := c.loadState(ctx, c.db, agg, s.ns, s.id)
+		if err != nil {
+			return fmt.Errorf("loom: backfill %s %s/%s: %w", agg.Name, s.ns, s.id, err)
+		}
+		if version == 0 {
+			continue
+		}
+		args := append([]any{c.reg.Service, s.ns, s.id}, ts.def.Values(state)...)
+		if _, err := c.db.Exec(ctx, ts.upsert, args...); err != nil {
+			return fmt.Errorf("loom: backfill %s %s/%s: %w", agg.Name, s.ns, s.id, err)
+		}
 	}
 	return nil
 }

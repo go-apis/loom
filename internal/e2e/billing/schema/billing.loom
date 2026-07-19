@@ -36,7 +36,7 @@ aggregate Invoice {
 // tax identity: the TIN is @pii — sealed at rest under the stream's data
 // key, redacted forever once the stream is shredded. last4 stays a plain
 // queryable field by design.
-aggregate Payee @snapshot(1) {
+aggregate Payee @snapshot(1) @table {
   state {
     name: string
     tin: string @pii

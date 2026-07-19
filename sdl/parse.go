@@ -155,12 +155,20 @@ func (p *parser) aggregate() error {
 		return err
 	}
 	agg := &schema.Aggregate{Name: name}
+	for d := range dirs {
+		if d != "snapshot" && d != "table" {
+			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table)", name, d)
+		}
+	}
 	if args, ok := dirs["snapshot"]; ok && len(args) == 1 {
 		every, err := strconv.Atoi(args[0])
 		if err != nil || every < 1 {
 			return fmt.Errorf("aggregate %s: @snapshot wants a positive count, got %q", name, args[0])
 		}
 		agg.Snapshot = every
+	}
+	if _, ok := dirs["table"]; ok {
+		agg.Table = true
 	}
 
 	if err := p.expect("{"); err != nil {
