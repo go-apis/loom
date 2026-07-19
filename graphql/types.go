@@ -95,9 +95,11 @@ func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s.%s: %w", name, f.snake, err)
 		}
-		if !f.nullable {
-			out = gql.NewNonNull(out)
-		}
+		// Row fields stay nullable regardless of Go pointer-ness: the
+		// SDL contract (`loom graphql`) declares entity/state fields
+		// nullable (the DSL has no `!` in state or entity blocks), and a
+		// column added by migration is NULL for rows written before it
+		// existed — a NonNull here made those rows unreadable.
 		gqlFields[f.camel] = &gql.Field{Type: out, Resolve: mapField(f.snake)}
 	}
 	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields})
