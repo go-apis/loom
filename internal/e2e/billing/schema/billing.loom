@@ -41,18 +41,21 @@ aggregate Payee @snapshot(1) @table {
     name: string
     tin: string @pii
     tin_last4: string
+    bank_token: string @secret   // write-only: sealed like @pii, never reads back over HTTP
   }
 
   command RegisterPayee {
     name: string!
     tin: string! @pii
     tin_last4: string!
+    bank_token: string @secret
   } -> PayeeRegistered
 
   event PayeeRegistered {
     name: string!
     tin: string! @pii
     tin_last4: string!
+    bank_token: string @secret
   }
 }
 

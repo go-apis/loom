@@ -5,7 +5,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -356,4 +358,36 @@ func (r *Registry) hasPII() bool {
 		}
 	}
 	return false
+}
+
+// redactSecrets replaces @secret fields of a state document with a stable
+// fingerprint ("secret:sha256:xxxxxxxx") before it leaves over HTTP. The
+// fingerprint is derived from the plaintext, so clients can tell "configured"
+// from "absent" and detect rotation without ever seeing the value.
+// In-process reads (Load, Record in handlers and processes) are untouched.
+func redactSecrets(state any, fields []string) any {
+	if len(fields) == 0 || state == nil {
+		return state
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return state
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return state
+	}
+	for _, f := range fields {
+		v, ok := doc[f]
+		if !ok || string(v) == "null" {
+			continue
+		}
+		sum := sha256.Sum256(v)
+		fp, err := json.Marshal("secret:sha256:" + hex.EncodeToString(sum[:4]))
+		if err != nil {
+			continue
+		}
+		doc[f] = fp
+	}
+	return doc
 }

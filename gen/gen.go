@@ -597,6 +597,9 @@ func loomErrNilEvent(eventType string) error {
 		if pii := a.State.PIIFields(); len(pii) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tStatePII: %s,\n", stringSlice(pii))
 		}
+		if sec := a.State.SecretFields(); len(sec) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tStateSecret: %s,\n", stringSlice(sec))
+		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.AggregateState { return &%s{} },\n", a.Name)
 		b.WriteString("\t\t\t\tCommands: []*loom.CommandDef{\n")
 		for _, c := range a.Commands {
@@ -617,6 +620,9 @@ func loomErrNilEvent(eventType string) error {
 		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n", r.Name)
 		if pii := r.State.PIIFields(); len(pii) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tStatePII: %s,\n", stringSlice(pii))
+		}
+		if sec := r.State.SecretFields(); len(sec) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tStateSecret: %s,\n", stringSlice(sec))
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() any { return &%s{} },\n", r.Name)
 		b.WriteString("\t\t\t\tCommands: []*loom.RecordCommandDef{\n")

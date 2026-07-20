@@ -14,8 +14,9 @@ type Payee struct{}
 
 func (h *Payee) RegisterPayee(ctx context.Context, state *loomgen.Payee, cmd *loomgen.RegisterPayee) ([]loom.DomainEvent, error) {
 	return []loom.DomainEvent{&loomgen.PayeeRegistered{
-		Name:     cmd.Name,
-		Tin:      cmd.Tin,
-		TinLast4: cmd.TinLast4,
+		Name:      cmd.Name,
+		Tin:       cmd.Tin,
+		TinLast4:  cmd.TinLast4,
+		BankToken: cmd.BankToken,
 	}}, nil
 }

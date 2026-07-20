@@ -297,6 +297,34 @@ aggregate A {
 `,
 			wantErr: "@publish and @pii are incompatible",
 		},
+		"secret on published event": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E @publish { key: string @secret }
+}
+`,
+			wantErr: "@publish and @pii are incompatible",
+		},
+		"secret projected into entity": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { key: string @secret }
+}
+entity Ent {
+  key: string @secret
+}
+projection ent -> Ent {
+  on E
+}
+`,
+			wantErr: "@secret fields cannot be projected into entities",
+		},
 		"pii inside named type": {
 			src: `
 service s

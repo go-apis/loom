@@ -290,7 +290,15 @@ func (c *Client) apiGetEntity(w http.ResponseWriter, r *http.Request) {
 
 func (c *Client) apiGetRecord(w http.ResponseWriter, r *http.Request) {
 	c.apiGetDoc(w, r, func(ns string, id uuid.UUID) (any, error) {
-		return c.Record(r.Context(), r.PathValue("name"), ns, id)
+		name := r.PathValue("name")
+		state, err := c.Record(r.Context(), name, ns, id)
+		if err != nil || state == nil {
+			return state, err
+		}
+		if def := c.reg.recordDef(name); def != nil {
+			return redactSecrets(state, def.StateSecret), nil
+		}
+		return state, nil
 	})
 }
 
@@ -328,7 +336,8 @@ func (c *Client) apiGetAggregate(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	state, version, err := c.Load(r.Context(), r.PathValue("name"), ns, id)
+	name := r.PathValue("name")
+	state, version, err := c.Load(r.Context(), name, ns, id)
 	if err != nil {
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
@@ -337,7 +346,11 @@ func (c *Client) apiGetAggregate(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": version, "state": state})
+	var out any = state
+	if def := c.reg.aggregateDef(name); def != nil {
+		out = redactSecrets(state, def.StateSecret)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "state": out})
 }
 
 func (c *Client) apiEvents(w http.ResponseWriter, r *http.Request) {

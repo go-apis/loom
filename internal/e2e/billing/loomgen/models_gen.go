@@ -52,9 +52,10 @@ type OrderPlaced struct {
 func (*OrderPlaced) LoomEvent() string { return "OrderPlaced" }
 
 type PayeeRegistered struct {
-	Name     string `json:"name"`
-	Tin      string `json:"tin"`
-	TinLast4 string `json:"tin_last4"`
+	BankToken string `json:"bank_token"`
+	Name      string `json:"name"`
+	Tin       string `json:"tin"`
+	TinLast4  string `json:"tin_last4"`
 }
 
 func (*PayeeRegistered) LoomEvent() string { return "PayeeRegistered" }
@@ -78,9 +79,10 @@ func (*RaiseInvoice) LoomCommand() string { return "RaiseInvoice" }
 type RegisterPayee struct {
 	loom.CommandBase
 
-	Name     string `json:"name"`
-	Tin      string `json:"tin"`
-	TinLast4 string `json:"tin_last4"`
+	BankToken string `json:"bank_token"`
+	Name      string `json:"name"`
+	Tin       string `json:"tin"`
+	TinLast4  string `json:"tin_last4"`
 }
 
 func (*RegisterPayee) LoomCommand() string { return "RegisterPayee" }
@@ -125,14 +127,16 @@ func (s *Invoice) Fold(eventType string, data any) error {
 }
 
 type Payee struct {
-	Name     string `json:"name"`
-	Tin      string `json:"tin"`
-	TinLast4 string `json:"tin_last4"`
+	BankToken string `json:"bank_token"`
+	Name      string `json:"name"`
+	Tin       string `json:"tin"`
+	TinLast4  string `json:"tin_last4"`
 }
 
 func (s *Payee) Fold(eventType string, data any) error {
 	switch e := data.(type) {
 	case *PayeeRegistered:
+		s.BankToken = e.BankToken
 		s.Name = e.Name
 		s.Tin = e.Tin
 		s.TinLast4 = e.TinLast4

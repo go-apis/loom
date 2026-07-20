@@ -242,6 +242,27 @@ rejects it) — keep PII on private events and publish a scrubbed pair.
 Filters can't match sealed fields; keep a plain derived field
 (`tin_last4`) for lookups.
 
+`@secret` is `@pii` for credentials — tenant SMTP passwords, API keys,
+webhook signing secrets. Everything above applies (sealed at rest,
+shreddable, no published events), plus the value is **write-only over
+HTTP**: `GET /aggregates/...`, `GET /records/...` and their streams return
+a stable fingerprint (`secret:sha256:xxxxxxxx`) instead of the plaintext,
+so an admin console can show "configured" and detect rotation without ever
+seeing the value. In-process reads (`Load`, `Record` in handlers,
+processes, effects) see plaintext — that's where the credential gets used.
+Entities can't project `@secret` fields at all (read models are queryable
+by design); project an explicit boolean or the fingerprint instead.
+
+```loom
+record MailConfig {
+  state {
+    smtp_host: string
+    smtp_user: string
+    smtp_password: string @secret
+  }
+}
+```
+
 ## Batches
 
 `loom.AsBatch(cmds...)` from a reaction (enqueued atomically with the

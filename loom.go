@@ -204,8 +204,12 @@ type AggregateDef struct {
 	SnapshotEvery int // 0 = disabled
 	// StatePII names state fields encrypted at rest in snapshots.
 	StatePII []string
-	NewState func() AggregateState
-	Commands []*CommandDef
+	// StateSecret names @secret state fields: sealed like StatePII, and
+	// additionally redacted to a fingerprint on every HTTP read. Always a
+	// subset of StatePII.
+	StateSecret []string
+	NewState    func() AggregateState
+	Commands    []*CommandDef
 }
 
 type CommandDef struct {
@@ -227,8 +231,10 @@ type RecordDef struct {
 	Name string
 	// StatePII names state fields encrypted at rest in the record row.
 	StatePII []string
-	NewState func() any
-	Commands []*RecordCommandDef
+	// StateSecret names @secret state fields — see AggregateDef.StateSecret.
+	StateSecret []string
+	NewState    func() any
+	Commands    []*RecordCommandDef
 }
 
 type RecordCommandDef struct {
@@ -318,6 +324,24 @@ type ProjectionDef struct {
 	// Fold, when set (@fold projections), replaces the state's generated
 	// assignment fold with the hand-written one wired through Impl.
 	Fold func(state EntityState, evt *Event) error
+}
+
+func (r *Registry) aggregateDef(name string) *AggregateDef {
+	for _, agg := range r.Aggregates {
+		if agg.Name == name {
+			return agg
+		}
+	}
+	return nil
+}
+
+func (r *Registry) recordDef(name string) *RecordDef {
+	for _, rec := range r.Records {
+		if rec.Name == name {
+			return rec
+		}
+	}
+	return nil
 }
 
 func (r *Registry) aggregateForCommand(cmdName string) (*AggregateDef, *CommandDef) {

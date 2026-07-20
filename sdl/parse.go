@@ -485,12 +485,18 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 			return nil, err
 		}
 		for d := range dirs {
-			if d != "pii" {
-				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii)", name, d)
+			if d != "pii" && d != "secret" {
+				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii, @secret)", name, d)
 			}
 		}
 		if _, ok := dirs["pii"]; ok {
 			ft.PII = true
+		}
+		if _, ok := dirs["secret"]; ok {
+			// @secret rides the @pii machinery (sealed at rest, shreddable)
+			// and additionally never reads back over the API.
+			ft.PII = true
+			ft.Secret = true
 		}
 		out.Properties[name] = ft
 	}
@@ -758,12 +764,18 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 			return nil, err
 		}
 		for d := range dirs {
-			if d != "pii" {
-				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii)", name, d)
+			if d != "pii" && d != "secret" {
+				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii, @secret)", name, d)
 			}
 		}
 		if _, ok := dirs["pii"]; ok {
 			ft.PII = true
+		}
+		if _, ok := dirs["secret"]; ok {
+			// @secret rides the @pii machinery (sealed at rest, shreddable)
+			// and additionally never reads back over the API.
+			ft.PII = true
+			ft.Secret = true
 		}
 		out.Properties[name] = ft
 	}

@@ -239,11 +239,16 @@ func (c *Client) apiEntityStream(w http.ResponseWriter, r *http.Request) {
 // GET /aggregates/{name}/{id}/stream — folded state + version on change.
 func (c *Client) apiAggregateStream(w http.ResponseWriter, r *http.Request) {
 	c.docStream(w, r, func(ns string, id uuid.UUID) (any, error) {
-		state, version, err := c.Load(r.Context(), r.PathValue("name"), ns, id)
+		name := r.PathValue("name")
+		state, version, err := c.Load(r.Context(), name, ns, id)
 		if err != nil || version == 0 {
 			return nil, err
 		}
-		return map[string]any{"version": version, "state": state}, nil
+		var out any = state
+		if def := c.reg.aggregateDef(name); def != nil {
+			out = redactSecrets(state, def.StateSecret)
+		}
+		return map[string]any{"version": version, "state": out}, nil
 	})
 }
 

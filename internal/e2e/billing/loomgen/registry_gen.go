@@ -82,14 +82,15 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{
 				Name:          "Payee",
 				SnapshotEvery: 1,
-				StatePII:      []string{"tin"},
+				StatePII:      []string{"bank_token", "tin"},
+				StateSecret:   []string{"bank_token"},
 				NewState:      func() loom.AggregateState { return &Payee{} },
 				Commands: []*loom.CommandDef{
 					{
 						Name:  "RegisterPayee",
 						New:   func() loom.Command { return &RegisterPayee{} },
 						Emits: []string{"PayeeRegistered"},
-						PII:   []string{"tin"},
+						PII:   []string{"bank_token", "tin"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Payee.RegisterPayee(ctx, state.(*Payee), cmd.(*RegisterPayee))
 							return asAny(evts), err
@@ -120,7 +121,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{Name: "InvoiceRaised", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &InvoiceRaised{} }},
 			{Name: "LedgerEntryPosted", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &LedgerEntryPosted{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "orders", Aliases: nil, New: func() any { return &OrderPlaced{} }},
-			{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"tin"}, New: func() any { return &PayeeRegistered{} }},
+			{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"bank_token", "tin"}, New: func() any { return &PayeeRegistered{} }},
 		},
 		Policies: []*loom.ReactorDef{
 			{

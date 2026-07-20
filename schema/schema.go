@@ -184,6 +184,12 @@ type Payload struct {
 	// (crypto-shreddable). Only valid on top-level fields of local
 	// unpublished events and aggregate/record/entity states.
 	PII bool `yaml:"pii,omitempty" json:"pii,omitempty"`
+	// Secret marks a write-only field: everything @pii does, plus the
+	// value never reads back over the HTTP API — GET endpoints return a
+	// stable fingerprint instead. In-process reads (handlers, processes)
+	// see plaintext. For tenant-supplied credentials: SMTP passwords,
+	// API keys, webhook signing secrets. @secret implies @pii.
+	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
 }
 
 // IsFile reports whether the payload is the builtin `file` type
@@ -215,6 +221,21 @@ func (pl *Payload) PIIFields() []string {
 	var out []string
 	for name, f := range pl.Properties {
 		if f.PII {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SecretFields lists a payload's @secret field names, sorted.
+func (pl *Payload) SecretFields() []string {
+	if pl == nil {
+		return nil
+	}
+	var out []string
+	for name, f := range pl.Properties {
+		if f.Secret {
 			out = append(out, name)
 		}
 	}
@@ -504,6 +525,15 @@ func (s *Schema) Validate() error {
 		}
 		if pii := e.State.PIIFields(); len(pii) > 0 {
 			fail("entity %s: @table and @pii are incompatible — typed columns cannot hold sealed values; keep this entity in the doc store (filters cannot match sealed fields anyway)", e.Name)
+		}
+	}
+
+	// @secret never belongs in a read model: entities exist to be queried,
+	// and a credential must not be queryable. Track "configured" with an
+	// explicit plain field instead.
+	for _, e := range s.Entities {
+		if sec := e.State.SecretFields(); len(sec) > 0 {
+			fail("entity %s: @secret fields cannot be projected into entities — read models are queryable by design; project a plain boolean/fingerprint field instead", e.Name)
 		}
 	}
 
