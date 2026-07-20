@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // @pii fields are encrypted at rest under a per-stream data key
@@ -390,4 +391,53 @@ func redactSecrets(state any, fields []string) any {
 		doc[f] = fp
 	}
 	return doc
+}
+
+// Rewrap re-wraps every stored data key under a new KeyWrapper — master-key
+// rotation, or moving LocalKeys → KMS. Only the wrapping changes: streams
+// keep their DEKs and sealed fields are untouched, so it's safe while
+// services are running (readers unwrap with whichever wrapper they hold;
+// switch Config.Keys at the next deploy). Returns the number of keys
+// re-wrapped.
+func Rewrap(ctx context.Context, db *pgxpool.Pool, from, to KeyWrapper) (int, error) {
+	rows, err := db.Query(ctx, `SELECT service, namespace, stream_id, wrapped_dek FROM loom_keys`)
+	if err != nil {
+		return 0, err
+	}
+	type keyRow struct {
+		service, namespace string
+		id                 uuid.UUID
+		wrapped            []byte
+	}
+	var all []keyRow
+	for rows.Next() {
+		var kr keyRow
+		if err := rows.Scan(&kr.service, &kr.namespace, &kr.id, &kr.wrapped); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		all = append(all, kr)
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		return 0, rows.Err()
+	}
+	n := 0
+	for _, kr := range all {
+		dek, err := from.Unwrap(ctx, kr.wrapped)
+		if err != nil {
+			return n, fmt.Errorf("loom: rewrap %s/%s/%s: unwrap with old keys: %w", kr.service, kr.namespace, kr.id, err)
+		}
+		w, err := to.Wrap(ctx, dek)
+		if err != nil {
+			return n, fmt.Errorf("loom: rewrap %s/%s/%s: wrap with new keys: %w", kr.service, kr.namespace, kr.id, err)
+		}
+		if _, err := db.Exec(ctx, `
+			UPDATE loom_keys SET wrapped_dek=$4 WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
+			kr.service, kr.namespace, kr.id, w); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

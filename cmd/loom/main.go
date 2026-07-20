@@ -2,18 +2,24 @@
 //
 //	loom init <service>   scaffold loom.yml + schema/<service>.loom
 //	loom generate         regenerate models/registry + missing stubs
+//	loom rewrap           re-wrap sealed data keys under a new KeyWrapper
 package main
 
 import (
+	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
 
+	"github.com/go-apis/loom"
 	"github.com/go-apis/loom/gen"
+	"github.com/go-apis/loom/gkms"
 	"github.com/go-apis/loom/schema"
 	"github.com/go-apis/loom/sdl"
 )
@@ -34,6 +40,8 @@ func main() {
 		err = runEmit(os.Args[2:], "openapi.json", gen.OpenAPI)
 	case "graphql":
 		err = runEmit(os.Args[2:], "", gen.GraphQL)
+	case "rewrap":
+		err = runRewrap(os.Args[2:])
 	default:
 		usage()
 	}
@@ -49,7 +57,62 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       loom check <schema.loom ...>")
 	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json]")
 	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls]")
+	fmt.Fprintln(os.Stderr, "       loom rewrap --db <dsn> (--from-local <hex>|--from-kms <key>) (--to-local <hex>|--to-kms <key>)")
 	os.Exit(2)
+}
+
+// runRewrap re-wraps loom_keys rows from one KeyWrapper to another —
+// master-key rotation, or moving LocalKeys → Cloud KMS. Sealed data is
+// untouched; only the DEK wrapping changes.
+func runRewrap(args []string) error {
+	fs := flag.NewFlagSet("rewrap", flag.ExitOnError)
+	dsn := fs.String("db", "", "Postgres DSN (required)")
+	fromLocal := fs.String("from-local", "", "current master key (64 hex chars)")
+	fromKMS := fs.String("from-kms", "", "current Cloud KMS crypto key resource name")
+	toLocal := fs.String("to-local", "", "new master key (64 hex chars)")
+	toKMS := fs.String("to-kms", "", "new Cloud KMS crypto key resource name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dsn == "" {
+		return fmt.Errorf("rewrap: --db is required")
+	}
+	ctx := context.Background()
+	wrapper := func(local, kms, side string) (loom.KeyWrapper, error) {
+		switch {
+		case local != "" && kms != "":
+			return nil, fmt.Errorf("rewrap: give exactly one of --%s-local / --%s-kms", side, side)
+		case local != "":
+			key, err := hex.DecodeString(local)
+			if err != nil {
+				return nil, fmt.Errorf("rewrap: --%s-local is not hex: %w", side, err)
+			}
+			return loom.LocalKeys(key)
+		case kms != "":
+			return gkms.New(ctx, kms)
+		default:
+			return nil, fmt.Errorf("rewrap: give one of --%s-local / --%s-kms", side, side)
+		}
+	}
+	from, err := wrapper(*fromLocal, *fromKMS, "from")
+	if err != nil {
+		return err
+	}
+	to, err := wrapper(*toLocal, *toKMS, "to")
+	if err != nil {
+		return err
+	}
+	pool, err := pgxpool.New(ctx, *dsn)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	n, err := loom.Rewrap(ctx, pool, from, to)
+	if err != nil {
+		return fmt.Errorf("rewrap: %d keys done, then: %w", n, err)
+	}
+	fmt.Printf("rewrapped %d data keys\n", n)
+	return nil
 }
 
 // runEmit powers the schema projections (OpenAPI, GraphQL SDL): load the

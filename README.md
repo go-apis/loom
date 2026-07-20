@@ -263,6 +263,19 @@ record MailConfig {
 }
 ```
 
+Data keys are wrapped by `Config.Keys`: `loom.LocalKeys` (32-byte master
+key from your secret manager) for dev and self-hosting, or
+[`gkms`](gkms/gkms.go) for Cloud KMS envelope wrapping — the master key
+never leaves KMS, key use is IAM-gated and audit-logged, and loom's DEK
+cache keeps it to ~one Decrypt per stream per process. Switch wrappers (or
+rotate a master key) with `loom rewrap`: DEKs are re-wrapped in place,
+sealed data untouched.
+
+```sh
+loom rewrap --db "$DSN" --from-local $OLD_HEX \
+  --to-kms projects/P/locations/L/keyRings/R/cryptoKeys/K
+```
+
 ## Batches
 
 `loom.AsBatch(cmds...)` from a reaction (enqueued atomically with the
