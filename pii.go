@@ -361,12 +361,15 @@ func (r *Registry) hasPII() bool {
 	return false
 }
 
-// redactSecrets replaces @secret fields of a state document with a stable
-// fingerprint ("secret:sha256:xxxxxxxx") before it leaves over HTTP. The
+// RedactSecrets replaces @secret fields of a state document with a stable
+// fingerprint ("secret:sha256:xxxxxxxx") before it leaves the process. The
 // fingerprint is derived from the plaintext, so clients can tell "configured"
 // from "absent" and detect rotation without ever seeing the value.
-// In-process reads (Load, Record in handlers and processes) are untouched.
-func redactSecrets(state any, fields []string) any {
+// In-process reads (Load, Record in handlers and processes) are untouched;
+// the HTTP API and the GraphQL gateway apply this on every read they serve.
+// Exported for custom resolvers that load aggregates and hand state to
+// callers outside the process.
+func RedactSecrets(state any, fields []string) any {
 	if len(fields) == 0 || state == nil {
 		return state
 	}

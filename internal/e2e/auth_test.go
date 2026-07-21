@@ -213,9 +213,17 @@ func TestGatewayPolicy(t *testing.T) {
 		case c != nil && c.Staff:
 			return nil // platform staff: everything, @role gates included
 		case c != nil && c.Support:
-			// support reads anything (cross-namespace included), writes nothing
+			// support reads anything (cross-namespace included), writes
+			// nothing — and never sees cancellation reasons: forbidding a
+			// requested field denies the whole operation, so the client
+			// re-shapes its query instead of getting partial results
 			if d.Kind == "mutation" {
 				return fmt.Errorf("support is read-only")
+			}
+			for _, f := range d.Fields {
+				if f == "reason" || strings.HasSuffix(f, ".reason") {
+					return fmt.Errorf("support may not read %q", f)
+				}
 			}
 			return nil
 		default:
@@ -271,10 +279,20 @@ func TestGatewayPolicy(t *testing.T) {
 		items: [{sku: "x", quantity: 1, priceCents: 5}]}) { status } }`
 	shipQ := `mutation($ns: String!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
 
+	reasonQ := `query($ns: Namespace!) { orderSummarys(namespace: $ns) { id reason } }`
+
 	// support: reads any namespace and "*" despite an empty Namespaces
 	// list — the policy overrides what DefaultPolicy would refuse
 	if res := do("support", listQ, map[string]any{"ns": "globex"}); firstError(res) != "" {
 		t.Fatalf("support read globex: %s", firstError(res))
+	}
+	// ...but a query REQUESTING a forbidden field is denied whole: the
+	// policy rules on Decision.Fields before anything resolves
+	if res := do("support", reasonQ, map[string]any{"ns": "globex"}); !strings.Contains(firstError(res), "reason") {
+		t.Fatalf("support reason query should be denied by field rule, got %q", firstError(res))
+	}
+	if res := do("acme-rw", reasonQ, map[string]any{"ns": "acme"}); firstError(res) != "" {
+		t.Fatalf("acme-rw may read reason (DefaultPolicy has no field rules): %s", firstError(res))
 	}
 	if res := do("support", listQ, map[string]any{"ns": "*"}); firstError(res) != "" {
 		t.Fatalf("support cross-namespace read: %s", firstError(res))

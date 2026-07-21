@@ -113,6 +113,13 @@ type Decision struct {
 	Namespace string
 	// Args carries the mutation input or query arguments.
 	Args map[string]any
+	// Fields lists the operation's requested selection paths, dotted
+	// through nested selections and joins ("id", "secretHash",
+	// "orders.status") — the whole tree the query can reach, fragments
+	// resolved. Empty on file/stream mounts. A policy that forbids a
+	// field denies the operation outright: the caller re-shapes the
+	// query, partial results never happen.
+	Fields []string
 	// Roles is the command's @role contract — nil for ungated commands
 	// and for reads. Advisory input: the policy decides what it means.
 	Roles []string

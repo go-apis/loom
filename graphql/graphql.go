@@ -248,16 +248,16 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, obj)); err != nil {
+		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, agg.StateSecret, obj)); err != nil {
 			return err
 		}
-		name := agg.Name
+		name, secrets := agg.Name, agg.StateSecret
 		if err := b.addSub(lowerFirst(agg.Name)+"Changed", docChanged(cli, obj, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
 			state, version, err := cli.Load(ctx, name, ns, id)
 			if err != nil || version == 0 {
 				return nil, err
 			}
-			return toDoc(state, ns, id.String())
+			return toDoc(loom.RedactSecrets(state, secrets), ns, id.String())
 		})); err != nil {
 			return err
 		}
@@ -288,8 +288,15 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
+		recSecrets := rec.StateSecret
 		if err := b.addQuery(lowerFirst(rec.Name), docGet(obj, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
-			return cli.Record(ctx, rec.Name, ns, id)
+			state, err := cli.Record(ctx, rec.Name, ns, id)
+			if err != nil || state == nil {
+				return state, err
+			}
+			// the write-only contract holds on the gateway exactly as it
+			// does on the HTTP API: @secret reads back as a fingerprint
+			return loom.RedactSecrets(state, recSecrets), nil
 		})); err != nil {
 			return err
 		}
@@ -558,12 +565,53 @@ func opKind(p gql.ResolveParams) string {
 	return "query"
 }
 
+// selectedFields flattens the resolver's requested selection set into
+// dotted paths ("id", "orders.status"), fragments resolved — the
+// Decision's view of everything the operation can reach. Depth is
+// bounded by the handler's MaxDepth long before this walk runs.
+func selectedFields(p gql.ResolveParams) []string {
+	var out []string
+	var walk func(ss *ast.SelectionSet, prefix string)
+	walk = func(ss *ast.SelectionSet, prefix string) {
+		if ss == nil {
+			return
+		}
+		for _, sel := range ss.Selections {
+			switch f := sel.(type) {
+			case *ast.Field:
+				if f.Name == nil {
+					continue
+				}
+				path := f.Name.Value
+				if prefix != "" {
+					path = prefix + "." + path
+				}
+				out = append(out, path)
+				walk(f.SelectionSet, path)
+			case *ast.InlineFragment:
+				walk(f.SelectionSet, prefix)
+			case *ast.FragmentSpread:
+				if f.Name == nil {
+					continue
+				}
+				if frag, ok := p.Info.Fragments[f.Name.Value]; ok {
+					walk(frag.GetSelectionSet(), prefix)
+				}
+			}
+		}
+	}
+	for _, fa := range p.Info.FieldASTs {
+		walk(fa.SelectionSet, "")
+	}
+	return out
+}
+
 func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
 	if ns == AllNamespaces {
 		return "", uuid.Nil, fmt.Errorf(`"*" is for lists — fetching one doc needs its namespace`)
 	}
-	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args}); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args, Fields: selectedFields(p)}); err != nil {
 		return "", uuid.Nil, err
 	}
 	raw := fmt.Sprint(p.Args["id"])
@@ -574,7 +622,7 @@ func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
 	return ns, id, nil
 }
 
-func aggregateGet(cli *loom.Client, name string, obj *gql.Object) *gql.Field {
+func aggregateGet(cli *loom.Client, name string, secrets []string, obj *gql.Object) *gql.Field {
 	return &gql.Field{
 		Type: obj,
 		Args: nsIDArgs(),
@@ -587,7 +635,9 @@ func aggregateGet(cli *loom.Client, name string, obj *gql.Object) *gql.Field {
 			if err != nil || version == 0 {
 				return nil, err
 			}
-			return toDoc(state, ns, id.String())
+			// in-process Load sees plaintext; the write-only contract
+			// holds on the gateway exactly as on the HTTP API
+			return toDoc(loom.RedactSecrets(state, secrets), ns, id.String())
 		},
 	}
 }
@@ -623,7 +673,7 @@ func listArgs() gql.FieldConfigArgument {
 func queryFromArgs(p gql.ResolveParams) (loom.Query, error) {
 	args := p.Args
 	ns := fmt.Sprint(args["namespace"])
-	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args}); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args, Fields: selectedFields(p)}); err != nil {
 		return loom.Query{}, err
 	}
 	if ns == AllNamespaces {

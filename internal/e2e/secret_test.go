@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/go-apis/loom"
+	loomgql "github.com/go-apis/loom/graphql"
 	"github.com/go-apis/loom/internal/e2e/billing"
 	billinggen "github.com/go-apis/loom/internal/e2e/billing/loomgen"
 )
@@ -125,5 +126,38 @@ func TestSecretFields(t *testing.T) {
 	first := string(buf[:n])
 	if strings.Contains(first, "tok-live") || !strings.Contains(first, "secret:sha256:") {
 		t.Fatalf("stream leaked the secret: %s", first)
+	}
+
+	// the GraphQL gateway loads aggregates in-process (plaintext), so it
+	// must redact on its own — same fingerprint contract as the HTTP API
+	gateway, err := loomgql.New(loomgql.Config{Services: []*loom.Client{cli}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gsrv := httptest.NewServer(gateway)
+	defer gsrv.Close()
+	q := fmt.Sprintf(`{"query":"query { payee(namespace: \"default\", id: \"%s\") { tin bankToken } }"}`, payee)
+	gres, err := http.Post(gsrv.URL, "application/json", strings.NewReader(q))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gbody, _ := io.ReadAll(gres.Body)
+	gres.Body.Close()
+	var gout struct {
+		Data struct {
+			Payee struct {
+				Tin       string `json:"tin"`
+				BankToken string `json:"bankToken"`
+			} `json:"payee"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(gbody, &gout); err != nil {
+		t.Fatalf("gateway payee: %v: %s", err, gbody)
+	}
+	if gout.Data.Payee.Tin != "123-45-6789" {
+		t.Fatalf("gateway @pii field should read back: %s", gbody)
+	}
+	if gout.Data.Payee.BankToken != fp1 || strings.Contains(string(gbody), "tok-live") {
+		t.Fatalf("gateway must redact @secret to the same fingerprint (%s): %s", fp1, gbody)
 	}
 }

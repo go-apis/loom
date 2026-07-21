@@ -296,7 +296,7 @@ func (c *Client) apiGetRecord(w http.ResponseWriter, r *http.Request) {
 			return state, err
 		}
 		if def := c.reg.recordDef(name); def != nil {
-			return redactSecrets(state, def.StateSecret), nil
+			return RedactSecrets(state, def.StateSecret), nil
 		}
 		return state, nil
 	})
@@ -348,7 +348,7 @@ func (c *Client) apiGetAggregate(w http.ResponseWriter, r *http.Request) {
 	}
 	var out any = state
 	if def := c.reg.aggregateDef(name); def != nil {
-		out = redactSecrets(state, def.StateSecret)
+		out = RedactSecrets(state, def.StateSecret)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": version, "state": out})
 }

@@ -244,8 +244,9 @@ Filters can't match sealed fields; keep a plain derived field
 
 `@secret` is `@pii` for credentials — tenant SMTP passwords, API keys,
 webhook signing secrets. Everything above applies (sealed at rest,
-shreddable, no published events), plus the value is **write-only over
-HTTP**: `GET /aggregates/...`, `GET /records/...` and their streams return
+shreddable, no published events), plus the value is **write-only outside
+the process**: `GET /aggregates/...`, `GET /records/...`, their streams,
+and the GraphQL gateway's get and changed-subscription fields all return
 a stable fingerprint (`secret:sha256:xxxxxxxx`) instead of the plaintext,
 so an admin console can show "configured" and detect rotation without ever
 seeing the value. In-process reads (`Load`, `Record` in handlers,
@@ -514,8 +515,14 @@ client must be tagged to the caller's org" — set a `Policy`: the OPA
 shape with Go as the rule language. Every operation (reads, lists,
 subscriptions, mutations, uploads, file downloads, raw watches)
 resolves to one `Decision` — kind, field, target namespace, args, the
-`@role` contract, and the caller's `Access` including an opaque
-`Claims` slot the Auth hook fills — and the policy answers it. A set
+requested selection paths (`Fields`, dotted through nested selections
+and joins, fragments resolved), the `@role` contract, and the caller's
+`Access` including an opaque `Claims` slot the Auth hook fills — and
+the policy answers it. Rules can range over argument *values*
+(`d.Args`: "only staff grant the owner role") and over what the query
+asks to *read* (`d.Fields`: "support never sees `reason`"); forbidding
+a field denies the operation whole, so callers re-shape their query and
+partial results never happen. A set
 policy *replaces* the built-in checks (`Access` becomes input, not
 verdict); `DefaultPolicy` is those built-ins exported, so a policy
 special-cases what it must and delegates the rest:

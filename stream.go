@@ -246,7 +246,7 @@ func (c *Client) apiAggregateStream(w http.ResponseWriter, r *http.Request) {
 		}
 		var out any = state
 		if def := c.reg.aggregateDef(name); def != nil {
-			out = redactSecrets(state, def.StateSecret)
+			out = RedactSecrets(state, def.StateSecret)
 		}
 		return map[string]any{"version": version, "state": out}, nil
 	})
