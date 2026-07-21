@@ -509,6 +509,35 @@ ship") stay in the command handler. `loom graphql` stamps the gate on
 the SDL artifact as a `@role(anyOf: [...])` field directive, so
 consumers can read the contract.
 
+When flat roles run out — "platform staff bypass everything", "this
+client must be tagged to the caller's org" — set a `Policy`: the OPA
+shape with Go as the rule language. Every operation (reads, lists,
+subscriptions, mutations, uploads, file downloads, raw watches)
+resolves to one `Decision` — kind, field, target namespace, args, the
+`@role` contract, and the caller's `Access` including an opaque
+`Claims` slot the Auth hook fills — and the policy answers it. A set
+policy *replaces* the built-in checks (`Access` becomes input, not
+verdict); `DefaultPolicy` is those built-ins exported, so a policy
+special-cases what it must and delegates the rest:
+
+```go
+gateway, _ := loomgraphql.New(loomgraphql.Config{
+    Services: services,
+    Auth:     auth,      // still authenticates; now also attaches Claims
+    Policy: func(ctx context.Context, d loomgraphql.Decision) error {
+        if c, ok := d.Access.Claims.(*Claims); ok && c.Staff != "" {
+            return nil                      // staff: everything
+        }
+        return loomgraphql.DefaultPolicy(d) // everyone else: stock rules
+    },
+})
+mux.Handle("/files", loomgraphql.ProtectWith(auth, policy, loomgraphql.Files(...)))
+```
+
+The policy runs with the request context, so relationship rules can
+load aggregates or entities through a loom client before answering.
+`ProtectWith` carries the same policy to the file and stream mounts.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service

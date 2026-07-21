@@ -188,3 +188,126 @@ func TestGatewayAuth(t *testing.T) {
 		t.Fatalf("god list missed namespaces: %v", seen)
 	}
 }
+
+// TestGatewayPolicy proves the Policy hook is the authority when set:
+// it replaces the built-in checks entirely (Access becomes input, not
+// verdict), sees the @role contract as advisory input, and delegates to
+// DefaultPolicy for the cases it doesn't special-case.
+func TestGatewayPolicy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cli := liveOrders(t, ctx)
+
+	type claims struct{ Staff, Support bool }
+	tokens := map[string]loomgql.Access{
+		// no Namespaces at all: DefaultPolicy alone would refuse every
+		// namespaced read — the policy is what lets these act
+		"staff":   {Mutate: true, Claims: &claims{Staff: true}},
+		"support": {Mutate: true, Claims: &claims{Support: true}},
+		"acme-rw": {Namespaces: []string{"acme"}, Mutate: true},
+	}
+	policy := func(ctx context.Context, d loomgql.Decision) error {
+		c, _ := d.Access.Claims.(*claims)
+		switch {
+		case c != nil && c.Staff:
+			return nil // platform staff: everything, @role gates included
+		case c != nil && c.Support:
+			// support reads anything (cross-namespace included), writes nothing
+			if d.Kind == "mutation" {
+				return fmt.Errorf("support is read-only")
+			}
+			return nil
+		default:
+			return loomgql.DefaultPolicy(d)
+		}
+	}
+	gateway, err := loomgql.New(loomgql.Config{
+		Services: []*loom.Client{cli},
+		Policy:   policy,
+		Auth: func(r *http.Request) (loomgql.Access, error) {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			access, ok := tokens[token]
+			if !ok {
+				return loomgql.Access{}, fmt.Errorf("bad token")
+			}
+			return access, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(gateway)
+	t.Cleanup(srv.Close)
+
+	type gqlResult struct {
+		Data   map[string]any   `json:"data"`
+		Errors []map[string]any `json:"errors"`
+	}
+	do := func(token, query string, vars map[string]any) gqlResult {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader(string(body)))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out gqlResult
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return out
+	}
+	firstError := func(res gqlResult) string {
+		if len(res.Errors) == 0 {
+			return ""
+		}
+		return fmt.Sprint(res.Errors[0]["message"])
+	}
+
+	listQ := `query($ns: Namespace!) { orderSummarys(namespace: $ns) { id namespace } }`
+	placeQ := `mutation($ns: String!, $id: UUID!) { placeOrder(input: {namespace: $ns, aggregateId: $id,
+		customerId: "` + uuid.NewString() + `", currency: "USD",
+		items: [{sku: "x", quantity: 1, priceCents: 5}]}) { status } }`
+	shipQ := `mutation($ns: String!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
+
+	// support: reads any namespace and "*" despite an empty Namespaces
+	// list — the policy overrides what DefaultPolicy would refuse
+	if res := do("support", listQ, map[string]any{"ns": "globex"}); firstError(res) != "" {
+		t.Fatalf("support read globex: %s", firstError(res))
+	}
+	if res := do("support", listQ, map[string]any{"ns": "*"}); firstError(res) != "" {
+		t.Fatalf("support cross-namespace read: %s", firstError(res))
+	}
+	// ...but never mutates, Access.Mutate notwithstanding
+	if res := do("support", placeQ, map[string]any{"ns": "acme", "id": uuid.NewString()}); !strings.Contains(firstError(res), "read-only") {
+		t.Fatalf("support mutation should hit policy denial, got %q", firstError(res))
+	}
+
+	// staff: ships without holding owner|shipper anywhere — the policy
+	// chose to bypass the @role contract
+	staffOrder := uuid.New()
+	if err := cli.Dispatch(ctx, &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: staffOrder, Namespace: "acme"},
+		CustomerId:  uuid.New(),
+		Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 1, PriceCents: 100}},
+		Currency:    "USD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if res := do("staff", shipQ, map[string]any{"ns": "acme", "id": staffOrder.String()}); firstError(res) != "" {
+		t.Fatalf("staff shipOrder: %s", firstError(res))
+	}
+
+	// everyone else falls through to DefaultPolicy: scoped rw works in
+	// its namespace, is refused across, and @role still gates shipOrder
+	if res := do("acme-rw", placeQ, map[string]any{"ns": "acme", "id": uuid.NewString()}); firstError(res) != "" {
+		t.Fatalf("acme-rw place via DefaultPolicy: %s", firstError(res))
+	}
+	if res := do("acme-rw", placeQ, map[string]any{"ns": "globex", "id": uuid.NewString()}); !strings.Contains(firstError(res), "namespace") {
+		t.Fatalf("acme-rw cross-namespace place should fail, got %q", firstError(res))
+	}
+	if res := do("acme-rw", shipQ, map[string]any{"ns": "acme", "id": staffOrder.String()}); !strings.Contains(firstError(res), "role") {
+		t.Fatalf("acme-rw shipOrder should fail the @role gate, got %q", firstError(res))
+	}
+}

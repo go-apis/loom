@@ -46,6 +46,10 @@ type Config struct {
 	// gateway: every namespace, all mutations — mount behind trusted
 	// middleware or keep it off the public edge.
 	Auth Auth
+	// Policy, when set, replaces the built-in authorization: every
+	// operation resolves to a Decision and this hook answers it (see
+	// auth.go). Delegate to DefaultPolicy for the stock rules.
+	Policy Policy
 	// MaxDepth bounds query nesting (fields, through fragments). Zero
 	// means DefaultMaxDepth; negative disables the check. Declared joins
 	// make the type graph cyclic, so an unbounded public gateway would
@@ -114,7 +118,7 @@ func New(cfg Config) (http.Handler, error) {
 	if maxDepth == 0 {
 		maxDepth = DefaultMaxDepth
 	}
-	return &handler{schema: schema, auth: cfg.Auth, maxDepth: maxDepth}, nil
+	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth}, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -545,12 +549,21 @@ func nsIDArgs() gql.FieldConfigArgument {
 	}
 }
 
+// opKind names the operation a resolver runs under: query,
+// mutation, or subscription.
+func opKind(p gql.ResolveParams) string {
+	if od, ok := p.Info.Operation.(*ast.OperationDefinition); ok && od.Operation != "" {
+		return od.Operation
+	}
+	return "query"
+}
+
 func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
 	if ns == AllNamespaces {
 		return "", uuid.Nil, fmt.Errorf(`"*" is for lists — fetching one doc needs its namespace`)
 	}
-	if err := checkRead(p.Context, ns); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args}); err != nil {
 		return "", uuid.Nil, err
 	}
 	raw := fmt.Sprint(p.Args["id"])
@@ -607,15 +620,14 @@ func listArgs() gql.FieldConfigArgument {
 	}
 }
 
-func queryFromArgs(ctx context.Context, args map[string]any) (loom.Query, error) {
+func queryFromArgs(p gql.ResolveParams) (loom.Query, error) {
+	args := p.Args
 	ns := fmt.Sprint(args["namespace"])
-	if ns == AllNamespaces {
-		if err := checkAll(ctx); err != nil {
-			return loom.Query{}, err
-		}
-		ns = ""
-	} else if err := checkRead(ctx, ns); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args}); err != nil {
 		return loom.Query{}, err
+	}
+	if ns == AllNamespaces {
+		ns = ""
 	}
 	q := loom.Query{Namespace: ns, AllNamespaces: ns == ""}
 	if order, ok := args["order"].(string); ok {
@@ -661,7 +673,7 @@ func docList(obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]l
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			q, err := queryFromArgs(p.Context, p.Args)
+			q, err := queryFromArgs(p)
 			if err != nil {
 				return nil, err
 			}
@@ -687,7 +699,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Conte
 			return p.Source, nil
 		},
 		Subscribe: func(p gql.ResolveParams) (any, error) {
-			q, err := queryFromArgs(p.Context, p.Args)
+			q, err := queryFromArgs(p)
 			if err != nil {
 				return nil, err
 			}
@@ -753,7 +765,7 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
-			if err := checkMutate(p.Context, field, ns, roles); err != nil {
+			if err := decide(p.Context, Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args, Roles: roles}); err != nil {
 				return nil, err
 			}
 			raw, err := json.Marshal(conv(args))
@@ -799,7 +811,7 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
-			if err := checkMutate(p.Context, field, ns, nil); err != nil {
+			if err := decide(p.Context, Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args}); err != nil {
 				return nil, err
 			}
 			id, err := uuid.Parse(fmt.Sprint(args["id"]))
@@ -891,8 +903,8 @@ func Streams(services ...*loom.Client) http.Handler {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return
 		}
-		// under Protect, the watch's namespace must be readable
-		if err := checkRead(r.Context(), r.URL.Query().Get("namespace")); err != nil {
+		// under Protect/ProtectWith, the watch's namespace must be readable
+		if err := decide(r.Context(), Decision{Kind: "stream", Namespace: r.URL.Query().Get("namespace")}); err != nil {
 			http.Error(w, `{"error":"access denied"}`, http.StatusForbidden)
 			return
 		}
@@ -926,8 +938,8 @@ func Files(services ...*loom.Client) http.Handler {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return
 		}
-		// under Protect, the key's namespace segment must be readable
-		if err := checkRead(r.Context(), namespaceOfKey(key)); err != nil {
+		// under Protect/ProtectWith, the key's namespace segment must be readable
+		if err := decide(r.Context(), Decision{Kind: "file", Namespace: namespaceOfKey(key)}); err != nil {
 			http.Error(w, `{"error":"access denied"}`, http.StatusForbidden)
 			return
 		}
@@ -950,6 +962,7 @@ var playgroundHTML []byte
 type handler struct {
 	schema   gql.Schema
 	auth     Auth
+	policy   Policy
 	maxDepth int
 }
 
@@ -996,6 +1009,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = r.WithContext(WithAccess(r.Context(), access))
+	}
+	if h.policy != nil {
+		r = r.WithContext(withPolicy(r.Context(), h.policy))
 	}
 	if h.maxDepth > 0 {
 		if d := queryDepth(req.Query); d > h.maxDepth {

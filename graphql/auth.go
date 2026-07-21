@@ -52,6 +52,10 @@ type Access struct {
 	// refused, so adding @role to a schema fails closed until the Auth
 	// hook grants roles.
 	Roles map[string]string
+	// Claims is an opaque slot for whatever the Auth hook parsed — its
+	// JWT claims, API-key record, session — carried untouched to the
+	// Policy hook's Decision. The built-in checks never read it.
+	Claims any
 }
 
 // Auth resolves a request to its Access. Returning an error means
@@ -86,24 +90,6 @@ func (a Access) allows(ns string) bool {
 	return false
 }
 
-// checkRead gates one namespace. An absent Access means an open mount.
-func checkRead(ctx context.Context, ns string) error {
-	a, ok := AccessFrom(ctx)
-	if !ok || a.allows(ns) {
-		return nil
-	}
-	return fmt.Errorf("access denied: namespace %q", ns)
-}
-
-// checkAll gates namespace: "*" — the cross-namespace list query.
-func checkAll(ctx context.Context) error {
-	a, ok := AccessFrom(ctx)
-	if !ok || a.All {
-		return nil
-	}
-	return fmt.Errorf(`access denied: namespace "*" needs all-namespace access`)
-}
-
 // roleFor is the caller's role in one namespace: the exact grant, or
 // the "*" wildcard grant.
 func (a Access) roleFor(ns string) string {
@@ -113,62 +99,156 @@ func (a Access) roleFor(ns string) string {
 	return a.Roles["*"]
 }
 
-// checkMutate gates one mutation field into one namespace. roles is the
-// command's @role contract — empty for ungated commands.
-func checkMutate(ctx context.Context, field, ns string, roles []string) error {
-	a, ok := AccessFrom(ctx)
-	if !ok {
+// Decision is one operation the gateway wants authorized — the input
+// document a Policy rules over. Args is the operation's arguments
+// verbatim (mutation input included): policy code is trusted like
+// handler code, so @secret fields are not redacted here.
+type Decision struct {
+	// Kind is query, mutation, subscription, file, or stream.
+	Kind string
+	// Field is the GraphQL field name ("" on file/stream mounts).
+	Field string
+	// Namespace is the operation's target; "*" is the cross-namespace
+	// list form.
+	Namespace string
+	// Args carries the mutation input or query arguments.
+	Args map[string]any
+	// Roles is the command's @role contract — nil for ungated commands
+	// and for reads. Advisory input: the policy decides what it means.
+	Roles []string
+	// Access is what the Auth hook resolved; HasAccess false means an
+	// open mount (no Auth hook and no WithAccess middleware).
+	Access    Access
+	HasAccess bool
+}
+
+// Policy replaces the built-in authorization when set on Config: every
+// operation — reads, lists, subscriptions, mutations, uploads, file
+// downloads, raw watches — resolves to one Decision and the policy
+// answers it. Return nil to allow; the error message becomes the
+// GraphQL error (or the mount's 403). DefaultPolicy is the built-in
+// rule set, exported so a policy handles its special cases and
+// delegates the rest:
+//
+//	Policy: func(ctx context.Context, d loomgraphql.Decision) error {
+//	    if c, ok := d.Access.Claims.(*Claims); ok && c.Staff != "" {
+//	        return nil                      // platform staff: everything
+//	    }
+//	    return loomgraphql.DefaultPolicy(d) // everyone else: stock rules
+//	}
+//
+// The ctx is the request context, so a policy may load aggregates or
+// entities through a loom client to answer relationship rules ("is
+// this client tagged to the caller's org?") — the OPA shape, with Go
+// as the rule language.
+type Policy func(ctx context.Context, d Decision) error
+
+// DefaultPolicy is the gateway's built-in rule set over a Decision:
+// open mounts allow everything; namespace "*" needs All; Namespaces
+// scope reads and writes; Mutate (narrowed by Mutations) gates
+// mutations; @role contracts demand a matching Roles grant in the
+// target namespace (All with no Roles map keeps god-mode semantics).
+// Custom policies call it to inherit these rules.
+func DefaultPolicy(d Decision) error {
+	if !d.HasAccess {
+		return nil
+	}
+	a := d.Access
+	if d.Kind != "mutation" {
+		if d.Namespace == AllNamespaces {
+			if !a.All {
+				return fmt.Errorf(`access denied: namespace "*" needs all-namespace access`)
+			}
+			return nil
+		}
+		if !a.allows(d.Namespace) {
+			return fmt.Errorf("access denied: namespace %q", d.Namespace)
+		}
 		return nil
 	}
 	if !a.Mutate {
 		return fmt.Errorf("access denied: read-only access")
 	}
-	if !a.allows(ns) {
-		return fmt.Errorf("access denied: namespace %q", ns)
+	if !a.allows(d.Namespace) {
+		return fmt.Errorf("access denied: namespace %q", d.Namespace)
 	}
 	if len(a.Mutations) > 0 {
 		allowed := false
 		for _, m := range a.Mutations {
-			if m == field {
+			if m == d.Field {
 				allowed = true
 				break
 			}
 		}
 		if !allowed {
-			return fmt.Errorf("access denied: mutation %q", field)
+			return fmt.Errorf("access denied: mutation %q", d.Field)
 		}
 	}
-	if len(roles) > 0 {
+	if len(d.Roles) > 0 {
 		// god access with no role model keeps its pre-@role meaning:
 		// every mutation. Any Roles map switches to strict role checks.
 		if a.All && len(a.Roles) == 0 {
 			return nil
 		}
-		have := a.roleFor(ns)
-		for _, want := range roles {
+		have := a.roleFor(d.Namespace)
+		for _, want := range d.Roles {
 			if have == want {
 				return nil
 			}
 		}
-		return fmt.Errorf("access denied: mutation %q needs role %s in namespace %q", field, strings.Join(roles, " or "), ns)
+		return fmt.Errorf("access denied: mutation %q needs role %s in namespace %q", d.Field, strings.Join(d.Roles, " or "), d.Namespace)
 	}
 	return nil
+}
+
+type policyKey struct{}
+
+func withPolicy(ctx context.Context, p Policy) context.Context {
+	return context.WithValue(ctx, policyKey{}, p)
+}
+
+func policyFrom(ctx context.Context) Policy {
+	p, _ := ctx.Value(policyKey{}).(Policy)
+	return p
+}
+
+// decide completes a Decision with the context's Access and asks the
+// context's Policy — or DefaultPolicy when none is mounted.
+func decide(ctx context.Context, d Decision) error {
+	d.Access, d.HasAccess = AccessFrom(ctx)
+	if p := policyFrom(ctx); p != nil {
+		return p(ctx, d)
+	}
+	return DefaultPolicy(d)
 }
 
 // Protect wraps a handler (Files, Streams) with the same Auth the
 // gateway uses: unauthenticated requests get 401, everything else runs
 // with the Access on its context, which Files and Streams enforce.
 func Protect(auth Auth, h http.Handler) http.Handler {
-	if auth == nil {
+	return ProtectWith(auth, nil, h)
+}
+
+// ProtectWith is Protect carrying the gateway's Policy too, so file
+// downloads and raw watches answer to the same rules as the schema.
+func ProtectWith(auth Auth, policy Policy, h http.Handler) http.Handler {
+	if auth == nil && policy == nil {
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		access, err := auth(r)
-		if err != nil {
-			http.Error(w, `{"error":"unauthenticated"}`, http.StatusUnauthorized)
-			return
+		ctx := r.Context()
+		if auth != nil {
+			access, err := auth(r)
+			if err != nil {
+				http.Error(w, `{"error":"unauthenticated"}`, http.StatusUnauthorized)
+				return
+			}
+			ctx = WithAccess(ctx, access)
 		}
-		h.ServeHTTP(w, r.WithContext(WithAccess(r.Context(), access)))
+		if policy != nil {
+			ctx = withPolicy(ctx, policy)
+		}
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
