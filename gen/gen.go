@@ -607,6 +607,9 @@ func loomErrNilEvent(eventType string) error {
 			if pii := c.Payload.PIIFields(); len(pii) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\t\t\tPII: %s,\n", stringSlice(pii))
 			}
+			if len(c.Roles) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
+			}
 			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {\n")
 			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", a.Name, c.Name, a.Name, c.Name)
 			b.WriteString("\t\t\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n")
@@ -630,6 +633,9 @@ func loomErrNilEvent(eventType string) error {
 			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
 			if pii := c.Payload.PIIFields(); len(pii) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\t\t\tPII: %s,\n", stringSlice(pii))
+			}
+			if len(c.Roles) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
 			}
 			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {\n")
 			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", r.Name, c.Name, r.Name, c.Name)

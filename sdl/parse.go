@@ -299,6 +299,9 @@ func (p *parser) upload() (*schema.Upload, error) {
 	return up, nil
 }
 
+// command parses a command declaration. `@role(owner, ...)` gates the
+// command at the GraphQL gateway: only callers holding one of the named
+// roles in the target namespace may dispatch it.
 func (p *parser) command() (*schema.Command, error) {
 	p.next()
 	name, err := p.ident()
@@ -306,6 +309,21 @@ func (p *parser) command() (*schema.Command, error) {
 		return nil, err
 	}
 	cmd := &schema.Command{Name: name}
+	dirs, err := p.directives()
+	if err != nil {
+		return nil, err
+	}
+	for d := range dirs {
+		if d != "role" {
+			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role)", name, d)
+		}
+	}
+	if args, ok := dirs["role"]; ok {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("command %s: @role wants at least one role name", name)
+		}
+		cmd.Roles = args
+	}
 	if p.peek().text == "{" {
 		pl, err := p.fieldBlock()
 		if err != nil {

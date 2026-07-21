@@ -218,7 +218,11 @@ type CommandDef struct {
 	Emits []string // the contract: the only event types Handle may return
 	// PII names payload fields sealed wherever the command rests (timers,
 	// batch items).
-	PII    []string
+	PII []string
+	// Roles (@role) gates the command at the GraphQL gateway: the caller
+	// must hold one of these roles in the target namespace. In-process
+	// Dispatch and the service's own HTTP API are not gated.
+	Roles  []string
 	Handle func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
 }
 
@@ -238,10 +242,12 @@ type RecordDef struct {
 }
 
 type RecordCommandDef struct {
-	Name   string
-	New    func() Command
-	Emits  []string
-	PII    []string
+	Name  string
+	New   func() Command
+	Emits []string
+	PII   []string
+	// Roles — see CommandDef.Roles.
+	Roles  []string
 	Handle func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 

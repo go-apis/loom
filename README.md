@@ -487,6 +487,28 @@ anything executes. No hook = the open pre-auth gateway, for mounts
 behind trusted middleware. The playground page itself always serves —
 the queries it fires are enforced like any other.
 
+Coarse `Mutate` can't express "owner in acme, viewer in globex" — that
+per-namespace granularity is `@role`, declared on the command itself so
+the write rules live in the schema, not in a hand-kept table in the
+deployment:
+
+```
+command ShipOrder @role(owner, shipper) -> OrderShipped
+```
+
+The Auth hook maps each caller's memberships to `Access.Roles`
+(namespace → role; `"*"` grants everywhere), and the gateway demands
+one of the declared roles in the mutation's *target* namespace. Role
+names are yours — loom compares strings, nothing more. Ungated commands
+are unchanged, and an `All` access with no `Roles` map keeps god-mode
+semantics, so existing deployments don't move. Everything else stays
+where it was: `@role` gates only the GraphQL gateway — in-process
+`Dispatch` (policies, processes, timers) and the service's own HTTP API
+never consult it — and state-dependent rules ("only placed orders
+ship") stay in the command handler. `loom graphql` stamps the gate on
+the SDL artifact as a `@role(anyOf: [...])` field directive, so
+consumers can read the contract.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service

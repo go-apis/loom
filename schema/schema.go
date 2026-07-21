@@ -54,6 +54,12 @@ type Command struct {
 	Payload *Payload `yaml:"payload,omitempty" json:"payload,omitempty"`
 	// Emits is a contract: the only events the handler may return.
 	Emits []string `yaml:"emits" json:"emits"`
+	// Roles (@role) gates the command at the GraphQL gateway: the caller
+	// must hold one of these roles in the target namespace. Role names
+	// are deployment-defined — loom compares strings, nothing more.
+	// In-process Dispatch and the service's own HTTP API are not gated;
+	// they stay behind trusted middleware.
+	Roles []string `yaml:"roles,omitempty" json:"roles,omitempty"`
 }
 
 type Event struct {
@@ -358,11 +364,22 @@ func (s *Schema) Validate() error {
 		return c != nil
 	}
 
+	checkRoles := func(c *Command) {
+		seen := map[string]bool{}
+		for _, r := range c.Roles {
+			if seen[r] {
+				fail("command %s declares @role %s twice", c.Name, r)
+			}
+			seen[r] = true
+		}
+	}
+
 	for _, a := range s.Aggregates {
 		if a.State == nil || len(a.State.Properties) == 0 {
 			fail("aggregate %s has no state", a.Name)
 		}
 		for _, c := range a.Commands {
+			checkRoles(c)
 			if len(c.Emits) == 0 {
 				fail("command %s emits nothing (a command with no effect is a schema error)", c.Name)
 			}
@@ -381,6 +398,7 @@ func (s *Schema) Validate() error {
 			fail("record %s has no state", r.Name)
 		}
 		for _, c := range r.Commands {
+			checkRoles(c)
 			// unlike aggregate commands, record commands may emit nothing:
 			// the state write is the effect
 			for _, e := range c.Emits {

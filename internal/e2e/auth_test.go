@@ -50,10 +50,13 @@ func TestGatewayAuth(t *testing.T) {
 	})
 
 	tokens := map[string]loomgql.Access{
-		"root":       {All: true, Mutate: true},
-		"acme-rw":    {Namespaces: []string{"acme"}, Mutate: true},
-		"acme-ro":    {Namespaces: []string{"acme"}},
-		"acme-place": {Namespaces: []string{"acme"}, Mutate: true, Mutations: []string{"placeOrder"}},
+		"root":         {All: true, Mutate: true},
+		"acme-rw":      {Namespaces: []string{"acme"}, Mutate: true},
+		"acme-ro":      {Namespaces: []string{"acme"}},
+		"acme-place":   {Namespaces: []string{"acme"}, Mutate: true, Mutations: []string{"placeOrder"}},
+		"acme-owner":   {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "owner"}},
+		"acme-member":  {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "member"}},
+		"star-shipper": {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"*": "shipper"}},
 	}
 	gateway, err := loomgql.New(loomgql.Config{
 		Services: []*loom.Client{cli},
@@ -136,6 +139,35 @@ func TestGatewayAuth(t *testing.T) {
 	}
 	if _, res := do("acme-place", cancelQ, map[string]any{"ns": "acme", "id": allowedID}); !strings.Contains(firstError(res), "mutation") {
 		t.Fatalf("acme-place cancelOrder should fail allowlist, got %q", firstError(res))
+	}
+
+	// @role: shipOrder demands owner|shipper in the target namespace.
+	// A fresh order, shipped well inside the 5s auto-cancel window; a
+	// shipped order converges on redelivery, so it ships repeatedly
+	// across the success cases.
+	shipID := uuid.New()
+	dispatchNS("acme", shipID)
+	shipQ := `mutation($ns: String!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
+	shipVars := map[string]any{"ns": "acme", "id": shipID.String()}
+	if _, res := do("acme-rw", shipQ, shipVars); !strings.Contains(firstError(res), "role") {
+		t.Fatalf("roleless caller shipOrder should fail role gate, got %q", firstError(res))
+	}
+	if _, res := do("acme-member", shipQ, shipVars); !strings.Contains(firstError(res), "role") {
+		t.Fatalf("member shipOrder should fail role gate, got %q", firstError(res))
+	}
+	if _, res := do("acme-owner", shipQ, shipVars); firstError(res) != "" {
+		t.Fatalf("owner shipOrder: %s", firstError(res))
+	}
+	if _, res := do("star-shipper", shipQ, shipVars); firstError(res) != "" {
+		t.Fatalf("wildcard shipper shipOrder: %s", firstError(res))
+	}
+	// god access with no Roles map keeps its pre-@role meaning
+	if _, res := do("root", shipQ, shipVars); firstError(res) != "" {
+		t.Fatalf("root shipOrder: %s", firstError(res))
+	}
+	// ungated mutations stay open to role-carrying callers
+	if _, res := do("acme-member", placeQ, map[string]any{"ns": "acme", "id": uuid.NewString()}); firstError(res) != "" {
+		t.Fatalf("member placeOrder (ungated): %s", firstError(res))
 	}
 
 	// scoped callers cannot use namespace "*"; god can

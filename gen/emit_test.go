@@ -85,6 +85,9 @@ func TestGraphQL(t *testing.T) {
 		"protocol: String!",
 		"contract: FileRefInput!",
 		"createContractUpload(input: CreateContractUploadInput!): UploadSession!",
+		"directive @role(anyOf: [String!]!) on FIELD_DEFINITION",
+		`shipOrder(input: ShipOrderInput!): DispatchResult! @role(anyOf: ["owner", "shipper"])`,
+		"cancelOrder(input: CancelOrderInput!): DispatchResult!\n", // ungated: no directive
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

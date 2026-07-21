@@ -258,7 +258,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range agg.Commands {
-			if err := b.mutation(cli, def.Name, def.New); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, def.Roles); err != nil {
 				return err
 			}
 		}
@@ -300,7 +300,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range rec.Commands {
-			if err := b.mutation(cli, def.Name, def.New); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, def.Roles); err != nil {
 				return err
 			}
 		}
@@ -738,7 +738,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Conte
 	}
 }
 
-func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command) error {
+func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, roles []string) error {
 	field := lowerFirst(name)
 	if _, dup := b.muts[field]; dup {
 		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
@@ -753,7 +753,7 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
-			if err := checkMutate(p.Context, field, ns); err != nil {
+			if err := checkMutate(p.Context, field, ns, roles); err != nil {
 				return nil, err
 			}
 			raw, err := json.Marshal(conv(args))
@@ -799,7 +799,7 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
-			if err := checkMutate(p.Context, field, ns); err != nil {
+			if err := checkMutate(p.Context, field, ns, nil); err != nil {
 				return nil, err
 			}
 			id, err := uuid.Parse(fmt.Sprint(args["id"]))

@@ -3,6 +3,7 @@ package gen
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-apis/loom/schema"
@@ -45,6 +46,12 @@ type DispatchResult {
 }
 
 `)
+
+	if usesRoles(s) {
+		// @role mirrors the schema's command gating: the caller must hold
+		// one of the named roles in the target namespace (Access.Roles).
+		b.WriteString("\"\"\"the caller needs one of these roles in the target namespace\"\"\"\ndirective @role(anyOf: [String!]!) on FIELD_DEFINITION\n\n")
+	}
 
 	if usesFiles(s) {
 		// FileRef is what a `file` field holds; UploadSession is what the
@@ -100,7 +107,7 @@ type UploadSession {
 	addCommands := func(cmds []*schema.Command) {
 		for _, c := range cmds {
 			gqlCommandInput(&b, c, enums)
-			mutations = append(mutations, fmt.Sprintf("  %s(input: %sInput!): DispatchResult!", lowerFirst(c.Name), c.Name))
+			mutations = append(mutations, fmt.Sprintf("  %s(input: %sInput!): DispatchResult!%s", lowerFirst(c.Name), c.Name, roleDirective(c)))
 		}
 	}
 	addUploads := func(uploads []*schema.Upload) {
@@ -224,6 +231,38 @@ func gqlTypeCore(p *schema.Payload, refSuffix string, enums map[string]bool) str
 	default:
 		return "Map"
 	}
+}
+
+// roleDirective renders a command's @role gate as the SDL directive, or
+// "" when the command is ungated.
+func roleDirective(c *schema.Command) string {
+	if len(c.Roles) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(c.Roles))
+	for i, r := range c.Roles {
+		quoted[i] = strconv.Quote(r)
+	}
+	return fmt.Sprintf(" @role(anyOf: [%s])", strings.Join(quoted, ", "))
+}
+
+// usesRoles reports whether any command declares @role.
+func usesRoles(s *schema.Schema) bool {
+	for _, a := range s.Aggregates {
+		for _, c := range a.Commands {
+			if len(c.Roles) > 0 {
+				return true
+			}
+		}
+	}
+	for _, r := range s.Records {
+		for _, c := range r.Commands {
+			if len(c.Roles) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // usesFiles reports whether any payload has a `file` field or any

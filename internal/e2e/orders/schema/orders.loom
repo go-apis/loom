@@ -22,7 +22,10 @@ aggregate Order @snapshot(5) {
     priority: Priority
   } -> OrderPlaced
 
-  command ShipOrder -> OrderShipped
+  // @role gates the mutation at the gateway: the caller needs one of
+  // these roles in the target namespace. In-process dispatch (the
+  // shipOnPayment process below) is not gated.
+  command ShipOrder @role(owner, shipper) -> OrderShipped
   command CancelOrder -> OrderCancelled
 
   command RequestContract {

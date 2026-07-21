@@ -108,6 +108,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 						Name:  "ShipOrder",
 						New:   func() loom.Command { return &ShipOrder{} },
 						Emits: []string{"OrderShipped"},
+						Roles: []string{"owner", "shipper"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Order.ShipOrder(ctx, state.(*Order), cmd.(*ShipOrder))
 							return asAny(evts), err

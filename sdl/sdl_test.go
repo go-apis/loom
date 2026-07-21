@@ -17,7 +17,7 @@ aggregate Order @snapshot(5) {
     status: string
     items: [OrderItem]
   }
-  command PlaceOrder {
+  command PlaceOrder @role(owner, member) {
     items: [OrderItem]!
   } -> OrderPlaced
   command AttachContract {
@@ -41,7 +41,7 @@ record Ledger {
     total_cents: int
     account_ref: string @pii
   }
-  command PostLedger {
+  command PostLedger @role(clerk) {
     amount_cents: int!
   } -> LedgerPosted
   command AdjustLedger {
@@ -161,6 +161,17 @@ func TestParse(t *testing.T) {
 	if _, c := s.FindCommand("AttachContract"); c == nil || c.FileField() != "contract" {
 		t.Fatalf("file field misparsed")
 	}
+	// @role gates: aggregate and record commands carry the role list;
+	// unannotated commands carry none
+	if _, c := s.FindCommand("PlaceOrder"); c == nil || len(c.Roles) != 2 || c.Roles[0] != "owner" || c.Roles[1] != "member" {
+		t.Fatalf("@role misparsed: %+v", s.Aggregates[0].Commands)
+	}
+	if _, c := s.FindRecordCommand("PostLedger"); c == nil || len(c.Roles) != 1 || c.Roles[0] != "clerk" {
+		t.Fatalf("record @role misparsed: %+v", c)
+	}
+	if _, c := s.FindCommand("AttachContract"); len(c.Roles) != 0 {
+		t.Fatalf("unannotated command grew roles: %+v", c.Roles)
+	}
 }
 
 func TestValidationErrors(t *testing.T) {
@@ -270,6 +281,39 @@ aggregate A {
 }
 `,
 			wantErr: "emits nothing",
+		},
+		"command with unknown directive": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C @admin -> E
+  event E { x: string }
+}
+`,
+			wantErr: "commands take @role",
+		},
+		"empty @role": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C @role -> E
+  event E { x: string }
+}
+`,
+			wantErr: "at least one role name",
+		},
+		"duplicate @role": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C @role(owner, owner) -> E
+  event E { x: string }
+}
+`,
+			wantErr: "declares @role owner twice",
 		},
 		"effect on a policy": {
 			src: `

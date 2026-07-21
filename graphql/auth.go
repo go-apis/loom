@@ -44,6 +44,14 @@ type Access struct {
 	// names as they appear in the schema (e.g. "placeOrder",
 	// "createW9Upload"). Empty means every mutation.
 	Mutations []string
+	// Roles is the caller's role per namespace; the "*" key applies to
+	// every namespace. Commands declared with @role in the schema demand
+	// one of the declared roles in the mutation's target namespace.
+	// A nil map opts out of the role model: @role-gated mutations then
+	// pass only for All (god) access — a scoped caller with no roles is
+	// refused, so adding @role to a schema fails closed until the Auth
+	// hook grants roles.
+	Roles map[string]string
 }
 
 // Auth resolves a request to its Access. Returning an error means
@@ -96,8 +104,18 @@ func checkAll(ctx context.Context) error {
 	return fmt.Errorf(`access denied: namespace "*" needs all-namespace access`)
 }
 
-// checkMutate gates one mutation field into one namespace.
-func checkMutate(ctx context.Context, field, ns string) error {
+// roleFor is the caller's role in one namespace: the exact grant, or
+// the "*" wildcard grant.
+func (a Access) roleFor(ns string) string {
+	if r, ok := a.Roles[ns]; ok {
+		return r
+	}
+	return a.Roles["*"]
+}
+
+// checkMutate gates one mutation field into one namespace. roles is the
+// command's @role contract — empty for ungated commands.
+func checkMutate(ctx context.Context, field, ns string, roles []string) error {
 	a, ok := AccessFrom(ctx)
 	if !ok {
 		return nil
@@ -109,12 +127,30 @@ func checkMutate(ctx context.Context, field, ns string) error {
 		return fmt.Errorf("access denied: namespace %q", ns)
 	}
 	if len(a.Mutations) > 0 {
+		allowed := false
 		for _, m := range a.Mutations {
 			if m == field {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("access denied: mutation %q", field)
+		}
+	}
+	if len(roles) > 0 {
+		// god access with no role model keeps its pre-@role meaning:
+		// every mutation. Any Roles map switches to strict role checks.
+		if a.All && len(a.Roles) == 0 {
+			return nil
+		}
+		have := a.roleFor(ns)
+		for _, want := range roles {
+			if have == want {
 				return nil
 			}
 		}
-		return fmt.Errorf("access denied: mutation %q", field)
+		return fmt.Errorf("access denied: mutation %q needs role %s in namespace %q", field, strings.Join(roles, " or "), ns)
 	}
 	return nil
 }
