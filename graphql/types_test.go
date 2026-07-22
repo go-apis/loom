@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	gql "github.com/graphql-go/graphql"
+
+	"github.com/go-apis/loom"
 )
 
 type sampleRow struct {
@@ -88,3 +90,43 @@ func TestBytesFieldsServeAsString(t *testing.T) {
 		t.Fatalf("bytes field served as %v, want String", f.Type)
 	}
 }
+
+// Command input NonNull follows the SCHEMA's required list, not Go
+// value-ness: optional strings and required strings are both plain
+// `string` in the generated struct, and before this every value field
+// came out NonNull — clients following the emitted SDL (which declares
+// optionals nullable) were rejected at the type layer.
+func TestCommandInputRequiredness(t *testing.T) {
+	b := &builder{types: map[string]*typeEntry{}, inputs: map[string]gql.Input{}}
+	in, _, err := b.commandInput("Sample", &sampleCmd{}, []string{"name"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := in.(*gql.InputObject)
+	if !ok {
+		t.Fatalf("not an input object: %T", in)
+	}
+	fields := obj.Fields()
+	if _, nonNull := fields["name"].Type.(*gql.NonNull); !nonNull {
+		t.Error("required field name should be NonNull")
+	}
+	for _, f := range []string{"secretHash", "tags"} {
+		if _, nonNull := fields[f].Type.(*gql.NonNull); nonNull {
+			t.Errorf("optional field %s must stay nullable", f)
+		}
+	}
+	for _, f := range []string{"aggregateId", "namespace"} {
+		if _, nonNull := fields[f].Type.(*gql.NonNull); !nonNull {
+			t.Errorf("envelope field %s should be NonNull", f)
+		}
+	}
+}
+
+type sampleCmd struct {
+	loom.CommandBase
+	Name       string   `json:"name"`
+	SecretHash string   `json:"secret_hash"`
+	Tags       []string `json:"tags"`
+}
+
+func (sampleCmd) LoomCommand() string { return "Sample" }

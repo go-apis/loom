@@ -69,9 +69,10 @@ func NewRegistry(impl Impl) *loom.Registry {
 				NewState:      func() loom.AggregateState { return &Order{} },
 				Commands: []*loom.CommandDef{
 					{
-						Name:  "AttachContract",
-						New:   func() loom.Command { return &AttachContract{} },
-						Emits: []string{"ContractAttached"},
+						Name:     "AttachContract",
+						New:      func() loom.Command { return &AttachContract{} },
+						Emits:    []string{"ContractAttached"},
+						Required: []string{"contract"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Order.AttachContract(ctx, state.(*Order), cmd.(*AttachContract))
 							return asAny(evts), err
@@ -87,18 +88,20 @@ func NewRegistry(impl Impl) *loom.Registry {
 						},
 					},
 					{
-						Name:  "PlaceOrder",
-						New:   func() loom.Command { return &PlaceOrder{} },
-						Emits: []string{"OrderPlaced"},
+						Name:     "PlaceOrder",
+						New:      func() loom.Command { return &PlaceOrder{} },
+						Emits:    []string{"OrderPlaced"},
+						Required: []string{"currency", "customer_id", "items"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Order.PlaceOrder(ctx, state.(*Order), cmd.(*PlaceOrder))
 							return asAny(evts), err
 						},
 					},
 					{
-						Name:  "RequestContract",
-						New:   func() loom.Command { return &RequestContract{} },
-						Emits: []string{"ContractRequested"},
+						Name:     "RequestContract",
+						New:      func() loom.Command { return &RequestContract{} },
+						Emits:    []string{"ContractRequested"},
+						Required: []string{"contract"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Order.RequestContract(ctx, state.(*Order), cmd.(*RequestContract))
 							return asAny(evts), err

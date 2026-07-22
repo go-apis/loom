@@ -610,6 +610,9 @@ func loomErrNilEvent(eventType string) error {
 			if len(c.Roles) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
 			}
+			if req := requiredFields(c.Payload); len(req) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\t\t\tRequired: %s,\n", stringSlice(req))
+			}
 			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {\n")
 			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", a.Name, c.Name, a.Name, c.Name)
 			b.WriteString("\t\t\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n")
@@ -636,6 +639,9 @@ func loomErrNilEvent(eventType string) error {
 			}
 			if len(c.Roles) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
+			}
+			if req := requiredFields(c.Payload); len(req) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\t\t\tRequired: %s,\n", stringSlice(req))
 			}
 			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {\n")
 			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", r.Name, c.Name, r.Name, c.Name)
@@ -1131,5 +1137,16 @@ func boolKeys(m map[string]*schema.Payload) map[string]bool {
 	for k := range m {
 		out[k] = true
 	}
+	return out
+}
+
+// requiredFields is a payload's required list, sorted for deterministic
+// emission.
+func requiredFields(pl *schema.Payload) []string {
+	if pl == nil || len(pl.Required) == 0 {
+		return nil
+	}
+	out := append([]string(nil), pl.Required...)
+	sort.Strings(out)
 	return out
 }

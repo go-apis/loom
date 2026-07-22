@@ -262,7 +262,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range agg.Commands {
-			if err := b.mutation(cli, def.Name, def.New, def.Roles); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, def.Roles, def.Required); err != nil {
 				return err
 			}
 		}
@@ -311,7 +311,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range rec.Commands {
-			if err := b.mutation(cli, def.Name, def.New, def.Roles); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, def.Roles, def.Required); err != nil {
 				return err
 			}
 		}
@@ -800,12 +800,12 @@ func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Conte
 	}
 }
 
-func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, roles []string) error {
+func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, roles, required []string) error {
 	field := lowerFirst(name)
 	if _, dup := b.muts[field]; dup {
 		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
 	}
-	input, conv, err := b.commandInput(name, newCmd())
+	input, conv, err := b.commandInput(name, newCmd(), required)
 	if err != nil {
 		return err
 	}

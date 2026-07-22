@@ -265,10 +265,14 @@ func (b *builder) fileRefInput() (gql.Input, converter, error) {
 // inputs but never into Map-scalar values, whose keys belong to the user.
 type converter func(any) any
 
-func (b *builder) commandInput(name string, cmd loom.Command) (gql.Input, converter, error) {
+func (b *builder) commandInput(name string, cmd loom.Command, required []string) (gql.Input, converter, error) {
 	fields, err := structFields(reflect.TypeOf(cmd))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", name, err)
+	}
+	requiredSet := map[string]bool{}
+	for _, r := range required {
+		requiredSet[r] = true
 	}
 	cfg := gql.InputObjectConfigFieldMap{
 		"aggregateId": {Type: gql.NewNonNull(scalarUUID)},
@@ -283,10 +287,12 @@ func (b *builder) commandInput(name string, cmd loom.Command) (gql.Input, conver
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s.%s: %w", name, f.snake, err)
 		}
-		// enum fields stay nullable: their zero value means "unset" (the
-		// schema's optional middle ground), and the generated Validate()
-		// rejects an empty required enum at dispatch
-		if _, isEnum := in.(*gql.Enum); !f.nullable && !isEnum {
+		// NonNull follows the SCHEMA's required list, matching the
+		// emitted SDL — Go value-ness can't tell optional from required.
+		// Enum fields stay nullable either way: their zero value means
+		// "unset", and the generated Validate() rejects an empty
+		// required enum at dispatch.
+		if _, isEnum := in.(*gql.Enum); requiredSet[f.snake] && !isEnum {
 			in = gql.NewNonNull(in)
 		}
 		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in}

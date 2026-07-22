@@ -69,9 +69,10 @@ func NewRegistry(impl Impl) *loom.Registry {
 						},
 					},
 					{
-						Name:  "RaiseInvoice",
-						New:   func() loom.Command { return &RaiseInvoice{} },
-						Emits: []string{"InvoiceRaised"},
+						Name:     "RaiseInvoice",
+						New:      func() loom.Command { return &RaiseInvoice{} },
+						Emits:    []string{"InvoiceRaised"},
+						Required: []string{"amount_cents", "currency", "customer_id"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Invoice.RaiseInvoice(ctx, state.(*Invoice), cmd.(*RaiseInvoice))
 							return asAny(evts), err
@@ -87,10 +88,11 @@ func NewRegistry(impl Impl) *loom.Registry {
 				NewState:      func() loom.AggregateState { return &Payee{} },
 				Commands: []*loom.CommandDef{
 					{
-						Name:  "RegisterPayee",
-						New:   func() loom.Command { return &RegisterPayee{} },
-						Emits: []string{"PayeeRegistered"},
-						PII:   []string{"bank_token", "tin"},
+						Name:     "RegisterPayee",
+						New:      func() loom.Command { return &RegisterPayee{} },
+						Emits:    []string{"PayeeRegistered"},
+						PII:      []string{"bank_token", "tin"},
+						Required: []string{"name", "tin", "tin_last4"},
 						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 							evts, err := impl.Payee.RegisterPayee(ctx, state.(*Payee), cmd.(*RegisterPayee))
 							return asAny(evts), err
@@ -105,9 +107,10 @@ func NewRegistry(impl Impl) *loom.Registry {
 				NewState: func() any { return &LedgerEntry{} },
 				Commands: []*loom.RecordCommandDef{
 					{
-						Name:  "PostLedgerEntry",
-						New:   func() loom.Command { return &PostLedgerEntry{} },
-						Emits: []string{"LedgerEntryPosted"},
+						Name:     "PostLedgerEntry",
+						New:      func() loom.Command { return &PostLedgerEntry{} },
+						Emits:    []string{"LedgerEntryPosted"},
+						Required: []string{"amount_cents", "currency", "customer_id"},
 						Handle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {
 							evts, err := impl.LedgerEntry.PostLedgerEntry(ctx, state.(*LedgerEntry), cmd.(*PostLedgerEntry))
 							return asAny(evts), err

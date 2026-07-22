@@ -222,8 +222,13 @@ type CommandDef struct {
 	// Roles (@role) gates the command at the GraphQL gateway: the caller
 	// must hold one of these roles in the target namespace. In-process
 	// Dispatch and the service's own HTTP API are not gated.
-	Roles  []string
-	Handle func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
+	Roles []string
+	// Required names the schema-required payload fields (snake case) —
+	// the gateway serves exactly these as NonNull inputs, matching the
+	// emitted SDL. Go value-ness can't say it: optional strings and
+	// required strings are both plain `string`.
+	Required []string
+	Handle   func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
 }
 
 // RecordDef backs state-of-record objects that are NOT event-sourced
@@ -247,8 +252,10 @@ type RecordCommandDef struct {
 	Emits []string
 	PII   []string
 	// Roles — see CommandDef.Roles.
-	Roles  []string
-	Handle func(ctx context.Context, state any, cmd Command) ([]any, error)
+	Roles []string
+	// Required — see CommandDef.Required.
+	Required []string
+	Handle   func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 
 type EventDef struct {
