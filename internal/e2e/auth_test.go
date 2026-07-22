@@ -329,3 +329,122 @@ func TestGatewayPolicy(t *testing.T) {
 		t.Fatalf("acme-rw shipOrder should fail the @role gate, got %q", firstError(res))
 	}
 }
+
+// TestGatewayFields proves custom root fields (Config.Fields): they run
+// behind the same Decision gate as generated fields — fail closed for
+// scoped callers under DefaultPolicy (empty namespace), opened by an
+// explicit policy case — and their resolvers see the caller's claims.
+func TestGatewayFields(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cli := liveOrders(t, ctx)
+	seeded := uuid.New()
+	if err := cli.Dispatch(ctx, &ordersgen.PlaceOrder{
+		CommandBase: loom.CommandBase{AggregateID: seeded, Namespace: "acme"},
+		CustomerId:  uuid.New(),
+		Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 2, PriceCents: 150}},
+		Currency:    "USD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "summary projected", func() bool {
+		row, _ := cli.Entity(ctx, "OrderSummary", "acme", seeded)
+		return row != nil
+	})
+
+	type claims struct{ Sub string }
+	tokens := map[string]loomgql.Access{
+		"root": {All: true, Mutate: true},
+		"user": {Namespaces: []string{"acme"}, Mutate: true, Claims: &claims{Sub: "user-1"}},
+	}
+	gateway, err := loomgql.New(loomgql.Config{
+		Services: []*loom.Client{cli},
+		Auth: func(r *http.Request) (loomgql.Access, error) {
+			access, ok := tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+			if !ok {
+				return loomgql.Access{}, fmt.Errorf("bad token")
+			}
+			return access, nil
+		},
+		Policy: func(ctx context.Context, d loomgql.Decision) error {
+			if d.Field == "whoami" { // any authenticated caller
+				return nil
+			}
+			return loomgql.DefaultPolicy(d)
+		},
+		Fields: []loomgql.Field{
+			{On: "Query", Name: "whoami", Returns: "Map",
+				Resolve: func(ctx context.Context, args map[string]any) (any, error) {
+					a, _ := loomgql.AccessFrom(ctx)
+					c, _ := a.Claims.(*claims)
+					return map[string]any{"sub": c.Sub, "namespaces": a.Namespaces}, nil
+				}},
+			{On: "Query", Name: "acmeOrders", Returns: "OrderSummary", List: true,
+				Args: map[string]string{"limit": "Int"},
+				Resolve: func(ctx context.Context, args map[string]any) (any, error) {
+					limit, _ := args["limit"].(int)
+					rows, err := cli.QueryEntities(ctx, "OrderSummary", loom.Query{Namespace: "acme", Limit: limit})
+					if err != nil {
+						return nil, err
+					}
+					return loomgql.Docs(rows), nil
+				}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(gateway)
+	t.Cleanup(srv.Close)
+
+	do := func(token, query string) (map[string]any, string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"query": query})
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader(string(body)))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out struct {
+			Data   map[string]any   `json:"data"`
+			Errors []map[string]any `json:"errors"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if len(out.Errors) > 0 {
+			return out.Data, fmt.Sprint(out.Errors[0]["message"])
+		}
+		return out.Data, ""
+	}
+
+	// the policy's whoami case admits a scoped caller; the resolver sees
+	// its claims through the context
+	data, errMsg := do("user", `query { whoami }`)
+	if errMsg != "" {
+		t.Fatalf("user whoami: %s", errMsg)
+	}
+	who, _ := data["whoami"].(map[string]any)
+	if fmt.Sprint(who["sub"]) != "user-1" {
+		t.Fatalf("whoami claims: %v", who)
+	}
+
+	// no policy case for acmeOrders: empty-namespace Decision falls to
+	// DefaultPolicy — scoped caller refused, god passes
+	if _, errMsg := do("user", `query { acmeOrders(limit: 5) { id status } }`); !strings.Contains(errMsg, "namespace") {
+		t.Fatalf("scoped caller should fail closed on custom field, got %q", errMsg)
+	}
+	data, errMsg = do("root", `query { acmeOrders(limit: 5) { id status totalCents } }`)
+	if errMsg != "" {
+		t.Fatalf("root acmeOrders: %s", errMsg)
+	}
+	rows, _ := data["acmeOrders"].([]any)
+	if len(rows) == 0 {
+		t.Fatalf("acmeOrders empty: %v", data)
+	}
+	row, _ := rows[0].(map[string]any)
+	if fmt.Sprint(row["status"]) != "placed" || row["id"] == "" {
+		t.Fatalf("Docs shape wrong: %v", row)
+	}
+}

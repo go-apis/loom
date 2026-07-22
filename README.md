@@ -545,6 +545,28 @@ The policy runs with the request context, so relationship rules can
 load aggregates or entities through a loom client before answering.
 `ProtectWith` carries the same policy to the file and stream mounts.
 
+What no generator can guess — derived views ("my orgs"), row-scoped
+lists a policy can't filter, composite operations — mounts as a
+hand-written root field:
+
+```go
+Fields: []loomgraphql.Field{{
+    On: "Query", Name: "myOrgs", Returns: "Map", List: true,
+    Resolve: func(ctx context.Context, args map[string]any) (any, error) {
+        a, _ := loomgraphql.AccessFrom(ctx)   // the caller, claims included
+        return orgsFor(ctx, a.Claims), nil
+    },
+}}
+```
+
+`Returns` names any composed type or a scalar (`Map` for free-form
+shapes); `Docs` renders loom rows the way generated resolvers do.
+Custom fields answer to the same Decision gate as everything else —
+under `DefaultPolicy` their empty namespace passes only god access, so
+scoped callers reach one only when a policy explicitly allows it. They
+are composed at the deployment, so the emitted SDL artifact does not
+carry them.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service

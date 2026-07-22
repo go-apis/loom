@@ -39,6 +39,40 @@ type Join struct {
 	Resolve func(ctx context.Context, source map[string]any) (any, error)
 }
 
+// Field adds a hand-written ROOT query or mutation — the gateway's
+// escape hatch for what no generator can guess: derived views ("my
+// orgs"), row-scoped lists a policy can't filter, composite operations
+// (invite = ensure + grant + email). Resolve runs AFTER the same
+// authorization as every generated field: the operation becomes a
+// Decision (Namespace from a "namespace" argument when present, else
+// "") and the policy answers it. Under DefaultPolicy an empty namespace
+// passes only All (god) access, so scoped callers reach a custom field
+// only when a Policy explicitly allows it — fail closed by default.
+// Resolvers read the caller through AccessFrom(ctx) (Access.Claims for
+// identity) and typically do their own scoped queries; note custom
+// fields are composed at the deployment, so the `loom graphql` SDL
+// artifact does not carry them.
+type Field struct {
+	On   string // "Query" or "Mutation"
+	Name string // the root field name, e.g. "myOrgs"
+	// Returns names a composed type (aggregate, record, entity, named
+	// payload type) or a scalar — "Map" serves free-form JSON shapes.
+	Returns string
+	List    bool
+	// Args declares the field's arguments: name → type, "!" suffix for
+	// required. Types: String, UUID, Time, Long, Int, Float, Boolean,
+	// Map, Namespace.
+	Args map[string]string
+	// Resolve returns doc maps for object types (json field names — the
+	// shape Docs produces) or plain values for scalars.
+	Resolve func(ctx context.Context, args map[string]any) (any, error)
+}
+
+// Docs renders rows the way generated list resolvers do: doc maps keyed
+// by json field names with id/namespace/updatedAt injected — the shape
+// a custom Field resolver returns for object types.
+func Docs(rows []loom.Row) []map[string]any { return rowDocs(rows) }
+
 type Config struct {
 	Services []*loom.Client
 	Joins    []Join
@@ -46,6 +80,8 @@ type Config struct {
 	// gateway: every namespace, all mutations — mount behind trusted
 	// middleware or keep it off the public edge.
 	Auth Auth
+	// Fields adds hand-written root queries and mutations (see Field).
+	Fields []Field
 	// Policy, when set, replaces the built-in authorization: every
 	// operation resolves to a Decision and this hook answers it (see
 	// auth.go). Delegate to DefaultPolicy for the stock rules.
@@ -98,6 +134,11 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	for _, j := range cfg.Joins {
 		if err := b.join(j); err != nil {
+			return nil, err
+		}
+	}
+	for _, f := range cfg.Fields {
+		if err := b.rootField(f); err != nil {
 			return nil, err
 		}
 	}
@@ -440,6 +481,90 @@ func (b *builder) addQuery(name string, f *gql.Field) error {
 	}
 	b.queries[name] = f
 	return nil
+}
+
+// scalarByName resolves a Field arg/return type name to its scalar.
+func scalarByName(name string) (*gql.Scalar, bool) {
+	switch name {
+	case "String":
+		return gql.String, true
+	case "UUID":
+		return scalarUUID, true
+	case "Time":
+		return scalarTime, true
+	case "Long":
+		return scalarLong, true
+	case "Int":
+		return gql.Int, true
+	case "Float":
+		return gql.Float, true
+	case "Boolean":
+		return gql.Boolean, true
+	case "Map":
+		return scalarMap, true
+	case "Namespace":
+		return scalarNamespace, true
+	}
+	return nil, false
+}
+
+// rootField mounts one hand-written root query or mutation, wrapped in
+// the same decide() gate as every generated field.
+func (b *builder) rootField(f Field) error {
+	var out gql.Output
+	if t, ok := b.types[f.Returns]; ok {
+		out = t.obj
+	} else if s, ok := scalarByName(f.Returns); ok {
+		out = s
+	} else {
+		return fmt.Errorf("graphql: field %s returns unknown type %s", f.Name, f.Returns)
+	}
+	if f.List {
+		out = gql.NewList(gql.NewNonNull(out))
+	}
+	args := gql.FieldConfigArgument{}
+	for name, t := range f.Args {
+		sc, ok := scalarByName(strings.TrimSuffix(t, "!"))
+		if !ok {
+			return fmt.Errorf("graphql: field %s: arg %s has unknown type %s", f.Name, name, t)
+		}
+		var at gql.Input = sc
+		if strings.HasSuffix(t, "!") {
+			at = gql.NewNonNull(sc)
+		}
+		args[name] = &gql.ArgumentConfig{Type: at}
+	}
+	kind := "query"
+	switch f.On {
+	case "Query":
+	case "Mutation":
+		kind = "mutation"
+	default:
+		return fmt.Errorf("graphql: field %s: On must be Query or Mutation, got %q", f.Name, f.On)
+	}
+	name, resolve := f.Name, f.Resolve
+	if resolve == nil {
+		return fmt.Errorf("graphql: field %s has no Resolve", name)
+	}
+	field := &gql.Field{
+		Type: out,
+		Args: args,
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			ns, _ := p.Args["namespace"].(string)
+			if err := decide(p.Context, Decision{Kind: kind, Field: name, Namespace: ns, Args: p.Args, Fields: selectedFields(p)}); err != nil {
+				return nil, err
+			}
+			return resolve(p.Context, p.Args)
+		},
+	}
+	if kind == "mutation" {
+		if _, dup := b.muts[name]; dup {
+			return fmt.Errorf("graphql: mutation %q already defined", name)
+		}
+		b.muts[name] = field
+		return nil
+	}
+	return b.addQuery(name, field)
 }
 
 // declaredJoin turns a schema-declared JoinDef into a Join with the
