@@ -155,6 +155,10 @@ func (b *builder) outputType(t reflect.Type) (gql.Output, error) {
 	case reflect.Map:
 		return scalarMap, nil
 	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			// schema `bytes` ([]byte): base64 on the wire, like JSON
+			return gql.String, nil
+		}
 		inner := t.Elem()
 		if inner.Kind() == reflect.Pointer {
 			inner = inner.Elem()
@@ -357,6 +361,10 @@ func (b *builder) inputType(t reflect.Type) (gql.Input, converter, error) {
 	case reflect.Map:
 		return scalarMap, identity, nil // user keys pass through untouched
 	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			// schema `bytes` ([]byte): base64 strings in, like JSON
+			return gql.String, identity, nil
+		}
 		inner := t.Elem()
 		if inner.Kind() == reflect.Pointer {
 			inner = inner.Elem()

@@ -66,3 +66,25 @@ func TestNestedTypeKeepsRequiredness(t *testing.T) {
 		t.Error("nested optional field line2 gained NonNull")
 	}
 }
+
+// Schema `bytes` fields ([]byte) serve as base64 Strings, matching the
+// JSON wire form — before this, an aggregate with a bytes field made
+// the whole gateway fail to compose ("unsupported type uint8").
+func TestBytesFieldsServeAsString(t *testing.T) {
+	type keyRow struct {
+		KeyId     string `json:"key_id"`
+		PublicKey []byte `json:"public_key"`
+	}
+	b := &builder{types: map[string]*typeEntry{}}
+	obj, err := b.objectFor("KeyRow", keyRow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := obj.Fields()["publicKey"]
+	if !ok {
+		t.Fatal("publicKey missing")
+	}
+	if f.Type != gql.String {
+		t.Fatalf("bytes field served as %v, want String", f.Type)
+	}
+}
