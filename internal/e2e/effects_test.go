@@ -39,17 +39,17 @@ func TestEffectJournal(t *testing.T) {
 	// the reaction fails twice AFTER capturing; retries must replay the
 	// journaled receipt, not charge again
 	billing.Gateway.Reset()
-	billing.LastReceipt = ""
-	billing.FailReactAfterCapture = 2
+	billing.SetLastReceipt("")
+	billing.SetFailReactAfterCapture(2)
 
 	invoice := uuid.New()
 	payInvoice(t, ctx, cli, invoice)
 
 	waitFor(t, ctx, "capture receipt", func() bool {
-		return billing.LastReceipt == "cap_"+invoice.String()
+		return billing.LastReceipt() == "cap_"+invoice.String()
 	})
-	if billing.Gateway.Calls != 1 {
-		t.Fatalf("gateway called %d times, journal should have replayed", billing.Gateway.Calls)
+	if billing.Gateway.CallsN() != 1 {
+		t.Fatalf("gateway called %d times, journal should have replayed", billing.Gateway.CallsN())
 	}
 	effects, err := cli.Effects(ctx, "done", 0)
 	if err != nil {
@@ -65,15 +65,15 @@ func TestEffectJournal(t *testing.T) {
 
 	// a capture that errors re-runs on retry: two calls, then done
 	billing.Gateway.Reset()
-	billing.Gateway.FailCalls = 1
+	billing.Gateway.SetFailCalls(1)
 	invoice2 := uuid.New()
 	payInvoice(t, ctx, cli, invoice2)
 
 	waitFor(t, ctx, "second capture receipt", func() bool {
-		return billing.LastReceipt == "cap_"+invoice2.String()
+		return billing.LastReceipt() == "cap_"+invoice2.String()
 	})
-	if billing.Gateway.Calls != 2 {
-		t.Fatalf("gateway called %d times, want failed-then-retried = 2", billing.Gateway.Calls)
+	if billing.Gateway.CallsN() != 2 {
+		t.Fatalf("gateway called %d times, want failed-then-retried = 2", billing.Gateway.CallsN())
 	}
 
 	var parked int
@@ -105,8 +105,8 @@ func TestEffectInDoubt(t *testing.T) {
 	// events land in the log before any runner starts, so we can plant the
 	// unsettled claim a crashed instance would have left
 	billing.Gateway.Reset()
-	billing.LastReceipt = ""
-	billing.FailReactAfterCapture = 0
+	billing.SetLastReceipt("")
+	billing.SetFailReactAfterCapture(0)
 	invoice := uuid.New()
 	payInvoice(t, ctx, cli, invoice)
 
@@ -133,8 +133,8 @@ func TestEffectInDoubt(t *testing.T) {
 		_ = pool.QueryRow(ctx, `SELECT count(*) FROM loom_dead_letters WHERE service='billing'`).Scan(&parked)
 		return parked == 1
 	})
-	if billing.Gateway.Calls != 0 {
-		t.Fatalf("gateway called %d times on an in-doubt effect", billing.Gateway.Calls)
+	if billing.Gateway.CallsN() != 0 {
+		t.Fatalf("gateway called %d times on an in-doubt effect", billing.Gateway.CallsN())
 	}
 
 	var letters struct {
@@ -180,8 +180,8 @@ func TestEffectInDoubt(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("redrive: %d", resp.StatusCode)
 	}
-	if billing.LastReceipt != "cap_manual" || billing.Gateway.Calls != 0 {
-		t.Fatalf("after redrive: receipt=%q calls=%d", billing.LastReceipt, billing.Gateway.Calls)
+	if billing.LastReceipt() != "cap_manual" || billing.Gateway.CallsN() != 0 {
+		t.Fatalf("after redrive: receipt=%q calls=%d", billing.LastReceipt(), billing.Gateway.CallsN())
 	}
 	var parked int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loom_dead_letters WHERE service='billing'`).Scan(&parked); err != nil {

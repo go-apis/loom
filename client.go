@@ -49,10 +49,11 @@ type Client struct {
 	bus        Bus
 	reg        *Registry
 	log        *slog.Logger
-	nudge      chan struct{} // log advanced: wake projection/process runners
-	relayNudge chan struct{} // outbox rows written: wake the relay
-	batchNudge chan struct{} // batch enqueued: wake the batch runner
-	stepSem    chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
+	readerNudge chan struct{} // log advanced: wake the fan-out reader (runReader)
+	fan         *logFanout    // shared log tail + typed runner wake-ups
+	relayNudge  chan struct{} // outbox rows written: wake the relay
+	batchNudge  chan struct{} // batch enqueued: wake the batch runner
+	stepSem     chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
@@ -98,10 +99,11 @@ func New(cfg Config) (*Client, error) {
 		bus:        cfg.Bus,
 		reg:        cfg.Registry,
 		log:        cfg.Logger.With("service", cfg.Registry.Service),
-		nudge:      make(chan struct{}, 1),
-		relayNudge: make(chan struct{}, 1),
-		batchNudge: make(chan struct{}, 1),
-		stepSem:    make(chan struct{}, cfg.StepConcurrency),
+		readerNudge: make(chan struct{}, 1),
+		fan:         &logFanout{},
+		relayNudge:  make(chan struct{}, 1),
+		batchNudge:  make(chan struct{}, 1),
+		stepSem:     make(chan struct{}, cfg.StepConcurrency),
 		watchers:   map[chan struct{}]bool{},
 		keys:       cfg.Keys,
 		blobs:      cfg.Blobs,
@@ -252,10 +254,18 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 		}
 	}
 
+	// NOTIFY inside the transaction: postgres delivers it atomically with
+	// commit — a crash between commit and the old post-commit notify lost
+	// the wake until the poll tick — and it costs no second pool acquire
+	// (the old notifyLog Exec was a starvation contributor under small
+	// pools).
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, '')`, "loom_"+c.reg.Service); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	c.notifyLog(ctx)
+	c.broadcastLog() // local fast path; other instances arrive via LISTEN
 	if published {
 		c.nudgeRelay()
 	}

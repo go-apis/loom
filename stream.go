@@ -45,7 +45,7 @@ func (c *Client) watchLog() (<-chan struct{}, func()) {
 
 func (c *Client) broadcastLog() {
 	select {
-	case c.nudge <- struct{}{}:
+	case c.readerNudge <- struct{}{}:
 	default:
 	}
 	c.watchMu.Lock()
@@ -88,10 +88,12 @@ func (c *Client) listenOnce(ctx context.Context, channel string) error {
 		if err != nil {
 			return err
 		}
-		// shred notifications evict cached data keys on every instance
+		// shred notifications evict cached data keys on every instance —
+		// and the fan-out buffer, whose events were decrypted pre-shred
 		if rest, ok := strings.CutPrefix(n.Payload, "shred:"); ok {
 			if ns, id, ok := strings.Cut(rest, ":"); ok {
 				c.dropDEK(ns, id)
+				c.fan.flush()
 			}
 			continue
 		}

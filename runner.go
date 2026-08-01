@@ -41,13 +41,24 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	c.startBatchRunner(ctx, poll)
 	go c.listenLoop(ctx)
 
+	// The fan-out reader starts at the current head; anything older is
+	// served to lagging runners by their direct-read fallback.
+	head, err := c.maxLogSeq(ctx)
+	if err != nil {
+		return err
+	}
+	c.fan.setHead(head)
+	go c.runReader(ctx, poll)
+
 	for _, p := range c.reg.Projections {
-		go c.runLogLoop(ctx, "projection:"+p.Name, poll, c.projectionStep(p))
+		rw := c.fan.register("projection:"+p.Name, p.Events)
+		go c.runLogLoop(ctx, "projection:"+p.Name, poll, rw, c.projectionStep(p))
 	}
 	for _, p := range c.reg.Processes {
 		local, foreign := c.splitSubscriptions(p)
 		if len(local) > 0 {
-			go c.runLogLoop(ctx, "process:"+p.Name, poll, c.processStep(p, local))
+			rw := c.fan.register("process:"+p.Name, local)
+			go c.runLogLoop(ctx, "process:"+p.Name, poll, rw, c.processStep(p, local))
 		}
 		if len(foreign) > 0 {
 			if err := c.subscribeForeign(ctx, p, foreign); err != nil {
@@ -71,11 +82,12 @@ func (c *Client) splitSubscriptions(p *ReactorDef) (local, foreign []string) {
 }
 
 // runLogLoop drives one checkpointed reader: catch up, then sleep until
-// nudged (same instance), notified (other instances), or the poll tick.
-// Steps pass through the client-wide semaphore: a NOTIFY wakes every
-// runner at once, and unbounded that herd saturates small pools and
-// starves Dispatch (see Config.StepConcurrency).
-func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, step func(ctx context.Context) (int, error)) {
+// the fan-out reader wakes it (typed: only when events it subscribes to
+// were ingested) or its poll tick fires (the LISTEN-failure safety net).
+// Steps pass through the client-wide semaphore so a burst of runners
+// can't saturate small pools and starve Dispatch (see
+// Config.StepConcurrency).
+func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, rw *runnerWake, step func(ctx context.Context) (int, error)) {
 	t := time.NewTicker(poll)
 	defer t.Stop()
 	boundedStep := func(ctx context.Context) (int, error) {
@@ -104,10 +116,55 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.nudge:
+		case <-rw.ch:
 		case <-t.C:
 		}
 	}
+}
+
+// runReader is the single per-instance log reader behind logFanout: it
+// ingests each new event exactly once (previously every runner re-read
+// and re-decrypted the same slice) and issues typed wake-ups. Its poll
+// tick is the LISTEN-failure safety net, like every other runner's.
+func (c *Client) runReader(ctx context.Context, poll time.Duration) {
+	t := time.NewTicker(poll)
+	defer t.Stop()
+	for {
+		for {
+			events, err := c.readLog(ctx, c.fan.headSeq(), logBatch)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				c.log.ErrorContext(ctx, "log reader failed", "error", err)
+				break
+			}
+			if len(events) == 0 {
+				break
+			}
+			c.fan.wake(c.fan.ingest(events))
+			if len(events) < logBatch {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.readerNudge:
+		case <-t.C:
+		}
+	}
+}
+
+// readEvents serves a runner's next batch: from the shared buffer when
+// it covers the runner's checkpoint, straight from the log otherwise
+// (catch-up after skipped wakes, rebuilds). Buffered events are shared
+// pointers, pre-decrypted — folds treat them as read-only.
+func (c *Client) readEvents(ctx context.Context, afterSeq int64, limit int) ([]*Event, error) {
+	if evts, ok := c.fan.tail(afterSeq, limit); ok {
+		return evts, nil
+	}
+	return c.readLog(ctx, afterSeq, limit)
 }
 
 // projectionStep folds one batch into the read model. Entity writes and the
@@ -134,7 +191,7 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 		if err != nil {
 			return 0, err
 		}
-		events, err := c.readLog(ctx, seq, logBatch)
+		events, err := c.readEvents(ctx, seq, logBatch)
 		if err != nil {
 			return 0, err
 		}
@@ -251,10 +308,11 @@ func (c *Client) Rebuild(ctx context.Context, projection string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	select {
-	case c.nudge <- struct{}{}:
-	default:
-	}
+	// the rebuilt projection re-reads from seq 0 (post-shred rebuilds
+	// must not fold pre-shred buffered plaintext); wake everyone — only
+	// the runner whose checkpoint moved has work
+	c.fan.flush()
+	c.fan.wakeAll()
 	return nil
 }
 
@@ -268,7 +326,7 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 		if err != nil {
 			return 0, err
 		}
-		events, err := c.readLog(ctx, seq, logBatch)
+		events, err := c.readEvents(ctx, seq, logBatch)
 		if err != nil {
 			return 0, err
 		}

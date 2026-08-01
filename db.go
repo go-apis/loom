@@ -189,7 +189,19 @@ type storedEvent struct {
 // appendEvents writes a batch for one aggregate inside tx. The stream's
 // UNIQUE constraint is the optimistic-concurrency guard: a losing racer
 // gets a typed ConflictError.
+//
+// The service-wide xact lock serializes appends so global_seq order ==
+// commit order. Without it, a later-seq transaction committing before an
+// earlier-seq one lets runners read past the still-invisible earlier
+// event and advance their checkpoints over it — skipped forever. The
+// lock holds only to commit; re-acquiring in the same tx (multi-command
+// dispatches) is a no-op. Should one-writer-at-a-time per service ever
+// bind, the escape hatch is a commit-visibility barrier on the read
+// side, not dropping this lock.
 func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('loom_log_' || $1))`, c.reg.Service); err != nil {
+		return err
+	}
 	for _, e := range evts {
 		data, err := json.Marshal(e.Data)
 		if err != nil {
@@ -374,11 +386,14 @@ type executor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// notify nudges runners and SSE watchers — this instance directly, other
-// instances via pg_notify (their listenLoop rebroadcasts locally).
-func (c *Client) notifyLog(ctx context.Context) {
-	_, _ = c.db.Exec(ctx, `SELECT pg_notify($1, '')`, "loom_"+c.reg.Service)
-	c.broadcastLog()
+// maxLogSeq is the reader's starting high-water mark: everything at or
+// below it is served to lagging runners by direct log reads.
+func (c *Client) maxLogSeq(ctx context.Context) (int64, error) {
+	var seq int64
+	err := c.db.QueryRow(ctx,
+		`SELECT COALESCE(MAX(global_seq), 0) FROM loom_events WHERE service=$1`,
+		c.reg.Service).Scan(&seq)
+	return seq, err
 }
 
 func nowUTC() time.Time { return time.Now().UTC() }

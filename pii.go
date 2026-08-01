@@ -279,6 +279,9 @@ func (c *Client) Shred(ctx context.Context, namespace string, id uuid.UUID) erro
 		return err
 	}
 	c.dropDEK(namespace, id.String())
+	// buffered events were decrypted pre-shred; drop them so folds and
+	// rebuilds re-read (and re-decrypt to redacted) from the log
+	c.fan.flush()
 	// other instances drop their cached key via LISTEN/NOTIFY
 	_, _ = c.db.Exec(ctx, `SELECT pg_notify($1, $2)`, "loom_"+c.reg.Service, "shred:"+namespace+":"+id.String())
 	return nil
