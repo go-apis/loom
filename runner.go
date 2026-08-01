@@ -72,12 +72,24 @@ func (c *Client) splitSubscriptions(p *ReactorDef) (local, foreign []string) {
 
 // runLogLoop drives one checkpointed reader: catch up, then sleep until
 // nudged (same instance), notified (other instances), or the poll tick.
+// Steps pass through the client-wide semaphore: a NOTIFY wakes every
+// runner at once, and unbounded that herd saturates small pools and
+// starves Dispatch (see Config.StepConcurrency).
 func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, step func(ctx context.Context) (int, error)) {
 	t := time.NewTicker(poll)
 	defer t.Stop()
+	boundedStep := func(ctx context.Context) (int, error) {
+		select {
+		case c.stepSem <- struct{}{}:
+			defer func() { <-c.stepSem }()
+			return step(ctx)
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
 	for {
 		for {
-			n, err := step(ctx)
+			n, err := boundedStep(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return

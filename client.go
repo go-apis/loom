@@ -34,6 +34,14 @@ type Config struct {
 	// ConflictRetries re-runs a Dispatch that lost an optimistic-concurrency
 	// race, against fresh state. Default 3.
 	ConflictRetries int
+
+	// StepConcurrency caps how many projection/process runner steps may
+	// run at once. A NOTIFY wakes every runner simultaneously (one per
+	// read model + process — dozens on a wide schema), and unbounded
+	// they saturate small connection pools and starve Dispatch of a
+	// connection. Default: half the pool's MaxConns, floor 2, so
+	// dispatches always find headroom regardless of pool size.
+	StepConcurrency int
 }
 
 type Client struct {
@@ -44,6 +52,7 @@ type Client struct {
 	nudge      chan struct{} // log advanced: wake projection/process runners
 	relayNudge chan struct{} // outbox rows written: wake the relay
 	batchNudge chan struct{} // batch enqueued: wake the batch runner
+	stepSem    chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
@@ -72,6 +81,12 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ConflictRetries == 0 {
 		cfg.ConflictRetries = 3
 	}
+	if cfg.StepConcurrency <= 0 {
+		cfg.StepConcurrency = int(cfg.DB.Config().MaxConns) / 2
+		if cfg.StepConcurrency < 2 {
+			cfg.StepConcurrency = 2
+		}
+	}
 	if cfg.Registry.hasPII() && cfg.Keys == nil {
 		return nil, fmt.Errorf("loom: the schema declares @pii fields — Config.Keys is required (see loom.LocalKeys)")
 	}
@@ -86,6 +101,7 @@ func New(cfg Config) (*Client, error) {
 		nudge:      make(chan struct{}, 1),
 		relayNudge: make(chan struct{}, 1),
 		batchNudge: make(chan struct{}, 1),
+		stepSem:    make(chan struct{}, cfg.StepConcurrency),
 		watchers:   map[chan struct{}]bool{},
 		keys:       cfg.Keys,
 		blobs:      cfg.Blobs,
