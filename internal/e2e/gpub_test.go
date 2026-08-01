@@ -58,7 +58,7 @@ func TestPubSubBus(t *testing.T) {
 	}
 
 	billing.Gateway.Reset()
-	billing.FailReactAfterCapture = 0
+	billing.SetFailReactAfterCapture(0)
 
 	orderID := uuid.New()
 	err = ordersCli.Dispatch(ctx, &ordersgen.PlaceOrder{
