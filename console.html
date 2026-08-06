@@ -408,7 +408,7 @@ async function initData() {
     ...(reg.aggregates||[]).map(a => ({name: a.name, kind: "aggregates"})),
   ];
   $("dType").innerHTML = dataTypes.map((t,i) =>
-    `<option value="${i}">${esc(t.name)} (${t.kind.slice(0,-1)})</option>`).join("");
+    `<option value="${i}">${esc(t.name)} (${t.kind.replace(/ies$/,"y").replace(/s$/,"")})</option>`).join("");
   $("nsList").innerHTML = (reg.namespaces||[]).map(n => `<option>${esc(n)}</option>`).join("");
   if (!$("dNs").value && (reg.namespaces||[]).length) $("dNs").value = reg.namespaces[0];
 }
