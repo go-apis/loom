@@ -36,6 +36,8 @@ import (
 //	GET  /dead_letters                  parked deliveries
 //	POST /dead_letters/{id}/redrive     re-run one parked delivery
 //	POST /shred                         delete a stream's @pii data key and files (body: namespace, id) — irreversible
+//	POST /projections/{name}/rebuild    refold one read model from the event log
+//	POST /reset                         factory-reset: truncate every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
 //	GET  /files?key=                    stream a stored file's bytes
 //	GET  /stats                         ops health: outbox, dead letters, timers, effects
@@ -60,6 +62,8 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("GET /dead_letters", c.apiDeadLetters)
 	mux.HandleFunc("POST /dead_letters/{id}/redrive", c.apiRedrive)
 	mux.HandleFunc("POST /shred", c.apiShred)
+	mux.HandleFunc("POST /projections/{name}/rebuild", c.apiRebuild)
+	mux.HandleFunc("POST /reset", c.apiReset)
 	mux.HandleFunc("GET /console", c.apiConsole)
 	mux.HandleFunc("GET /registry", c.apiRegistry)
 	mux.HandleFunc("GET /runners", c.apiRunners)
@@ -468,6 +472,36 @@ func (c *Client) apiShred(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "shredded"})
+}
+
+func (c *Client) apiRebuild(w http.ResponseWriter, r *http.Request) {
+	if err := c.Rebuild(r.Context(), r.PathValue("name")); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// apiReset is the console's danger zone: the body must name the service
+// verbatim (the type-to-arm flow), so a stray request or a replay
+// without the phrase refuses before anything is touched. The truncation
+// is logged with the caller's X-Actor before it runs — the last line
+// this data ever produces.
+func (c *Client) apiReset(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Confirm != c.reg.Service {
+		apiError(w, http.StatusBadRequest, fmt.Sprintf("confirm must be the service name %q", c.reg.Service))
+		return
+	}
+	c.log.ErrorContext(r.Context(), "RESET: truncating the event store", "actor", r.Header.Get("X-Actor"))
+	tables, err := c.Reset(r.Context())
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "reset", "tables": tables})
 }
 
 func (c *Client) apiStats(w http.ResponseWriter, r *http.Request) {

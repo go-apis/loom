@@ -58,6 +58,11 @@ pre { background:var(--panel); border:1px solid var(--line); border-radius:8px;
       padding:12px; overflow:auto; font-size:12.5px; margin:8px 0 0; }
 .empty { color:var(--muted); padding:14px; background:var(--panel);
          border:1px dashed var(--line); border-radius:8px; }
+.danger { border:1px solid var(--bad); border-radius:8px; background:var(--panel);
+          padding:4px 14px 12px; }
+.danger p { color:var(--muted); font-size:12.5px; }
+button.act.reset { color:var(--bad); border-color:var(--bad); }
+button.act.reset:disabled { color:var(--muted); border-color:var(--line); cursor:not-allowed; }
 .flow { color:var(--muted); }
 .err { color:var(--bad); padding:8px 0; }
 .topo { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:auto; }
@@ -142,6 +147,16 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
     <h2>Effects in doubt / failed</h2><div id="effects"></div>
     <h2>Dead letters</h2><div id="deadLetters"></div>
     <h2>Timers</h2><div id="timers"></div>
+    <h2 class="bad">Danger zone</h2>
+    <div class="danger">
+      <p>Reset truncates every loom table in this schema — the event log, projections, timers, effects,
+        and per-stream encryption keys. Every service sharing the schema, no undo. Restart other
+        instances afterwards: their cached stream keys must not outlive the reset.</p>
+      <div class="filters">
+        <input id="resetArm" placeholder="type the service name to arm" autocomplete="off">
+        <button id="resetBtn" class="act reset" disabled>reset everything</button>
+      </div>
+    </div>
   </section>
 </main>
 <footer>auto-refreshes every 5s · loom</footer>
@@ -477,11 +492,12 @@ $("fGo").onclick = loadEvents;
 // --- issues ---
 async function loadIssues() {
   const r = await get("runners");
-  $("runners").innerHTML = table(["runner","kind","checkpoint","head","lag","advanced"],
+  $("runners").innerHTML = table(["runner","kind","checkpoint","head","lag","advanced",""],
     (r.runners||[]).map(x => `<tr><td class="mono">${esc(x.runner)}</td><td>${esc(x.kind)}</td>
       <td class="mono">${x.seq}</td><td class="mono">${x.latest}</td>
       <td class="mono ${x.lag > 100 ? "bad" : x.lag > 0 ? "warn" : "ok"}">${x.kind==="process(bus)" ? "—" : x.lag}</td>
-      <td>${ago(x.updated_at)}</td></tr>`),
+      <td>${ago(x.updated_at)}</td>
+      <td>${x.kind==="projection"?`<button class="act" onclick="rebuild('${esc(x.runner.slice(11))}')">rebuild</button>`:""}</td></tr>`),
     "no runners");
 
   const fx = await get("effects?status=running&limit=100");
@@ -515,6 +531,24 @@ async function loadIssues() {
 window.redrive = async (id) => {
   try { await post("dead_letters/" + id + "/redrive"); loadIssues(); }
   catch (e) { alert("redrive failed: " + e.message); }
+};
+window.rebuild = async (name) => {
+  if (!confirm("Refold " + name + " from the event log? The read model empties, then repopulates.")) return;
+  try { await post("projections/" + encodeURIComponent(name) + "/rebuild"); loadIssues(); }
+  catch (e) { alert("rebuild failed: " + e.message); }
+};
+// reset: type-to-arm against the live service name, then one last confirm
+$("resetArm").oninput = () => { $("resetBtn").disabled = $("resetArm").value !== $("svc").textContent; };
+$("resetBtn").onclick = async () => {
+  const svc = $("svc").textContent;
+  if ($("resetArm").value !== svc) return;
+  if (!confirm("Erase the ENTIRE store for every service in this schema? No backup, no undo.")) return;
+  try {
+    const out = await post("reset", {confirm: svc});
+    $("resetArm").value = ""; $("resetBtn").disabled = true;
+    alert("reset: " + (out.tables || []).length + " tables truncated. Restart other service instances now.");
+    refresh();
+  } catch (e) { alert("reset failed: " + e.message); }
 };
 window.showEnvelope = (id) => {
   const d = (window._letters||[]).find(x => x.id === id);
