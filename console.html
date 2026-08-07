@@ -102,6 +102,9 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
   </section>
 
   <section id="design">
+    <div class="filters" style="margin-top:16px">
+      <input id="dFilter" placeholder="filter — aggregate, command, event, reaction…" size="36" autocomplete="off">
+    </div>
     <h2>Topology <span class="flow">— command → event → reaction → command; hover a node to trace it</span></h2>
     <div id="dTopo" class="topo"></div>
     <h2>Aggregates</h2><div id="dAggregates"></div>
@@ -403,8 +406,10 @@ async function loadDesign() {
     (reg.aggregates||[]).flatMap(cmdRows), "none");
   $("dRecords").innerHTML = table(["record","command","emits","pii"],
     (reg.records||[]).flatMap(cmdRows), "none");
+  // data-g carries the group name so filtering keeps a reaction's
+  // continuation rows (whose first cell is blank) with their group
   const reactRows = (p) => (p.subs||[]).map((s,i) =>
-    `<tr><td class="mono">${i===0?esc(p.name):""}</td><td class="mono">${esc(s.event)}</td>
+    `<tr data-g="${esc(p.name)}"><td class="mono">${i===0?esc(p.name):""}</td><td class="mono">${esc(s.event)}</td>
      <td>${tags(s.dispatches)}</td><td>${i===0?tags(p.effects,"fx"):""}</td></tr>`);
   $("dPolicies").innerHTML = table(["policy","on","dispatches","effects"],
     (reg.policies||[]).flatMap(reactRows), "none");
@@ -421,7 +426,20 @@ async function loadDesign() {
       <td class="mono">${e.version}</td>
       <td>${e.publish?'<span class="tag pub">published</span>':""}${e.service?'<span class="tag">foreign</span>':""}</td>
       <td>${tags(e.pii,"pii")}</td></tr>`), "none");
+  applyDesignFilter();
 }
+
+// the design filter narrows every table at once — with dozens of
+// aggregates the page is unreadable without it. Sections whose every
+// row is filtered out collapse to their heading.
+function applyDesignFilter() {
+  const q = $("dFilter").value.trim().toLowerCase();
+  document.querySelectorAll("#design tbody tr").forEach(tr => {
+    const hit = !q || (tr.dataset.g||"").toLowerCase().includes(q) || tr.textContent.toLowerCase().includes(q);
+    tr.style.display = hit ? "" : "none";
+  });
+}
+$("dFilter").oninput = applyDesignFilter;
 
 // --- data ---
 let dataTypes = []; // {name, kind: entity|record|aggregate}
