@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ import (
 //	POST /dead_letters/{id}/redrive     re-run one parked delivery
 //	POST /shred                         delete a stream's @pii data key and files (body: namespace, id) — irreversible
 //	POST /projections/{name}/rebuild    refold one read model from the event log
+//	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?) — the junk lever, irreversible
 //	POST /reset                         factory-reset: truncate every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
 //	GET  /files?key=                    stream a stored file's bytes
@@ -63,6 +65,7 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("POST /dead_letters/{id}/redrive", c.apiRedrive)
 	mux.HandleFunc("POST /shred", c.apiShred)
 	mux.HandleFunc("POST /projections/{name}/rebuild", c.apiRebuild)
+	mux.HandleFunc("POST /streams/delete", c.apiDeleteStreams)
 	mux.HandleFunc("POST /reset", c.apiReset)
 	mux.HandleFunc("GET /console", c.apiConsole)
 	mux.HandleFunc("GET /registry", c.apiRegistry)
@@ -480,6 +483,65 @@ func (c *Client) apiRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// apiDeleteStreams deletes one or many streams in a namespace. Streams
+// with no events are reported in not_found rather than failing the
+// batch, so a retried delete converges. rebuild=true refolds every
+// affected projection afterwards — the runners do the folding, so the
+// response returns as soon as the checkpoints are zeroed.
+func (c *Client) apiDeleteStreams(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Namespace string      `json:"namespace"`
+		IDs       []uuid.UUID `json:"ids"`
+		Rebuild   bool        `json:"rebuild"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Namespace == "" || len(body.IDs) == 0 {
+		apiError(w, http.StatusBadRequest, "namespace and ids are required")
+		return
+	}
+	total := StreamDeletion{}
+	notFound := []uuid.UUID{}
+	projections := map[string]bool{}
+	for _, id := range body.IDs {
+		c.log.WarnContext(r.Context(), "DELETE STREAM", "namespace", body.Namespace, "id", id, "actor", r.Header.Get("X-Actor"))
+		res, err := c.DeleteStream(r.Context(), body.Namespace, id)
+		if err != nil {
+			if res == nil && len(body.IDs) > 0 && strings.Contains(err.Error(), "no such stream") {
+				notFound = append(notFound, id)
+				continue
+			}
+			apiError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		total.Events += res.Events
+		total.Snapshots += res.Snapshots
+		total.Outbox += res.Outbox
+		total.Rows += res.Rows
+		for _, p := range res.Projections {
+			projections[p] = true
+		}
+	}
+	rebuilt := []string{}
+	for p := range projections {
+		total.Projections = append(total.Projections, p)
+		if body.Rebuild {
+			if err := c.Rebuild(r.Context(), p); err != nil {
+				apiError(w, http.StatusInternalServerError, fmt.Sprintf("deleted, but rebuild %s: %s", p, err))
+				return
+			}
+			rebuilt = append(rebuilt, p)
+		}
+	}
+	sort.Strings(total.Projections)
+	sort.Strings(rebuilt)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "deleted", "deleted": total, "not_found": notFound, "rebuilt": rebuilt,
+	})
 }
 
 // apiReset is the console's danger zone: the body must name the service

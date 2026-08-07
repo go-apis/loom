@@ -149,6 +149,16 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
     <h2>Timers</h2><div id="timers"></div>
     <h2 class="bad">Danger zone</h2>
     <div class="danger">
+      <p>Delete streams removes the named aggregates outright — events, snapshots, outbox rows, read-model
+        rows keyed by the id, data key and files. The junk lever for test streams and bad imports, not
+        erasure (published events were already consumed elsewhere; personal data wants a tombstone + shred).
+        Rebuild refolds the affected projections so re-keyed rows go too.</p>
+      <div class="filters">
+        <input id="delNs" placeholder="namespace" autocomplete="off">
+        <input id="delIds" placeholder="aggregate ids, comma-separated" size="40" autocomplete="off">
+        <label><input type="checkbox" id="delRebuild" checked> rebuild projections</label>
+        <button id="delBtn" class="act reset">delete streams</button>
+      </div>
       <p>Reset truncates every loom table in this schema — the event log, projections, timers, effects,
         and per-stream encryption keys. Every service sharing the schema, no undo. Restart other
         instances afterwards: their cached stream keys must not outlive the reset.</p>
@@ -536,6 +546,23 @@ window.rebuild = async (name) => {
   if (!confirm("Refold " + name + " from the event log? The read model empties, then repopulates.")) return;
   try { await post("projections/" + encodeURIComponent(name) + "/rebuild"); loadIssues(); }
   catch (e) { alert("rebuild failed: " + e.message); }
+};
+// delete streams: named targets, one confirm listing exactly what dies
+$("delBtn").onclick = async () => {
+  const ns = $("delNs").value.trim();
+  const ids = $("delIds").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (!ns || !ids.length) { alert("namespace and at least one aggregate id"); return; }
+  if (!confirm("Delete " + ids.length + " stream(s) in " + ns + " outright — events, snapshots, rows, keys, files? No undo.")) return;
+  try {
+    const out = await post("streams/delete", {namespace: ns, ids, rebuild: $("delRebuild").checked});
+    const d = out.deleted || {};
+    alert("deleted: " + (d.events||0) + " events, " + (d.rows||0) + " rows"
+      + ((out.not_found||[]).length ? "; not found: " + out.not_found.join(", ") : "")
+      + ((out.rebuilt||[]).length ? "; rebuilding: " + out.rebuilt.join(", ")
+        : (d.projections||[]).length ? "; rebuild these: " + d.projections.join(", ") : ""));
+    $("delIds").value = "";
+    refresh();
+  } catch (e) { alert("delete failed: " + e.message); }
 };
 // reset: type-to-arm against the live service name, then one last confirm
 $("resetArm").oninput = () => { $("resetBtn").disabled = $("resetArm").value !== $("svc").textContent; };
