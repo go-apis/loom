@@ -26,9 +26,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"cloud.google.com/go/pubsub/v2"
 	"golang.org/x/oauth2"
@@ -44,6 +47,11 @@ type Config struct {
 	// Endpoint overrides the storage base URL (tests, emulators).
 	// Default https://storage.googleapis.com.
 	Endpoint string
+	// PublicBaseURL is the browser-facing base for objects when the
+	// bucket (or a CDN in front of it) serves them publicly — e.g.
+	// https://storage.googleapis.com/BUCKET or a custom domain. Empty
+	// means the store has no public surface and PublicURL returns "".
+	PublicBaseURL string
 	// TokenSource overrides application default credentials.
 	TokenSource oauth2.TokenSource
 	// HTTPClient bypasses auth entirely (tests against a fake endpoint).
@@ -54,6 +62,7 @@ type Config struct {
 type Store struct {
 	bucket   string
 	endpoint string
+	public   string
 	http     *http.Client
 	log      *slog.Logger
 }
@@ -80,7 +89,72 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		}
 		client = oauth2.NewClient(ctx, ts)
 	}
-	return &Store{bucket: cfg.Bucket, endpoint: cfg.Endpoint, http: client, log: cfg.Logger}, nil
+	return &Store{bucket: cfg.Bucket, endpoint: cfg.Endpoint,
+		public: strings.TrimSuffix(cfg.PublicBaseURL, "/"), http: client, log: cfg.Logger}, nil
+}
+
+// PublicURL is the object's browser URL when the deployment made the
+// bucket (or a CDN over it) public; "" without a configured base.
+func (s *Store) PublicURL(key string) string {
+	if s.public == "" {
+		return ""
+	}
+	return s.public + "/" + key
+}
+
+// Put writes an object in one multipart-related request — metadata
+// (content type, cache control, loom metadata) and media land together.
+func (s *Store) Put(ctx context.Context, init loom.UploadInit, body io.Reader) error {
+	meta := map[string]any{
+		"name":        init.Key,
+		"contentType": init.ContentType,
+		"metadata":    init.Metadata,
+	}
+	if init.CacheControl != "" {
+		meta["cacheControl"] = init.CacheControl
+	}
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreatePart(textproto.MIMEHeader{"Content-Type": {"application/json; charset=UTF-8"}})
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(metaJSON); err != nil {
+		return err
+	}
+	mediaHeader := textproto.MIMEHeader{}
+	if init.ContentType != "" {
+		mediaHeader.Set("Content-Type", init.ContentType)
+	}
+	media, err := mw.CreatePart(mediaHeader)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(media, body); err != nil {
+		return err
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/upload/storage/v1/b/%s/o?uploadType=multipart", s.endpoint, url.PathEscape(s.bucket))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "multipart/related; boundary="+mw.Boundary())
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer drain(resp)
+	if resp.StatusCode != http.StatusOK {
+		return apiErr("put "+init.Key, resp)
+	}
+	return nil
 }
 
 // CreateUpload initiates a resumable session. The returned URL is the

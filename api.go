@@ -41,12 +41,16 @@ import (
 //	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?) — the junk lever, irreversible
 //	POST /reset                         factory-reset: truncate every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
+//	POST /uploads/{session}/parts?n=    s3-multipart dialect: presigned PUT URL for part n
+//	POST /uploads/{session}/complete    s3-multipart dialect: assemble parts (body: {parts:[{number,etag}]}) — verified finalize
 //	GET  /files?key=                    stream a stored file's bytes
 //	GET  /stats                         ops health: outbox, dead letters, timers, effects
 func (c *Client) HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /commands/{name}", c.apiDispatch)
 	mux.HandleFunc("POST /uploads", c.apiCreateUpload)
+	mux.HandleFunc("POST /uploads/{session}/parts", c.apiUploadPart)
+	mux.HandleFunc("POST /uploads/{session}/complete", c.apiUploadComplete)
 	mux.HandleFunc("GET /files", c.apiGetFile)
 	mux.HandleFunc("GET /entities/{name}", c.apiList(c.QueryEntities))
 	mux.HandleFunc("GET /entities/{name}/{id}", c.apiGetEntity)
@@ -190,6 +194,63 @@ func (c *Client) apiCreateUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, up)
+}
+
+// apiUploadPart and apiUploadComplete are the s3-multipart dialect's
+// service half: stores without a self-authenticating session URL
+// (MultipartStore) sign each part on demand and assemble on completion.
+// Completion is the finalize signal — server-side and Stat-verified,
+// never the client's claim.
+func (c *Client) apiUploadPart(w http.ResponseWriter, r *http.Request) {
+	ms, ok := c.blobs.(MultipartStore)
+	if !ok {
+		apiError(w, http.StatusNotFound, "the blob store has no multipart dialect")
+		return
+	}
+	n, err := strconv.Atoi(r.URL.Query().Get("n"))
+	if err != nil || n < 1 {
+		apiError(w, http.StatusBadRequest, "part number ?n= must be a positive integer")
+		return
+	}
+	u, err := ms.SignPart(r.Context(), r.PathValue("session"), n)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": u})
+}
+
+func (c *Client) apiUploadComplete(w http.ResponseWriter, r *http.Request) {
+	ms, ok := c.blobs.(MultipartStore)
+	if !ok {
+		apiError(w, http.StatusNotFound, "the blob store has no multipart dialect")
+		return
+	}
+	var body struct {
+		Parts []CompletedPart `json:"parts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	key, err := ms.CompleteUpload(r.Context(), r.PathValue("session"), body.Parts)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	ctx := WithMeta(r.Context(), Metadata{
+		CorrelationID: r.Header.Get("X-Correlation-Id"),
+		Actor:         r.Header.Get("X-Actor"),
+	})
+	if err := c.FinalizeUpload(ctx, key); err != nil {
+		if errors.Is(err, ErrForeignObject) {
+			apiError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "uploaded", "key": key})
 }
 
 func (c *Client) apiGetFile(w http.ResponseWriter, r *http.Request) {

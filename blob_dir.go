@@ -57,6 +57,43 @@ func (s *DirBlobStore) CreateUpload(ctx context.Context, init UploadInit) (*Uplo
 	return &UploadSession{URL: s.base + "/" + token, Protocol: ProtocolGCSResumable}, nil
 }
 
+// Put is the server-side single-call write: bytes straight to disk,
+// metadata beside them, no session.
+func (s *DirBlobStore) Put(ctx context.Context, init UploadInit, body io.Reader) error {
+	path, err := s.objectPath(init.Key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	meta, err := json.Marshal(map[string]any{
+		"name":         init.Name,
+		"content_type": init.ContentType,
+		"metadata":     init.Metadata,
+	})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.metaPath(path), meta, 0o644)
+}
+
+// PublicURL serves objects straight from the store's own HTTP mount.
+func (s *DirBlobStore) PublicURL(key string) string {
+	return s.base + "/o/" + key
+}
+
 // objectPath resolves a key inside the store's directory, refusing
 // traversal out of it.
 func (s *DirBlobStore) objectPath(key string) (string, error) {
@@ -129,15 +166,39 @@ func (s *DirBlobStore) DeletePrefix(ctx context.Context, prefix string) error {
 
 // --- the resumable upload endpoint ---
 
-// ServeHTTP handles PUT /{token}: GCS-shaped resumable chunks. CORS is
+// ServeHTTP handles PUT /{token} (GCS-shaped resumable chunks) and
+// GET /o/{key} (public object serving, PublicURL's other half). CORS is
 // wide open — this store is for dev.
 func (s *DirBlobStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Range, Content-Type")
 	w.Header().Set("Access-Control-Expose-Headers", "Range")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method == http.MethodGet {
+		key, ok := strings.CutPrefix(strings.TrimPrefix(r.URL.Path, "/"), "o/")
+		if !ok || key == "" {
+			http.Error(w, "objects live under /o/{key}", http.StatusNotFound)
+			return
+		}
+		info, err := s.Stat(r.Context(), key)
+		if err != nil || info == nil {
+			http.Error(w, "no such object", http.StatusNotFound)
+			return
+		}
+		f, err := s.Open(r.Context(), key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		if info.ContentType != "" {
+			w.Header().Set("Content-Type", info.ContentType)
+		}
+		_, _ = io.Copy(w, f)
 		return
 	}
 	if r.Method != http.MethodPut {
