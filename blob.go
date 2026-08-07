@@ -48,7 +48,8 @@ type FileRef struct {
 	Size        int64     `json:"size"`
 }
 
-// UploadInit is what a BlobStore needs to open a resumable session.
+// UploadInit is what a BlobStore needs to open a resumable session —
+// and what Put takes for a server-side write.
 type UploadInit struct {
 	Key         string
 	Name        string // original filename, kept as object metadata
@@ -58,6 +59,9 @@ type UploadInit struct {
 	// stores that don't bind sessions to origins may ignore it.
 	Origin   string
 	Metadata map[string]string
+	// CacheControl is stored on the object verbatim (public assets set
+	// immutable forever-cache headers); stores may ignore it.
+	CacheControl string
 }
 
 // Upload protocols — the chunk dialect the client must speak against
@@ -69,9 +73,11 @@ const (
 	// chunks with Content-Range, probe/resume via 308 + Range. Spoken by
 	// gblob and DirBlobStore.
 	ProtocolGCSResumable = "gcs-resumable"
-	// ProtocolS3Multipart is reserved for a future S3/R2 store: presigned
-	// URL per part + a complete step (needs two extra endpoints — see
-	// TODO.md before implementing).
+	// ProtocolS3Multipart: the session URL is service-relative
+	// (uploads/{token}); POST {url}/parts?n= for a presigned per-part
+	// PUT URL, then POST {url}/complete with the collected ETags — the
+	// completion call is server-side, verified via Stat, and doubles as
+	// the finalize signal. Spoken by s3blob (S3, R2, MinIO).
 	ProtocolS3Multipart = "s3-multipart"
 )
 
@@ -97,6 +103,11 @@ type BlobInfo struct {
 type BlobStore interface {
 	// CreateUpload opens a resumable upload session for the object.
 	CreateUpload(ctx context.Context, init UploadInit) (*UploadSession, error)
+	// Put writes an object server-side in one call — the path for bytes
+	// the SERVICE already holds (fetched images, thumbnails, generated
+	// documents). Uploads exist for browser-sized files; Put is not
+	// resumable and should stay under memory-sized payloads.
+	Put(ctx context.Context, init UploadInit, body io.Reader) error
 	// Stat describes an object; (nil, nil) means it does not exist.
 	Stat(ctx context.Context, key string) (*BlobInfo, error)
 	// Open streams an object's bytes.
@@ -105,6 +116,36 @@ type BlobStore interface {
 	Delete(ctx context.Context, key string) error
 	// DeletePrefix removes every object under prefix (Shred's lever).
 	DeletePrefix(ctx context.Context, prefix string) error
+}
+
+// PublicURLer is implemented by stores that can serve objects directly
+// to browsers (a public bucket, a CDN domain). PublicURL returns the
+// object's browser URL, or "" when the store has no public base
+// configured — callers needing public assets check for "" loudly rather
+// than serving broken links.
+type PublicURLer interface {
+	PublicURL(key string) string
+}
+
+// MultipartStore is the server half of the s3-multipart upload dialect:
+// stores whose sessions have no single self-authenticating URL (S3, R2)
+// implement it, and the API surface exposes the two extra endpoints the
+// client needs — a presigned URL per part, and a completion call. The
+// session string is the store-issued token from CreateUpload's URL;
+// implementations must reject tampered tokens.
+type MultipartStore interface {
+	// SignPart returns a presigned URL the client PUTs part n's bytes to.
+	SignPart(ctx context.Context, session string, part int) (string, error)
+	// CompleteUpload assembles the parts and returns the finished
+	// object's key — the caller then runs the finalize path, verifying
+	// via Stat before any command is dispatched.
+	CompleteUpload(ctx context.Context, session string, parts []CompletedPart) (string, error)
+}
+
+// CompletedPart names one uploaded part in a completion call.
+type CompletedPart struct {
+	Number int    `json:"number"`
+	ETag   string `json:"etag"`
 }
 
 // UploadNotifier is implemented by stores that can signal finalized

@@ -106,22 +106,15 @@ parked in favor of ten99).
 
 ## Upload follow-ons (small, when needed)
 
-- `r2blob` (Cloudflare R2, S3-compatible) — Chris is eyeing a move of
-  workers/file storage to Cloudflare. The contract is ready:
-  `UploadSession.protocol` discriminates dialects and `s3-multipart`
-  is reserved. What R2/S3 needs beyond a BlobStore impl: multipart has
-  no single self-authenticating session URL, so the service must sign
-  a presigned URL PER PART and accept a completion call — two new
-  endpoints (`POST /uploads/{id}/parts?n=`, `POST
-  /uploads/{id}/complete` with ETags), plus session state to remember
-  the multipart upload id (a loom_uploads row or object metadata).
-  Finalize signal: R2 event notifications ride Cloudflare Queues (no
-  Pub/Sub) — either a Worker forwards them to an HTTP endpoint on the
-  service (needs an authenticated /uploads/finalize hook) or the
-  completion call doubles as the signal (acceptable: completion is
-  server-side, not client say-so, since the service verifies via Stat
-  before dispatching). UI: one new uploader adapter keyed off
-  `protocol`; Uppy's @uppy/aws-s3 multipart plugin fits.
+- ~~`r2blob`~~ SHIPPED v0.39 as `s3blob` (R2/S3/MinIO, hand-rolled
+  SigV4 pinned to AWS's doc vectors): stateless HMAC session tokens
+  instead of a loom_uploads row, `POST /uploads/{session}/parts?n=` +
+  `/complete` on the API surface, completion doubles as the Stat-
+  verified finalize signal. Also v0.39: `BlobStore.Put` (server-side
+  single-call write — the placephotos shape) + `PublicURLer` across
+  dir/gblob/s3blob. Still open from the original item: the client-side
+  uploader adapter keyed off `protocol` (Uppy @uppy/aws-s3 fits) —
+  nothing in-repo speaks s3-multipart from a browser yet.
 
 - Signed download URLs on gblob (`GET /files` streams through the
   service today — fine for docs, wrong for video-sized reads).
