@@ -163,14 +163,23 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
 
   <section id="events">
     <div class="filters">
+      <input id="fNs" placeholder="namespace" size="16">
       <input id="fType" placeholder="type">
+      <input id="fAggType" placeholder="aggregate type" size="13">
       <input id="fAgg" placeholder="aggregate id" size="36">
       <input id="fCorr" placeholder="correlation id" size="28">
-      <select id="fLimit"><option>50</option><option>100</option><option>250</option></select>
+      <select id="fSince">
+        <option value="1">last hour</option>
+        <option value="24" selected>last 24h</option>
+        <option value="168">last 7 days</option>
+        <option value="">all time</option>
+      </select>
+      <select id="fLimit"><option>50</option><option selected>100</option><option>250</option></select>
       <button class="act" id="fGo">Search</button>
+      <span id="fChainNote" class="flow" hidden>chain view, oldest first — the first row triggered the rest</span>
     </div>
     <div id="eventList"></div>
-    <pre id="eventDetail" hidden></pre>
+    <div id="eventDetail" hidden></div>
   </section>
 
   <section id="issues">
@@ -525,25 +534,54 @@ $("dGo").onclick = loadData;
 // --- events ---
 async function loadEvents() {
   const p = new URLSearchParams();
-  if ($("fType").value) p.set("type", $("fType").value);
-  if ($("fAgg").value) p.set("aggregate_id", $("fAgg").value);
-  if ($("fCorr").value) p.set("correlation_id", $("fCorr").value);
+  if ($("fNs").value.trim()) p.set("namespace", $("fNs").value.trim());
+  if ($("fType").value.trim()) p.set("type", $("fType").value.trim());
+  if ($("fAggType").value.trim()) p.set("aggregate_type", $("fAggType").value.trim());
+  if ($("fAgg").value.trim()) p.set("aggregate_id", $("fAgg").value.trim());
+  const chainId = $("fCorr").value.trim();
+  if (chainId) {
+    // a correlation chain reads top-down: cause first
+    p.set("correlation_id", chainId);
+    p.set("order", "asc");
+  }
+  $("fChainNote").hidden = !chainId;
+  if ($("fSince").value) p.set("since", new Date(Date.now() - Number($("fSince").value) * 3600e3).toISOString());
   p.set("limit", $("fLimit").value);
   const res = await get("events?" + p);
   const items = res.items || [];
-  $("eventList").innerHTML = table(["seq","at","type","aggregate","correlation"],
+  $("eventDetail").hidden = true;
+  $("eventList").innerHTML = table(["seq","at","type","aggregate","actor","chain"],
     items.map((e,i) => `<tr class="click" data-i="${i}">
-      <td class="mono">${e.global_seq}</td><td>${ago(e.at)}</td>
+      <td class="mono">${e.global_seq}</td><td title="${esc(e.at)}">${ago(e.at)}</td>
       <td class="mono">${esc(e.type)}</td>
-      <td class="mono">${esc(e.aggregate_type)}/${esc(String(e.aggregate_id).slice(0,8))}…</td>
-      <td class="mono">${esc(String(e.correlation_id||"").slice(0,12))}</td></tr>`),
+      <td class="mono">${esc(e.namespace)} · ${esc(e.aggregate_type)}/${esc(String(e.aggregate_id).slice(0,8))}…</td>
+      <td class="mono" title="${esc(e.actor||"")}">${esc(String(e.actor||"—").slice(0,18))}</td>
+      <td>${e.correlation_id
+        ? `<button class="act" onclick="chainView(event,'${esc(e.correlation_id)}')" title="every event in this chain">${esc(e.correlation_id.slice(0,12))}…</button>`
+        : "—"}</td></tr>`),
     "no events match");
-  $("eventList").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => {
-    $("eventDetail").hidden = false;
-    $("eventDetail").textContent = JSON.stringify(items[tr.dataset.i], null, 2);
-  });
+  $("eventList").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => showEvent(items[tr.dataset.i]));
+}
+window.chainView = (ev, id) => { ev.stopPropagation(); $("fCorr").value = id; loadEvents(); };
+// the payload stays behind a reveal: event data carries decrypted @pii
+// for sealed fields, so it is never rendered by default
+function showEvent(e) {
+  const meta = { ...e };
+  delete meta.data;
+  $("eventDetail").hidden = false;
+  $("eventDetail").innerHTML = `<pre>${esc(JSON.stringify(meta, null, 2))}</pre>
+    <p><button class="act" id="revealBtn">reveal payload</button>
+    <span class="flow">— payloads can contain decrypted personal data</span></p>
+    <pre id="payload" hidden></pre>`;
+  $("revealBtn").onclick = () => {
+    $("payload").hidden = false;
+    $("payload").textContent = JSON.stringify(e.data, null, 2);
+    $("revealBtn").disabled = true;
+  };
 }
 $("fGo").onclick = loadEvents;
+["fNs","fType","fAggType","fAgg","fCorr"].forEach(id =>
+  $(id).onkeydown = (e) => { if (e.key === "Enter") loadEvents(); });
 
 // --- issues ---
 async function loadIssues() {
