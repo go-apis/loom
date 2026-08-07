@@ -81,6 +81,13 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		fmt.Fprint(w, `<CompleteMultipartUploadResult><Key>`+target+`</Key></CompleteMultipartUploadResult>`)
 	case r.Method == http.MethodPut:
+		// R2 refuses object PUTs without Content-Length — pin that here so
+		// a chunked-encoding body regression fails the suite, not prod
+		if r.ContentLength < 0 {
+			f.t.Errorf("PUT %s without Content-Length", key)
+			http.Error(w, "MissingContentLength", http.StatusLengthRequired)
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		f.objects[key] = b
 		h := http.Header{}
@@ -185,6 +192,20 @@ func TestPutStatOpenDelete(t *testing.T) {
 	}
 	if info, _ := store.Stat(ctx, "places/abc/photo.jpg"); info != nil {
 		t.Fatal("delete did not delete")
+	}
+}
+
+func TestPutBuffersUnsizedBodies(t *testing.T) {
+	ctx := context.Background()
+	store, fake := testStore(t)
+	// an io.Reader the transport cannot size — without buffering this
+	// goes out chunked and R2 answers 411
+	unsized := io.MultiReader(strings.NewReader("chunked"), strings.NewReader("-body"))
+	if err := store.Put(ctx, loom.UploadInit{Key: "a/b"}, unsized); err != nil {
+		t.Fatal(err)
+	}
+	if string(fake.objects["a/b"]) != "chunked-body" {
+		t.Fatalf("stored: %q", fake.objects["a/b"])
 	}
 }
 

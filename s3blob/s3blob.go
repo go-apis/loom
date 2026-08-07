@@ -170,6 +170,19 @@ func (s *Store) Put(ctx context.Context, init loom.UploadInit, body io.Reader) e
 	if init.Name != "" {
 		h.Set("x-amz-meta-loom_name", init.Name)
 	}
+	// S3 (R2 especially) refuses object PUTs without Content-Length, and
+	// net/http only infers it for bytes/strings readers — an *os.File
+	// body would 411. Put is documented memory-sized, so buffer anything
+	// whose length the transport can't see.
+	switch body.(type) {
+	case *bytes.Reader, *bytes.Buffer, *strings.Reader:
+	default:
+		raw, err := io.ReadAll(body)
+		if err != nil {
+			return fmt.Errorf("s3blob: put %s: %w", init.Key, err)
+		}
+		body = bytes.NewReader(raw)
+	}
 	resp, err := s.do(ctx, http.MethodPut, s.objectURL(init.Key, nil), h, body)
 	if err != nil {
 		return err
