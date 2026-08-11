@@ -283,7 +283,9 @@ func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, 
 	}
 	dir := "ASC"
 	if desc {
-		dir = "DESC"
+		// same as queryDocs: Postgres defaults DESC to NULLS FIRST, which
+		// pins never-set rows to the top of newest-first lists
+		dir = "DESC NULLS LAST"
 	}
 	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
 

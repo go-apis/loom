@@ -119,7 +119,11 @@ func (c *Client) queryDocs(ctx context.Context, table, typeCol, typeName string,
 	}
 	dir := "ASC"
 	if desc {
-		dir = "DESC"
+		// Postgres defaults DESC to NULLS FIRST, so every row missing the
+		// order field would pin to the top of a newest-first list (e.g. a
+		// backfilled invoice with no requested_at leading the admin list
+		// forever). Rows without the field sort last in both directions.
+		dir = "DESC NULLS LAST"
 	}
 	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
 
