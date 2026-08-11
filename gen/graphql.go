@@ -23,7 +23,7 @@ func GraphQL(s *schema.Schema) ([]byte, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Generated from the %s service's .loom schema by loom graphql. DO NOT EDIT.\n\n", s.Service)
-	b.WriteString("scalar UUID\nscalar Time\nscalar Map\nscalar Long\n\n\"\"\"a namespace name, or * for every namespace (needs all-namespace access)\"\"\"\nscalar Namespace\n\n")
+	b.WriteString("scalar UUID\nscalar Time\nscalar Map\nscalar Long\n\n\"\"\"a namespace name; list fields also accept * for every namespace (needs all-namespace access)\"\"\"\nscalar Namespace\n\n")
 
 	b.WriteString(`input FilterInput {
   field: String!
@@ -112,7 +112,7 @@ type UploadSession {
 	}
 	addUploads := func(uploads []*schema.Upload) {
 		for _, u := range uploads {
-			fmt.Fprintf(&b, "input Create%sUploadInput {\n  namespace: String!\n  id: UUID!\n  name: String\n  contentType: String\n  size: Long!\n}\n\n", u.Name)
+			fmt.Fprintf(&b, "input Create%sUploadInput {\n  namespace: Namespace!\n  id: UUID!\n  name: String\n  contentType: String\n  size: Long!\n}\n\n", u.Name)
 			mutations = append(mutations, fmt.Sprintf("  create%sUpload(input: Create%sUploadInput!): UploadSession!", u.Name, u.Name))
 		}
 	}
@@ -127,8 +127,8 @@ type UploadSession {
 
 	var queries, subscriptions []string
 	for _, a := range s.Aggregates {
-		queries = append(queries, fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(a.Name), a.Name))
-		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: String!, id: UUID!): %s!", lowerFirst(a.Name), a.Name))
+		queries = append(queries, fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s", lowerFirst(a.Name), a.Name))
+		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!", lowerFirst(a.Name), a.Name))
 		if a.Table {
 			// @table: the state mirror serves entity-style list reads
 			queries = append(queries, fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(a.Name), a.Name))
@@ -137,17 +137,17 @@ type UploadSession {
 	}
 	for _, r := range s.Records {
 		queries = append(queries,
-			fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(r.Name), r.Name),
+			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s", lowerFirst(r.Name), r.Name),
 			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
 		subscriptions = append(subscriptions,
 			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
 	}
 	for _, e := range s.Entities {
 		queries = append(queries,
-			fmt.Sprintf("  %s(namespace: String!, id: UUID!): %s", lowerFirst(e.Name), e.Name),
+			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s", lowerFirst(e.Name), e.Name),
 			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
 		subscriptions = append(subscriptions,
-			fmt.Sprintf("  %sChanged(namespace: String!, id: UUID!): %s!", lowerFirst(e.Name), e.Name),
+			fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!", lowerFirst(e.Name), e.Name),
 			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
 	}
 
@@ -170,7 +170,7 @@ func gqlType(b *strings.Builder, kind, name string, pl *schema.Payload, enums ma
 }
 
 func gqlCommandInput(b *strings.Builder, c *schema.Command, enums map[string]bool) {
-	fmt.Fprintf(b, "input %sInput {\n  aggregateId: UUID!\n  namespace: String!\n", c.Name)
+	fmt.Fprintf(b, "input %sInput {\n  aggregateId: UUID!\n  namespace: Namespace!\n", c.Name)
 	if c.Payload != nil {
 		for _, field := range sortedFieldNames(c.Payload) {
 			fmt.Fprintf(b, "  %s: %s\n", gqlFieldName(field), gqlFieldType(c.Payload.Properties[field], c.Payload, field, "Input", enums))

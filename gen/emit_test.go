@@ -71,7 +71,7 @@ func TestGraphQL(t *testing.T) {
 		"aggregateId: UUID!",
 		"placeOrder(input: PlaceOrderInput!): DispatchResult!",
 		"orderSummarys(namespace: Namespace!, where: [FilterInput!]",
-		"orderSummaryChanged(namespace: String!, id: UUID!): OrderSummary!",
+		"orderSummaryChanged(namespace: Namespace!, id: UUID!): OrderSummary!",
 		"orderSummarysChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [OrderSummary!]!",
 		"items: [OrderItemInput!]!",
 		"customerId: UUID!",

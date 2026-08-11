@@ -201,11 +201,12 @@ var (
 	scalarUUID = passthrough("UUID", "UUID as a string")
 	scalarTime = passthrough("Time", "RFC 3339 timestamp")
 	scalarMap  = passthrough("Map", "arbitrary JSON object")
-	// Namespace documents the "*" convention where it is accepted (list
-	// queries and list subscriptions); single-doc fields take a concrete
-	// namespace.
+	// Namespace types EVERY namespace argument and field. The "*"
+	// convention is a runtime rule, not a type split: list queries and
+	// list subscriptions accept it (with all-namespace access); single-doc
+	// fields and command inputs refuse it at resolve time (parseNsID).
 	scalarNamespace = passthrough("Namespace",
-		`a namespace name, or "*" for every namespace (needs all-namespace access)`)
+		`a namespace name; list fields also accept "*" for every namespace (needs all-namespace access)`)
 	// Long carries schema `int` (int64): GraphQL Int is 32-bit and cent
 	// totals are not. Real coercion (not passthrough) so inline literals
 	// in queries parse to int64.
@@ -676,7 +677,7 @@ func toDoc(state any, ns string, id string) (map[string]any, error) {
 
 func nsIDArgs() gql.FieldConfigArgument {
 	return gql.FieldConfigArgument{
-		"namespace": {Type: gql.NewNonNull(gql.String)},
+		"namespace": {Type: gql.NewNonNull(scalarNamespace)},
 		"id":        {Type: gql.NewNonNull(scalarUUID)},
 	}
 }
@@ -969,7 +970,7 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
 	}
 	input := gql.NewInputObject(gql.InputObjectConfig{Name: "Create" + u.Name + "UploadInput", Fields: gql.InputObjectConfigFieldMap{
-		"namespace":   {Type: gql.NewNonNull(gql.String)},
+		"namespace":   {Type: gql.NewNonNull(scalarNamespace)},
 		"id":          {Type: gql.NewNonNull(scalarUUID)},
 		"name":        {Type: gql.String},
 		"contentType": {Type: gql.String},
