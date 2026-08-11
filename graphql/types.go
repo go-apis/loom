@@ -87,7 +87,7 @@ func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {
 	}
 	gqlFields := gql.Fields{
 		"id":        {Type: scalarUUID, Resolve: mapField("id")},
-		"namespace": {Type: gql.String, Resolve: mapField("namespace")},
+		"namespace": {Type: scalarNamespace, Resolve: mapField("namespace")},
 		"updatedAt": {Type: scalarTime, Resolve: mapField("updatedAt")},
 	}
 	for _, f := range fields {
@@ -276,7 +276,7 @@ func (b *builder) commandInput(name string, cmd loom.Command, required []string)
 	}
 	cfg := gql.InputObjectConfigFieldMap{
 		"aggregateId": {Type: gql.NewNonNull(scalarUUID)},
-		"namespace":   {Type: gql.NewNonNull(gql.String)},
+		"namespace":   {Type: gql.NewNonNull(scalarNamespace)},
 	}
 	convs := map[string]fieldConv{
 		"aggregateId": {snake: "aggregate_id", conv: identity},

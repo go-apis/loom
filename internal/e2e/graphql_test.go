@@ -192,7 +192,7 @@ func TestGraphQLGateway(t *testing.T) {
 	}
 
 	// aggregate get through the graph
-	data = gql(`query($ns: String!, $id: UUID!) { order(namespace: $ns, id: $id) { status currency } }`,
+	data = gql(`query($ns: Namespace!, $id: UUID!) { order(namespace: $ns, id: $id) { status currency } }`,
 		map[string]any{"ns": "default", "id": orderID.String()})
 	ord, _ := data["order"].(map[string]any)
 	if ord == nil || ord["status"] != "shipped" || ord["currency"] != "USD" {
@@ -410,7 +410,7 @@ func TestGraphQLSubscriptions(t *testing.T) {
 	}
 
 	vars, _ := json.Marshal(map[string]any{"ns": "default", "id": orderID.String()})
-	q := `subscription($ns: String!, $id: UUID!) { orderChanged(namespace: $ns, id: $id) { status totalCents } }`
+	q := `subscription($ns: Namespace!, $id: UUID!) { orderChanged(namespace: $ns, id: $id) { status totalCents } }`
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		srv.URL+"?query="+url.QueryEscape(q)+"&variables="+url.QueryEscape(string(vars)), nil)
 	if err != nil {

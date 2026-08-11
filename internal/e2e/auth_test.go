@@ -103,10 +103,10 @@ func TestGatewayAuth(t *testing.T) {
 	}
 
 	listQ := `query($ns: Namespace!) { orderSummarys(namespace: $ns) { id namespace } }`
-	placeQ := `mutation($ns: String!, $id: UUID!) { placeOrder(input: {namespace: $ns, aggregateId: $id,
+	placeQ := `mutation($ns: Namespace!, $id: UUID!) { placeOrder(input: {namespace: $ns, aggregateId: $id,
 		customerId: "` + uuid.NewString() + `", currency: "USD",
 		items: [{sku: "x", quantity: 1, priceCents: 5}]}) { status } }`
-	cancelQ := `mutation($ns: String!, $id: UUID!) { cancelOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
+	cancelQ := `mutation($ns: Namespace!, $id: UUID!) { cancelOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
 
 	// no/bad token: rejected before execution
 	if code, _ := do("", listQ, map[string]any{"ns": "acme"}); code != http.StatusUnauthorized {
@@ -147,7 +147,7 @@ func TestGatewayAuth(t *testing.T) {
 	// across the success cases.
 	shipID := uuid.New()
 	dispatchNS("acme", shipID)
-	shipQ := `mutation($ns: String!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
+	shipQ := `mutation($ns: Namespace!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
 	shipVars := map[string]any{"ns": "acme", "id": shipID.String()}
 	if _, res := do("acme-rw", shipQ, shipVars); !strings.Contains(firstError(res), "role") {
 		t.Fatalf("roleless caller shipOrder should fail role gate, got %q", firstError(res))
@@ -274,10 +274,10 @@ func TestGatewayPolicy(t *testing.T) {
 	}
 
 	listQ := `query($ns: Namespace!) { orderSummarys(namespace: $ns) { id namespace } }`
-	placeQ := `mutation($ns: String!, $id: UUID!) { placeOrder(input: {namespace: $ns, aggregateId: $id,
+	placeQ := `mutation($ns: Namespace!, $id: UUID!) { placeOrder(input: {namespace: $ns, aggregateId: $id,
 		customerId: "` + uuid.NewString() + `", currency: "USD",
 		items: [{sku: "x", quantity: 1, priceCents: 5}]}) { status } }`
-	shipQ := `mutation($ns: String!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
+	shipQ := `mutation($ns: Namespace!, $id: UUID!) { shipOrder(input: {namespace: $ns, aggregateId: $id}) { status } }`
 
 	reasonQ := `query($ns: Namespace!) { orderSummarys(namespace: $ns) { id reason } }`
 
