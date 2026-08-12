@@ -210,6 +210,9 @@ type AggregateDef struct {
 	StateSecret []string
 	NewState    func() AggregateState
 	Commands    []*CommandDef
+	// ReadRoles (@role on the aggregate block) gates the generated
+	// GraphQL reads — the singular get and its Changed subscription.
+	ReadRoles []string
 }
 
 type CommandDef struct {
@@ -244,6 +247,9 @@ type RecordDef struct {
 	StateSecret []string
 	NewState    func() any
 	Commands    []*RecordCommandDef
+	// ReadRoles — see AggregateDef.ReadRoles; covers get, list, and the
+	// list subscription.
+	ReadRoles []string
 }
 
 type RecordCommandDef struct {
@@ -337,6 +343,10 @@ type ProjectionDef struct {
 	// Fold, when set (@fold projections), replaces the state's generated
 	// assignment fold with the hand-written one wired through Impl.
 	Fold func(state EntityState, evt *Event) error
+	// EntityReadRoles (@role on the entity block, denormalized onto every
+	// projection feeding it) gates the entity's generated GraphQL reads —
+	// get, list, and both Changed subscriptions.
+	EntityReadRoles []string
 }
 
 func (r *Registry) aggregateDef(name string) *AggregateDef {

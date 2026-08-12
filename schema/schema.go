@@ -36,6 +36,11 @@ type Aggregate struct {
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
+	// ReadRoles (@role) gates the aggregate's generated READS at the
+	// GraphQL gateway — the singular get and its Changed subscription:
+	// the caller must hold one of these roles in the target namespace.
+	// Commands carry their own per-command @role.
+	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
 }
 
 // Upload declares a resumable file upload whose lifecycle dispatches the
@@ -85,6 +90,9 @@ type Record struct {
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
+	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the record's
+	// generated get, list, and list subscription.
+	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
 }
 
 // Entity is a read model maintained by a projection.
@@ -100,6 +108,9 @@ type Entity struct {
 	// `join`); the runtime ignores them — only the GraphQL gateway wires
 	// them up, erroring at compose time if the target isn't mounted.
 	Joins []*Join `yaml:"joins,omitempty" json:"joins,omitempty"`
+	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the entity's
+	// generated get, list, and both Changed subscriptions.
+	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
 }
 
 // Enum is a closed set of string values, declared top-level and
@@ -373,11 +384,21 @@ func (s *Schema) Validate() error {
 			seen[r] = true
 		}
 	}
+	checkReadRoles := func(kind, name string, roles []string) {
+		seen := map[string]bool{}
+		for _, r := range roles {
+			if seen[r] {
+				fail("%s %s declares @role %s twice", kind, name, r)
+			}
+			seen[r] = true
+		}
+	}
 
 	for _, a := range s.Aggregates {
 		if a.State == nil || len(a.State.Properties) == 0 {
 			fail("aggregate %s has no state", a.Name)
 		}
+		checkReadRoles("aggregate", a.Name, a.ReadRoles)
 		for _, c := range a.Commands {
 			checkRoles(c)
 			if len(c.Emits) == 0 {
@@ -397,6 +418,7 @@ func (s *Schema) Validate() error {
 		if r.State == nil || len(r.State.Properties) == 0 {
 			fail("record %s has no state", r.Name)
 		}
+		checkReadRoles("record", r.Name, r.ReadRoles)
 		for _, c := range r.Commands {
 			checkRoles(c)
 			// unlike aggregate commands, record commands may emit nothing:
@@ -532,6 +554,7 @@ func (s *Schema) Validate() error {
 	// meta columns, and @pii is incompatible (sealed ciphertext in a typed
 	// column defeats both — keep PII entities in the doc store).
 	for _, e := range s.Entities {
+		checkReadRoles("entity", e.Name, e.ReadRoles)
 		if !e.Table {
 			continue
 		}

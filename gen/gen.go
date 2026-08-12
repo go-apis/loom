@@ -600,6 +600,9 @@ func loomErrNilEvent(eventType string) error {
 		if sec := a.State.SecretFields(); len(sec) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tStateSecret: %s,\n", stringSlice(sec))
 		}
+		if len(a.ReadRoles) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tReadRoles: %s,\n", stringSlice(a.ReadRoles))
+		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.AggregateState { return &%s{} },\n", a.Name)
 		b.WriteString("\t\t\t\tCommands: []*loom.CommandDef{\n")
 		for _, c := range a.Commands {
@@ -629,6 +632,9 @@ func loomErrNilEvent(eventType string) error {
 		}
 		if sec := r.State.SecretFields(); len(sec) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tStateSecret: %s,\n", stringSlice(sec))
+		}
+		if len(r.ReadRoles) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tReadRoles: %s,\n", stringSlice(r.ReadRoles))
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() any { return &%s{} },\n", r.Name)
 		b.WriteString("\t\t\t\tCommands: []*loom.RecordCommandDef{\n")
@@ -714,6 +720,9 @@ func loomErrNilEvent(eventType string) error {
 		if ent := g.s.FindEntity(p.Entity); ent != nil {
 			if pii := ent.State.PIIFields(); len(pii) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\tPII: %s,\n", stringSlice(pii))
+			}
+			if len(ent.ReadRoles) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\tEntityReadRoles: %s,\n", stringSlice(ent.ReadRoles))
 			}
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)

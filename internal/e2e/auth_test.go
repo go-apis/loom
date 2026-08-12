@@ -187,6 +187,27 @@ func TestGatewayAuth(t *testing.T) {
 	if !seen["acme"] || !seen["globex"] {
 		t.Fatalf("god list missed namespaces: %v", seen)
 	}
+
+	// @role on a READ MODEL (entity CustomerSpend @role(owner)) gates the
+	// generated get and list exactly like command @role gates mutations
+	spendList := `query($ns: Namespace!) { customerSpends(namespace: $ns) { orderCount } }`
+	if _, res := do("acme-owner", spendList, map[string]any{"ns": "acme"}); firstError(res) != "" {
+		t.Fatalf("owner reading gated entity: %s", firstError(res))
+	}
+	if _, res := do("acme-member", spendList, map[string]any{"ns": "acme"}); !strings.Contains(firstError(res), "needs role owner") {
+		t.Fatalf("member reading gated entity should be refused, got %q", firstError(res))
+	}
+	if _, res := do("acme-ro", spendList, map[string]any{"ns": "acme"}); !strings.Contains(firstError(res), "needs role owner") {
+		t.Fatalf("role-less reader on gated entity should be refused, got %q", firstError(res))
+	}
+	// god access with no Roles map keeps its pre-@role meaning on reads too
+	if _, res := do("root", spendList, map[string]any{"ns": "acme"}); firstError(res) != "" {
+		t.Fatalf("root reading gated entity: %s", firstError(res))
+	}
+	spendGet := `query($ns: Namespace!, $id: UUID!) { customerSpend(namespace: $ns, id: $id) { orderCount } }`
+	if _, res := do("acme-member", spendGet, map[string]any{"ns": "acme", "id": uuid.NewString()}); !strings.Contains(firstError(res), "needs role owner") {
+		t.Fatalf("member get on gated entity should be refused, got %q", firstError(res))
+	}
 }
 
 // TestGatewayPolicy proves the Policy hook is the authority when set:
