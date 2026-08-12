@@ -120,8 +120,10 @@ type Decision struct {
 	// field denies the operation outright: the caller re-shapes the
 	// query, partial results never happen.
 	Fields []string
-	// Roles is the command's @role contract — nil for ungated commands
-	// and for reads. Advisory input: the policy decides what it means.
+	// Roles is the operation's @role contract — a command's @role, a
+	// read model's block-level @role, or a custom Field's Roles. Nil for
+	// ungated operations. Advisory input: the policy decides what it
+	// means.
 	Roles []string
 	// Access is what the Auth hook resolved; HasAccess false means an
 	// open mount (no Auth hook and no WithAccess middleware).
@@ -170,6 +172,22 @@ func DefaultPolicy(d Decision) error {
 		}
 		if !a.allows(d.Namespace) {
 			return fmt.Errorf("access denied: namespace %q", d.Namespace)
+		}
+		// @role on a read model (or a custom field's Roles) gates reads
+		// exactly like command @role gates mutations: the caller must
+		// hold one of the roles in the target namespace. God access with
+		// no role model keeps its pre-@role meaning.
+		if len(d.Roles) > 0 {
+			if a.All && len(a.Roles) == 0 {
+				return nil
+			}
+			have := a.roleFor(d.Namespace)
+			for _, want := range d.Roles {
+				if have == want {
+					return nil
+				}
+			}
+			return fmt.Errorf("access denied: %s %q needs role %s in namespace %q", d.Kind, d.Field, strings.Join(d.Roles, " or "), d.Namespace)
 		}
 		return nil
 	}

@@ -156,9 +156,17 @@ func (p *parser) aggregate() error {
 	}
 	agg := &schema.Aggregate{Name: name}
 	for d := range dirs {
-		if d != "snapshot" && d != "table" {
-			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table)", name, d)
+		if d != "snapshot" && d != "table" && d != "role" {
+			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role)", name, d)
 		}
+	}
+	// @role on the block gates the aggregate's generated READS (get +
+	// Changed); commands keep their own per-command @role.
+	if args, ok := dirs["role"]; ok {
+		if len(args) == 0 {
+			return fmt.Errorf("aggregate %s: @role wants at least one role name", name)
+		}
+		agg.ReadRoles = args
 	}
 	if args, ok := dirs["snapshot"]; ok && len(args) == 1 {
 		every, err := strconv.Atoi(args[0])
@@ -216,7 +224,22 @@ func (p *parser) record() error {
 	if err != nil {
 		return err
 	}
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
 	rec := &schema.Record{Name: name}
+	for d := range dirs {
+		if d != "role" {
+			return fmt.Errorf("record %s: unknown directive @%s (records take @role)", name, d)
+		}
+	}
+	if args, ok := dirs["role"]; ok {
+		if len(args) == 0 {
+			return fmt.Errorf("record %s: @role wants at least one role name", name)
+		}
+		rec.ReadRoles = args
+	}
 	if err := p.expect("{"); err != nil {
 		return err
 	}
@@ -449,12 +472,18 @@ func (p *parser) entity() error {
 	}
 	ent := &schema.Entity{Name: name}
 	for d := range dirs {
-		if d != "table" {
-			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table)", name, d)
+		if d != "table" && d != "role" {
+			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table, @role)", name, d)
 		}
 	}
 	if _, ok := dirs["table"]; ok {
 		ent.Table = true
+	}
+	if args, ok := dirs["role"]; ok {
+		if len(args) == 0 {
+			return fmt.Errorf("entity %s: @role wants at least one role name", name)
+		}
+		ent.ReadRoles = args
 	}
 	pl, err := p.entityBlock(ent)
 	if err != nil {

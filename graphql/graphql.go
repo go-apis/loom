@@ -66,6 +66,11 @@ type Field struct {
 	// Resolve returns doc maps for object types (json field names — the
 	// shape Docs produces) or plain values for scalars.
 	Resolve func(ctx context.Context, args map[string]any) (any, error)
+	// Roles (@role-equivalent for hand-written fields) rides the
+	// Decision like a generated read's @role gate: the caller must hold
+	// one of these roles in the target namespace, per DefaultPolicy —
+	// or whatever the custom Policy decides they mean.
+	Roles []string
 }
 
 // Docs renders rows the way generated list resolvers do: doc maps keyed
@@ -290,11 +295,11 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, agg.StateSecret, obj)); err != nil {
+		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, agg.StateSecret, agg.ReadRoles, obj)); err != nil {
 			return err
 		}
 		name, secrets := agg.Name, agg.StateSecret
-		if err := b.addSub(lowerFirst(agg.Name)+"Changed", docChanged(cli, obj, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		if err := b.addSub(lowerFirst(agg.Name)+"Changed", docChanged(cli, obj, agg.ReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
 			state, version, err := cli.Load(ctx, name, ns, id)
 			if err != nil || version == 0 {
 				return nil, err
@@ -317,10 +322,10 @@ func (b *builder) service(cli *loom.Client) error {
 			aggQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 				return cli.QueryEntities(ctx, name, q)
 			}
-			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, aggQuery)); err != nil {
+			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery)); err != nil {
 				return err
 			}
-			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, aggQuery)); err != nil {
+			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery)); err != nil {
 				return err
 			}
 		}
@@ -331,7 +336,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		recSecrets := rec.StateSecret
-		if err := b.addQuery(lowerFirst(rec.Name), docGet(obj, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+		if err := b.addQuery(lowerFirst(rec.Name), docGet(obj, rec.ReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Record(ctx, rec.Name, ns, id)
 			if err != nil || state == nil {
 				return state, err
@@ -346,10 +351,10 @@ func (b *builder) service(cli *loom.Client) error {
 		recQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryRecords(ctx, recName, q)
 		}
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, recQuery)); err != nil {
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, recQuery)); err != nil {
+		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery)); err != nil {
 			return err
 		}
 		for _, def := range rec.Commands {
@@ -374,7 +379,7 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(entity), docGet(obj, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+		if err := b.addQuery(lowerFirst(entity), docGet(obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
 			if state == nil {
 				return nil, err
@@ -386,13 +391,13 @@ func (b *builder) service(cli *loom.Client) error {
 		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryEntities(ctx, entity, q)
 		}
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, entityQuery)); err != nil {
+		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, entityQuery)); err != nil {
+		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
 			if err != nil || state == nil {
 				return nil, err
@@ -417,7 +422,7 @@ func (b *builder) addSub(name string, f *gql.Field) error {
 // (once it exists), then a fresh copy on every change — the same
 // semantics as the services' SSE doc streams, driven by the same log
 // wake-ups. graphql-go re-executes the selection per emitted payload.
-func docChanged(cli *loom.Client, obj *gql.Object, load func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error)) *gql.Field {
+func docChanged(cli *loom.Client, obj *gql.Object, roles []string, load func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(obj),
 		Args: nsIDArgs(),
@@ -425,7 +430,7 @@ func docChanged(cli *loom.Client, obj *gql.Object, load func(ctx context.Context
 			return p.Source, nil // the payload docSubscribe emitted
 		},
 		Subscribe: func(p gql.ResolveParams) (any, error) {
-			ns, id, err := parseNsID(p)
+			ns, id, err := parseNsID(p, roles)
 			if err != nil {
 				return nil, err
 			}
@@ -543,7 +548,7 @@ func (b *builder) rootField(f Field) error {
 	default:
 		return fmt.Errorf("graphql: field %s: On must be Query or Mutation, got %q", f.Name, f.On)
 	}
-	name, resolve := f.Name, f.Resolve
+	name, resolve, roles := f.Name, f.Resolve, f.Roles
 	if resolve == nil {
 		return fmt.Errorf("graphql: field %s has no Resolve", name)
 	}
@@ -552,7 +557,7 @@ func (b *builder) rootField(f Field) error {
 		Args: args,
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			ns, _ := p.Args["namespace"].(string)
-			if err := decide(p.Context, Decision{Kind: kind, Field: name, Namespace: ns, Args: p.Args, Fields: selectedFields(p)}); err != nil {
+			if err := decide(p.Context, Decision{Kind: kind, Field: name, Namespace: ns, Args: p.Args, Fields: selectedFields(p), Roles: roles}); err != nil {
 				return nil, err
 			}
 			return resolve(p.Context, p.Args)
@@ -732,12 +737,12 @@ func selectedFields(p gql.ResolveParams) []string {
 	return out
 }
 
-func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
+func parseNsID(p gql.ResolveParams, roles []string) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
 	if ns == AllNamespaces {
 		return "", uuid.Nil, fmt.Errorf(`"*" is for lists — fetching one doc needs its namespace`)
 	}
-	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args, Fields: selectedFields(p)}); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args, Fields: selectedFields(p), Roles: roles}); err != nil {
 		return "", uuid.Nil, err
 	}
 	raw := fmt.Sprint(p.Args["id"])
@@ -748,12 +753,12 @@ func parseNsID(p gql.ResolveParams) (string, uuid.UUID, error) {
 	return ns, id, nil
 }
 
-func aggregateGet(cli *loom.Client, name string, secrets []string, obj *gql.Object) *gql.Field {
+func aggregateGet(cli *loom.Client, name string, secrets []string, roles []string, obj *gql.Object) *gql.Field {
 	return &gql.Field{
 		Type: obj,
 		Args: nsIDArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			ns, id, err := parseNsID(p)
+			ns, id, err := parseNsID(p, roles)
 			if err != nil {
 				return nil, err
 			}
@@ -768,12 +773,12 @@ func aggregateGet(cli *loom.Client, name string, secrets []string, obj *gql.Obje
 	}
 }
 
-func docGet(obj *gql.Object, load func(ctx context.Context, ns string, id uuid.UUID) (any, error)) *gql.Field {
+func docGet(obj *gql.Object, roles []string, load func(ctx context.Context, ns string, id uuid.UUID) (any, error)) *gql.Field {
 	return &gql.Field{
 		Type: obj,
 		Args: nsIDArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			ns, id, err := parseNsID(p)
+			ns, id, err := parseNsID(p, roles)
 			if err != nil {
 				return nil, err
 			}
@@ -796,10 +801,10 @@ func listArgs() gql.FieldConfigArgument {
 	}
 }
 
-func queryFromArgs(p gql.ResolveParams) (loom.Query, error) {
+func queryFromArgs(p gql.ResolveParams, roles []string) (loom.Query, error) {
 	args := p.Args
 	ns := fmt.Sprint(args["namespace"])
-	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args, Fields: selectedFields(p)}); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args, Fields: selectedFields(p), Roles: roles}); err != nil {
 		return loom.Query{}, err
 	}
 	if ns == AllNamespaces {
@@ -844,12 +849,12 @@ func rowDocs(rows []loom.Row) []map[string]any {
 	return out
 }
 
-func docList(obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			q, err := queryFromArgs(p)
+			q, err := queryFromArgs(p, roles)
 			if err != nil {
 				return nil, err
 			}
@@ -867,7 +872,7 @@ func docList(obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]l
 // Requery-and-diff per log wake-up; no delta bookkeeping, so rows
 // entering and leaving the filter just work. Sized for UI tables, not
 // unbounded feeds — use where/limit.
-func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -875,7 +880,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, query func(ctx context.Conte
 			return p.Source, nil
 		},
 		Subscribe: func(p gql.ResolveParams) (any, error) {
-			q, err := queryFromArgs(p)
+			q, err := queryFromArgs(p, roles)
 			if err != nil {
 				return nil, err
 			}

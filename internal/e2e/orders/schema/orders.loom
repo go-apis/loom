@@ -96,7 +96,7 @@ projection orderSummary -> OrderSummary {
 // assignment folds can't express. The declared joins fan back out: this
 // row's id IS the customer id, so list joins collect by customer_id —
 // `orders` locally, `invoices` across the bus in billing.
-entity CustomerSpend {
+entity CustomerSpend @role(owner) {
   order_count: int
   spend_cents: int
   join orders -> [OrderSummary] via customer_id

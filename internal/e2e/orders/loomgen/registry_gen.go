@@ -238,10 +238,11 @@ func NewRegistry(impl Impl) *loom.Registry {
 		},
 		Projections: []*loom.ProjectionDef{
 			{
-				Name:     "customerSpend",
-				Entity:   "CustomerSpend",
-				Events:   []string{"OrderPlaced"},
-				NewState: func() loom.EntityState { return &CustomerSpend{} },
+				Name:            "customerSpend",
+				Entity:          "CustomerSpend",
+				Events:          []string{"OrderPlaced"},
+				EntityReadRoles: []string{"owner"},
+				NewState:        func() loom.EntityState { return &CustomerSpend{} },
 				EntityID: func(evt *loom.Event) uuid.UUID {
 					switch e := evt.Data.(type) {
 					case *OrderPlaced:

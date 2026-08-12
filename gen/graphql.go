@@ -127,28 +127,31 @@ type UploadSession {
 
 	var queries, subscriptions []string
 	for _, a := range s.Aggregates {
-		queries = append(queries, fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s", lowerFirst(a.Name), a.Name))
-		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!", lowerFirst(a.Name), a.Name))
+		gate := rolesDirective(a.ReadRoles)
+		queries = append(queries, fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s%s", lowerFirst(a.Name), a.Name, gate))
+		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!%s", lowerFirst(a.Name), a.Name, gate))
 		if a.Table {
 			// @table: the state mirror serves entity-style list reads
-			queries = append(queries, fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(a.Name), a.Name))
-			subscriptions = append(subscriptions, fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(a.Name), a.Name))
+			queries = append(queries, fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(a.Name), a.Name, gate))
+			subscriptions = append(subscriptions, fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(a.Name), a.Name, gate))
 		}
 	}
 	for _, r := range s.Records {
+		gate := rolesDirective(r.ReadRoles)
 		queries = append(queries,
-			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s", lowerFirst(r.Name), r.Name),
-			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
+			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s%s", lowerFirst(r.Name), r.Name, gate),
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(r.Name), r.Name, gate))
 		subscriptions = append(subscriptions,
-			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(r.Name), r.Name))
+			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(r.Name), r.Name, gate))
 	}
 	for _, e := range s.Entities {
+		gate := rolesDirective(e.ReadRoles)
 		queries = append(queries,
-			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s", lowerFirst(e.Name), e.Name),
-			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
+			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s%s", lowerFirst(e.Name), e.Name, gate),
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(e.Name), e.Name, gate))
 		subscriptions = append(subscriptions,
-			fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!", lowerFirst(e.Name), e.Name),
-			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
+			fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!%s", lowerFirst(e.Name), e.Name, gate),
+			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(e.Name), e.Name, gate))
 	}
 
 	writeBlock(&b, "type Mutation", mutations)
@@ -236,19 +239,32 @@ func gqlTypeCore(p *schema.Payload, refSuffix string, enums map[string]bool) str
 // roleDirective renders a command's @role gate as the SDL directive, or
 // "" when the command is ungated.
 func roleDirective(c *schema.Command) string {
-	if len(c.Roles) == 0 {
+	return rolesDirective(c.Roles)
+}
+
+// rolesDirective renders any @role list (command or read gate).
+func rolesDirective(roles []string) string {
+	if len(roles) == 0 {
 		return ""
 	}
-	quoted := make([]string, len(c.Roles))
-	for i, r := range c.Roles {
+	quoted := make([]string, len(roles))
+	for i, r := range roles {
 		quoted[i] = strconv.Quote(r)
 	}
 	return fmt.Sprintf(" @role(anyOf: [%s])", strings.Join(quoted, ", "))
 }
 
-// usesRoles reports whether any command declares @role.
+// usesRoles reports whether any command or read model declares @role.
 func usesRoles(s *schema.Schema) bool {
+	for _, e := range s.Entities {
+		if len(e.ReadRoles) > 0 {
+			return true
+		}
+	}
 	for _, a := range s.Aggregates {
+		if len(a.ReadRoles) > 0 {
+			return true
+		}
 		for _, c := range a.Commands {
 			if len(c.Roles) > 0 {
 				return true
@@ -256,6 +272,9 @@ func usesRoles(s *schema.Schema) bool {
 		}
 	}
 	for _, r := range s.Records {
+		if len(r.ReadRoles) > 0 {
+			return true
+		}
 		for _, c := range r.Commands {
 			if len(c.Roles) > 0 {
 				return true
