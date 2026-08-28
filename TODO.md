@@ -91,6 +91,13 @@ parked in favor of ten99).
   POST /projections/{name}/rebuild + a console button.
 - Foreign-event projections (would collapse ten99's RecipientMirror
   aggregate+process into a plain projection).
+- Series follow-ons: `@rollup` (continuous aggregates on TimescaleDB,
+  scheduled rollup tables elsewhere), `@retain`/`@compress` policy
+  directives, a console tab (row counts + latest observation per
+  series), gateway list subscriptions if a UI ever wants live ticks.
+  v1 (schema decl, hypertable-or-BRIN Migrate, idempotent AppendSeries,
+  range + date_trunc bucket queries, HTTP + gateway surface) landed on
+  the `series` branch.
 - TypeScript target for the schema (payloads are already JSON Schema).
 - Gateway auth follow-ons: rate limits, per-field read masking (@pii
   fields for non-god callers?), playground header editor for tokens.

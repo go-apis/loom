@@ -102,6 +102,41 @@ type UploadSession {
 	for _, e := range s.Entities {
 		gqlType(&b, "type", e.Name, e.State, enums)
 	}
+	if len(s.Series) > 0 {
+		// the shared series shapes: bucketed aggregation rows and the
+		// append result
+		b.WriteString(`enum SeriesBucketInterval {
+  HOUR
+  DAY
+  WEEK
+  MONTH
+  YEAR
+}
+
+type SeriesBucket {
+  t: Time!
+  group: Map
+  count: Long!
+  avg: Float
+  min: Float
+  max: Float
+  last: Float
+}
+
+type SeriesAppendResult {
+  inserted: Long!
+  total: Long!
+}
+
+`)
+	}
+	for _, sr := range s.Series {
+		// row output fields stay nullable like entity rows (a column added
+		// later is NULL for older rows); the append input carries the
+		// schema's required markers
+		gqlType(&b, "type", sr.Name, &schema.Payload{Type: "object", Properties: sr.State.Properties}, enums)
+		gqlType(&b, "input", sr.Name+"Input", sr.State, enums)
+	}
 
 	var mutations []string
 	addCommands := func(cmds []*schema.Command) {
@@ -149,6 +184,14 @@ type UploadSession {
 		subscriptions = append(subscriptions,
 			fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!", lowerFirst(e.Name), e.Name),
 			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(e.Name), e.Name))
+	}
+
+	for _, sr := range s.Series {
+		queries = append(queries,
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], since: Time, until: Time, order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(sr.Name), sr.Name),
+			fmt.Sprintf("  %sBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!", lowerFirst(sr.Name)))
+		mutations = append(mutations,
+			fmt.Sprintf("  append%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesAppendResult!", sr.Name, sr.Name))
 	}
 
 	writeBlock(&b, "type Mutation", mutations)

@@ -7,8 +7,8 @@ covers what's implemented and the decisions embedded in the code.
 
 ```
 schema      := "service" IDENT decl*
-decl        := aggregate | record | entity | event | consume | policy
-             | process | projection | type | upcast
+decl        := aggregate | record | entity | series | event | consume
+             | policy | process | projection | type | upcast
 aggregate   := "aggregate" IDENT directives? "{" (state | command | event | upload)* "}"
 record      := "record" IDENT "{" (state | command | event | upload)* "}"
 state       := "state" fields
@@ -26,6 +26,8 @@ on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
 type        := "type" IDENT fields
 entity      := "entity" IDENT "@table"? fields
+series      := "series" IDENT "@time" "(" IDENT ")" "@dim" "(" identList ")"
+               ("@key" "(" identList ")")? fields
 fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
 builtin     := string int float bool uuid timestamp bytes any map file
@@ -51,6 +53,11 @@ Rules enforced at parse/validate time:
   events cross the bus in plaintext (keep PII on a private event — the
   ten99 private/published pair pattern), foreign events belong to another
   service's keys, and named types would smuggle PII anywhere
+- series fields: `@time` names a required timestamp field; every `@dim`
+  and `@key` field must be a required scalar (they become NOT NULL
+  identity columns); `@pii`/`@secret` are rejected (typed columns, and a
+  bulk-appended observation has no stream to key a DEK on); the name
+  shares the query surface with aggregates, records, and entities
 - `upcast X @from(n)` declares a hand-written migration hop n → n+1 for
   stored events behind the current `@v`; hops are code-first (raw JSON in,
   raw JSON of the next version out, generated `EventUpcasts` interface +
@@ -185,6 +192,25 @@ generated switches, folds from generated assignments.
   TimescaleDB dependency (unavailable on Cloud SQL); if volume ever
   demands it, native partitioning by `global_seq` range and rollup tables
   are the escalation path, not an engine change.
+- **Series** (`series.go`): the third persistence shape — append-only
+  observations (price ticks, readings, scraped sales) at volumes the
+  log must not carry, and with none of its guarantees needed: no
+  commands, no events, no reactions, no outbox, no global_seq traffic.
+  `AppendSeries` bulk-inserts with `ON CONFLICT DO NOTHING` on
+  `(service, namespace, dims-or-keys, time)`, so any batch replays
+  idempotently — the crawler's retry story is the insert itself.
+  Queries are the raw time-range read (filters on real columns) and
+  `date_trunc` buckets (count/avg/min/max/last, grouped by dims) —
+  date_trunc rather than time_bucket so the SQL is engine-portable.
+  The engine question the log settled stays settled here: the
+  declaration is engine-neutral, and Migrate *detects* TimescaleDB —
+  extension present, the table becomes a hypertable (`create_hypertable`,
+  `migrate_data => TRUE`); absent (Cloud SQL), a BRIN time index rides
+  the same escalation path as the log. Series data is NOT rebuildable
+  (the table is the only copy), which is why the additive column diff
+  reports incompatible drift for hand migration instead of the
+  drop-Migrate-Rebuild remediation, and why Reset's sweep is the only
+  thing that ever empties one.
 - **HTTP API** (`api.go` / `query.go`): the registry drives a complete
   mounted surface — command dispatch, filtered entity/record queries
   (validated field names, parameterized values, typed numeric/bool

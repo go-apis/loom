@@ -178,7 +178,10 @@ func (c *Client) Migrate(ctx context.Context) error {
 	if _, err := c.db.Exec(ctx, ddl); err != nil {
 		return err
 	}
-	return c.migrateTables(ctx)
+	if err := c.migrateTables(ctx); err != nil {
+		return err
+	}
+	return c.migrateSeries(ctx)
 }
 
 type storedEvent struct {

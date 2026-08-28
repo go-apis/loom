@@ -126,6 +126,7 @@ type Registry struct {
 	Service     string
 	Aggregates  []*AggregateDef
 	Records     []*RecordDef
+	Series      []*SeriesDef
 	Events      []*EventDef
 	Policies    []*ReactorDef
 	Processes   []*ReactorDef
@@ -197,6 +198,53 @@ func JSONValue(v any) any {
 		return fmt.Errorf("loom: JSONValue: %w", err)
 	}
 	return json.RawMessage(raw)
+}
+
+// SeriesRow is implemented by generated series row structs.
+type SeriesRow interface {
+	LoomSeries() string
+}
+
+// SeriesDef backs a `series`: append-only time-series observations in a
+// typed per-series table. Rows never touch the log, the outbox, or the
+// global sequence — AppendSeries writes them directly with ON CONFLICT
+// DO NOTHING on the identity columns, so re-appending a batch converges.
+// Unlike @table read models, series data is NOT rebuildable: the table
+// is the only copy.
+type SeriesDef struct {
+	Name string
+	// Table is the SQL table name (loom_s_<service>_<series>).
+	Table string
+	// DDL is the full CREATE TABLE IF NOT EXISTS statement, also written
+	// to loomgen/tables_gen.sql for review.
+	DDL string
+	// Time is the timestamp column rows are ranged, bucketed, and (on
+	// TimescaleDB) partitioned on.
+	Time string
+	// Dims are the dimension columns in declared order — the filter and
+	// group axes.
+	Dims []string
+	// Keys are the identity columns when @key overrides the dims; empty
+	// means identity is (Dims, Time).
+	Keys []string
+	// Columns lists every declared column in order, excluding the meta
+	// columns (service, namespace).
+	Columns []TableColumn
+	// Required names the schema-required fields (snake case) — the
+	// gateway serves exactly these as NonNull append inputs.
+	Required []string
+	New      func() SeriesRow
+	// Values extracts the column values from a row, aligned with Columns.
+	Values func(row SeriesRow) []any
+}
+
+// IdentityColumns returns the columns (before the time column) that
+// identify a row: Keys when declared, Dims otherwise.
+func (d *SeriesDef) IdentityColumns() []string {
+	if len(d.Keys) > 0 {
+		return d.Keys
+	}
+	return d.Dims
 }
 
 type AggregateDef struct {
@@ -383,6 +431,15 @@ func (r *Registry) tableFor(entity string) *TableDef {
 	for _, t := range r.Tables {
 		if t.Entity == entity {
 			return t
+		}
+	}
+	return nil
+}
+
+func (r *Registry) seriesDef(name string) *SeriesDef {
+	for _, s := range r.Series {
+		if s.Name == name {
+			return s
 		}
 	}
 	return nil

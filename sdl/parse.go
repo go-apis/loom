@@ -90,6 +90,8 @@ func (p *parser) schema() error {
 			err = p.record()
 		case "entity":
 			err = p.entity()
+		case "series":
+			err = p.series()
 		case "event":
 			_, err = p.event()
 		case "consume":
@@ -462,6 +464,49 @@ func (p *parser) entity() error {
 	}
 	ent.State = pl
 	p.out.Entities = append(p.out.Entities, ent)
+	return nil
+}
+
+// series parses an append-only time-series declaration — observations,
+// not decisions. @time names the timestamp field, @dim the dimension
+// fields (identity + group axes, in order), @key optionally overrides
+// row identity when the dims don't identify a row:
+//
+//	series PricePoint @time(recorded_at) @dim(product_id, grade) {
+//	  product_id:  uuid!
+//	  grade:       string!
+//	  recorded_at: timestamp!
+//	  price_cents: int!
+//	}
+func (p *parser) series() error {
+	p.next()
+	name, err := p.ident()
+	if err != nil {
+		return err
+	}
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
+	sr := &schema.Series{Name: name}
+	for d := range dirs {
+		if d != "time" && d != "dim" && d != "key" {
+			return fmt.Errorf("series %s: unknown directive @%s (series take @time, @dim, @key)", name, d)
+		}
+	}
+	if args := dirs["time"]; len(args) == 1 {
+		sr.Time = args[0]
+	} else if len(args) > 1 {
+		return fmt.Errorf("series %s: @time wants exactly one field", name)
+	}
+	sr.Dims = dirs["dim"]
+	sr.Keys = dirs["key"]
+	pl, err := p.fieldBlock()
+	if err != nil {
+		return err
+	}
+	sr.State = pl
+	p.out.Series = append(p.out.Series, sr)
 	return nil
 }
 

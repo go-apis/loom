@@ -37,6 +37,24 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 	for _, e := range s.Entities {
 		components[e.Name] = oaSchema(e.State)
 	}
+	for _, sr := range s.Series {
+		components[sr.Name] = oaSchema(sr.State)
+	}
+	if len(s.Series) > 0 {
+		components["SeriesBucket"] = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"t":     map[string]any{"type": "string", "format": "date-time"},
+				"group": map[string]any{"type": "object"},
+				"count": map[string]any{"type": "integer", "format": "int64"},
+				"avg":   map[string]any{"type": "number", "nullable": true},
+				"min":   map[string]any{"type": "number", "nullable": true},
+				"max":   map[string]any{"type": "number", "nullable": true},
+				"last":  map[string]any{"type": "number", "nullable": true},
+			},
+			"required": []string{"t", "count"},
+		}
+	}
 	components["DispatchResult"] = map[string]any{
 		"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}},
 	}
@@ -116,6 +134,10 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 		if a.Table { // the state mirror lists like an entity
 			paths["/entities/"+a.Name] = listPath("list"+a.Name+"s", a.Name)
 		}
+	}
+	for _, sr := range s.Series {
+		paths["/series/"+sr.Name] = seriesPath(sr)
+		paths["/series/"+sr.Name+"/buckets"] = seriesBucketsPath(sr)
 	}
 
 	if hasUploads(s) {
@@ -229,6 +251,88 @@ func oaSchema(p *schema.Payload) map[string]any {
 		out["required"] = req
 	}
 	return out
+}
+
+// seriesPath renders a series' append + range-read surface.
+func seriesPath(sr *schema.Series) map[string]any {
+	timeParam := func(name string) map[string]any {
+		return map[string]any{"name": name, "in": "query", "schema": map[string]any{"type": "string", "format": "date-time"}}
+	}
+	item := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"namespace": map[string]any{"type": "string"},
+			"data":      ref(sr.Name),
+		},
+	}
+	return map[string]any{
+		"post": map[string]any{
+			"operationId": "append" + sr.Name + "s",
+			"requestBody": map[string]any{"required": true, "content": jsonContent(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"namespace": map[string]any{"type": "string"},
+					"rows":      map[string]any{"type": "array", "items": ref(sr.Name)},
+				},
+				"required": []string{"namespace", "rows"},
+			})},
+			"responses": map[string]any{
+				"200": responseOf("appended (inserted counts rows not already present)", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"inserted": map[string]any{"type": "integer", "format": "int64"},
+						"total":    map[string]any{"type": "integer", "format": "int64"},
+					},
+				}),
+				"400": responseOf("bad request", ref("Error")),
+			},
+		},
+		"get": map[string]any{
+			"operationId": "list" + sr.Name + "s",
+			"parameters": []any{
+				map[string]any{"name": "namespace", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
+				timeParam("since"), timeParam("until"),
+				map[string]any{"name": "order", "in": "query", "schema": map[string]any{"type": "string", "enum": []string{"asc", "desc"}}},
+				map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer"}},
+				map[string]any{"name": "offset", "in": "query", "schema": map[string]any{"type": "integer"}},
+			},
+			"responses": map[string]any{
+				"200": responseOf("results", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"items": map[string]any{"type": "array", "items": item},
+					},
+				}),
+			},
+		},
+	}
+}
+
+func seriesBucketsPath(sr *schema.Series) map[string]any {
+	timeParam := func(name string) map[string]any {
+		return map[string]any{"name": name, "in": "query", "schema": map[string]any{"type": "string", "format": "date-time"}}
+	}
+	return map[string]any{
+		"get": map[string]any{
+			"operationId": "bucket" + sr.Name + "s",
+			"parameters": []any{
+				map[string]any{"name": "namespace", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "bucket", "in": "query", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"hour", "day", "week", "month", "year"}}},
+				map[string]any{"name": "value", "in": "query", "required": true, "schema": map[string]any{"type": "string"}, "description": "numeric column to aggregate"},
+				map[string]any{"name": "by", "in": "query", "schema": map[string]any{"type": "string"}, "description": "comma-separated dim columns to group by"},
+				timeParam("since"), timeParam("until"),
+				map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer"}},
+			},
+			"responses": map[string]any{
+				"200": responseOf("bucketed aggregates", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"items": map[string]any{"type": "array", "items": ref("SeriesBucket")},
+					},
+				}),
+			},
+		},
+	}
 }
 
 func hasUploads(s *schema.Schema) bool {

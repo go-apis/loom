@@ -121,6 +121,43 @@ func NewRegistry(impl Impl) *loom.Registry {
 			},
 		},
 		Records: []*loom.RecordDef{},
+		Series: []*loom.SeriesDef{
+			{
+				Name:  "SkuPrice",
+				Table: "loom_s_orders_sku_price",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_sku_price (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"note" text,
+	"observed_at" timestamptz NOT NULL,
+	"price_cents" bigint,
+	"sku" text NOT NULL,
+	"source" text NOT NULL,
+	PRIMARY KEY (service, namespace, "sku", "source", "observed_at")
+);`,
+				Time: "observed_at",
+				Dims: []string{"sku", "source"},
+				Columns: []loom.TableColumn{
+					{Name: "note", Type: "text"},
+					{Name: "observed_at", Type: "timestamptz"},
+					{Name: "price_cents", Type: "bigint"},
+					{Name: "sku", Type: "text"},
+					{Name: "source", Type: "text"},
+				},
+				Required: []string{"observed_at", "price_cents", "sku", "source"},
+				New:      func() loom.SeriesRow { return &SkuPrice{} },
+				Values: func(row loom.SeriesRow) []any {
+					e := row.(*SkuPrice)
+					return []any{
+						e.Note,
+						e.ObservedAt,
+						e.PriceCents,
+						e.Sku,
+						e.Source,
+					}
+				},
+			},
+		},
 		Events: []*loom.EventDef{
 			{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
 			{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},

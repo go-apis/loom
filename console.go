@@ -36,7 +36,16 @@ type registryDoc struct {
 	Policies    []registryReact  `json:"policies"`
 	Processes   []registryReact  `json:"processes"`
 	Projections []registryProj   `json:"projections"`
+	Series      []registrySeries `json:"series,omitempty"`
 	Uploads     []registryUpload `json:"uploads,omitempty"`
+}
+
+type registrySeries struct {
+	Name  string   `json:"name"`
+	Table string   `json:"table"`
+	Time  string   `json:"time"`
+	Dims  []string `json:"dims"`
+	Keys  []string `json:"keys,omitempty"`
 }
 
 type registryUpload struct {
@@ -135,6 +144,9 @@ func (c *Client) apiRegistry(w http.ResponseWriter, r *http.Request) {
 	doc.Processes = react(c.reg.Processes)
 	for _, p := range c.reg.Projections {
 		doc.Projections = append(doc.Projections, registryProj{Name: p.Name, Entity: p.Entity, Events: p.Events, PII: p.PII})
+	}
+	for _, sr := range c.reg.Series {
+		doc.Series = append(doc.Series, registrySeries{Name: sr.Name, Table: sr.Table, Time: sr.Time, Dims: sr.Dims, Keys: sr.Keys})
 	}
 	for _, u := range c.reg.Uploads {
 		doc.Uploads = append(doc.Uploads, registryUpload{Name: u.Name, Owner: u.Owner, OnStarted: u.OnStarted, OnUploaded: u.OnUploaded})

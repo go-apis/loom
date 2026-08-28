@@ -17,6 +17,7 @@ type Schema struct {
 	Aggregates  []*Aggregate  `yaml:"aggregates,omitempty" json:"aggregates,omitempty"`
 	Records     []*Record     `yaml:"records,omitempty" json:"records,omitempty"`
 	Entities    []*Entity     `yaml:"entities,omitempty" json:"entities,omitempty"`
+	Series      []*Series     `yaml:"series,omitempty" json:"series,omitempty"`
 	Events      []*Event      `yaml:"events,omitempty" json:"events,omitempty"`
 	Policies    []*Reactor    `yaml:"policies,omitempty" json:"policies,omitempty"`
 	Processes   []*Reactor    `yaml:"processes,omitempty" json:"processes,omitempty"`
@@ -100,6 +101,40 @@ type Entity struct {
 	// `join`); the runtime ignores them — only the GraphQL gateway wires
 	// them up, erroring at compose time if the target isn't mounted.
 	Joins []*Join `yaml:"joins,omitempty" json:"joins,omitempty"`
+}
+
+// Series is the third persistence shape, beside aggregate (decisions,
+// event-sourced) and record (state-of-record): append-only time-series
+// observations — facts recorded about the outside world (price ticks,
+// sensor readings, scraped sales), not domain decisions. Rows are
+// appended directly in bulk — never through the log, the outbox, or the
+// global sequence — into a typed per-series table, deduplicated on
+// (dims-or-keys, time), and queried by time range or bucket. On a
+// database with the timescaledb extension the table becomes a
+// hypertable; on plain Postgres it falls back to a BRIN time index —
+// the declaration is engine-neutral.
+type Series struct {
+	Name string `yaml:"name" json:"name"`
+	// Time (@time) names the timestamp field rows are ranged, bucketed,
+	// and partitioned on.
+	Time string `yaml:"time" json:"time"`
+	// Dims (@dim) are the dimension fields: the identity axes rows are
+	// deduplicated and grouped on, in declared order.
+	Dims []string `yaml:"dims" json:"dims"`
+	// Keys (@key) overrides row identity when the dims don't identify a
+	// row — e.g. an external listing id. Identity is (keys, time) when
+	// set, (dims, time) otherwise; the time field is always part of it.
+	Keys  []string `yaml:"keys,omitempty" json:"keys,omitempty"`
+	State *Payload `yaml:"state" json:"state"`
+}
+
+// IdentityFields returns the fields (before the time field) that
+// identify a row: @key when declared, the dims otherwise.
+func (s *Series) IdentityFields() []string {
+	if len(s.Keys) > 0 {
+		return s.Keys
+	}
+	return s.Dims
 }
 
 // Enum is a closed set of string values, declared top-level and
@@ -272,6 +307,15 @@ func (s *Schema) FindEntity(name string) *Entity {
 	return nil
 }
 
+func (s *Schema) FindSeries(name string) *Series {
+	for _, sr := range s.Series {
+		if sr.Name == name {
+			return sr
+		}
+	}
+	return nil
+}
+
 func (s *Schema) FindType(name string) *NamedType {
 	for _, t := range s.Types {
 		if t.Name == name {
@@ -324,6 +368,9 @@ func (s *Schema) Sort() {
 		sort.Slice(r.Uploads, func(i, j int) bool { return r.Uploads[i].Name < r.Uploads[j].Name })
 	}
 	sort.Slice(s.Entities, func(i, j int) bool { return s.Entities[i].Name < s.Entities[j].Name })
+	// a series' dim/key order is meaningful (it is the primary-key column
+	// order), so only the declarations themselves sort
+	sort.Slice(s.Series, func(i, j int) bool { return s.Series[i].Name < s.Series[j].Name })
 	sort.Slice(s.Events, func(i, j int) bool { return s.Events[i].Name < s.Events[j].Name })
 	for _, e := range s.Events {
 		sort.Ints(e.Upcasts)
@@ -590,6 +637,85 @@ func (s *Schema) Validate() error {
 		}
 	}
 
+	// series: append-only observations in typed columns. The time field
+	// and every dim/key become NOT NULL identity columns, so they must be
+	// required scalars; @pii is incompatible for the @table reason (and a
+	// bulk-appended observation has no stream to key a DEK on); the name
+	// becomes a query surface, so it must be unique across shapes.
+	for i, sr := range s.Series {
+		for _, other := range s.Series[i+1:] {
+			if other.Name == sr.Name {
+				fail("series %s declared twice", sr.Name)
+			}
+		}
+		for _, a := range s.Aggregates {
+			if a.Name == sr.Name {
+				fail("series %s collides with aggregate %s — both become a query surface", sr.Name, a.Name)
+			}
+		}
+		for _, r := range s.Records {
+			if r.Name == sr.Name {
+				fail("series %s collides with record %s — both become a query surface", sr.Name, r.Name)
+			}
+		}
+		for _, e := range s.Entities {
+			if e.Name == sr.Name {
+				fail("series %s collides with entity %s — both become a query surface", sr.Name, e.Name)
+			}
+		}
+		if sr.State == nil || len(sr.State.Properties) == 0 {
+			fail("series %s has no fields", sr.Name)
+			continue
+		}
+		props := payloadProps(sr.State)
+		required := map[string]bool{}
+		for _, r := range sr.State.Required {
+			required[r] = true
+		}
+		for name := range props {
+			switch name {
+			case "service", "namespace":
+				fail("series %s: field %s collides with a meta column of its table — rename the field", sr.Name, name)
+			}
+		}
+		if pii := sr.State.PIIFields(); len(pii) > 0 {
+			fail("series %s: @pii/@secret fields cannot live in a series — typed columns cannot hold sealed values, and bulk-appended observations have no stream to key on", sr.Name)
+		}
+		if sr.Time == "" {
+			fail("series %s needs @time(field) — the timestamp rows are ranged and bucketed on", sr.Name)
+		} else if f := props[sr.Time]; f == nil {
+			fail("series %s: @time(%s) is not a field", sr.Name, sr.Time)
+		} else if f.Type != "string" || f.Format != "date-time" || f.Nullable || !required[sr.Time] {
+			fail("series %s: @time(%s) must be a required timestamp field", sr.Name, sr.Time)
+		}
+		if len(sr.Dims) == 0 {
+			fail("series %s needs @dim(field, ...) — at least one dimension to group and dedup on", sr.Name)
+		}
+		checkIdent := func(kind string, fields []string) {
+			seen := map[string]bool{}
+			for _, d := range fields {
+				if seen[d] {
+					fail("series %s: @%s names %s twice", sr.Name, kind, d)
+				}
+				seen[d] = true
+				if d == sr.Time {
+					fail("series %s: @%s(%s) duplicates @time — the time field is always part of row identity", sr.Name, kind, d)
+					continue
+				}
+				f := props[d]
+				if f == nil {
+					fail("series %s: @%s(%s) is not a field", sr.Name, kind, d)
+					continue
+				}
+				if !scalarColumn(s, f) || f.Nullable || !required[d] {
+					fail("series %s: @%s(%s) must be a required scalar field (string, uuid, timestamp, int, float, bool, or an enum)", sr.Name, kind, d)
+				}
+			}
+		}
+		checkIdent("dim", sr.Dims)
+		checkIdent("key", sr.Keys)
+	}
+
 	for _, e := range s.Entities {
 		for _, j := range e.Joins {
 			if payloadProps(e.State)[j.Field] != nil {
@@ -753,6 +879,9 @@ func (s *Schema) Validate() error {
 	for _, e := range s.Entities {
 		walk(e.State, true, "entity "+e.Name)
 	}
+	for _, sr := range s.Series {
+		walk(sr.State, true, "series "+sr.Name)
+	}
 	for _, e := range s.Events {
 		walk(e.Payload, true, "event "+e.Name)
 	}
@@ -768,6 +897,24 @@ func (s *Schema) Validate() error {
 		return fmt.Errorf("schema %s:\n  - %s", s.Service, joinLines(errs))
 	}
 	return nil
+}
+
+// scalarColumn reports whether a field compiles to a real comparable SQL
+// column (not jsonb) — the shape series identity fields must have.
+func scalarColumn(s *Schema, pl *Payload) bool {
+	if pl == nil {
+		return false
+	}
+	if pl.Ref != "" {
+		return s.FindEnum(pl.Ref) != nil
+	}
+	switch pl.Type {
+	case "string":
+		return pl.Format != "byte" // uuid, date-time, plain strings; bytes ride jsonb
+	case "integer", "number", "boolean":
+		return true
+	}
+	return false
 }
 
 func payloadProps(pl *Payload) map[string]*Payload {

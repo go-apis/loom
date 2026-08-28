@@ -402,7 +402,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 	}
-	return nil
+	return b.seriesService(cli)
 }
 
 func (b *builder) addSub(name string, f *gql.Field) error {

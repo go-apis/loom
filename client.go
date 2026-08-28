@@ -63,7 +63,8 @@ type Client struct {
 	dekMu sync.Mutex
 	deks  map[string][]byte // unwrapped per-stream data keys
 
-	tables map[string]*tableSQL // @table entities: precomputed SQL by entity
+	tables map[string]*tableSQL  // @table entities: precomputed SQL by entity
+	series map[string]*seriesSQL // series: precomputed SQL by name
 	tel    *telemetry
 
 	retries int
@@ -109,6 +110,7 @@ func New(cfg Config) (*Client, error) {
 		blobs:      cfg.Blobs,
 		deks:       map[string][]byte{},
 		tables:     buildTables(cfg.Registry),
+		series:     buildSeries(cfg.Registry),
 		tel:        newTelemetry(cfg.Registry.Service),
 		retries:    cfg.ConflictRetries,
 	}

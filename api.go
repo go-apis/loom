@@ -30,6 +30,9 @@ import (
 //	GET  /records/{Record}/{id}         one state-of-record row
 //	GET  /records/{Record}?namespace=   filtered list
 //	GET  /aggregates/{Aggregate}/{id}   folded state + version
+//	POST /series/{Series}               bulk append observations (body: namespace, rows[]) — idempotent on identity
+//	GET  /series/{Series}?namespace=    time-range read (since, until, order=asc|desc, filters, limit, offset)
+//	GET  /series/{Series}/buckets       bucketed aggregates (bucket=day&value=col&by=dim,dim + range/filters)
 //	GET  /events                        log browser (type, aggregate_id, correlation_id, since, until, after_seq)
 //	GET  /events/stats?since=           counts by event type
 //	GET  /effects?status=               effect journal (running = in doubt if sustained)
@@ -57,6 +60,9 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("GET /records/{name}", c.apiList(c.QueryRecords))
 	mux.HandleFunc("GET /records/{name}/{id}", c.apiGetRecord)
 	mux.HandleFunc("GET /aggregates/{name}/{id}", c.apiGetAggregate)
+	mux.HandleFunc("POST /series/{name}", c.apiAppendSeries)
+	mux.HandleFunc("GET /series/{name}", c.apiQuerySeries)
+	mux.HandleFunc("GET /series/{name}/buckets", c.apiSeriesBuckets)
 	mux.HandleFunc("GET /events", c.apiEvents)
 	mux.HandleFunc("GET /events/stats", c.apiEventStats)
 	mux.HandleFunc("GET /events/stream", c.apiEventsStream)
@@ -646,6 +652,132 @@ func (c *Client) apiStats(w http.ResponseWriter, r *http.Request) {
 		"effects_running":    effectsRunning,
 		"effects_failed":     effectsFailed,
 	})
+}
+
+// apiAppendSeries is the bulk ingest edge: rows decode into the
+// generated row type and append with identity dedup, so a retried POST
+// converges (inserted reports only what was new).
+func (c *Client) apiAppendSeries(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	def := c.reg.seriesDef(name)
+	if def == nil {
+		apiError(w, http.StatusNotFound, fmt.Sprintf("unknown series %s", name))
+		return
+	}
+	var body struct {
+		Namespace string            `json:"namespace"`
+		Rows      []json.RawMessage `json:"rows"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Namespace == "" || len(body.Rows) == 0 {
+		apiError(w, http.StatusBadRequest, "namespace and rows are required")
+		return
+	}
+	rows := make([]SeriesRow, 0, len(body.Rows))
+	for i, raw := range body.Rows {
+		row := def.New()
+		if err := json.Unmarshal(raw, row); err != nil {
+			apiError(w, http.StatusBadRequest, fmt.Sprintf("row %d: %v", i, err))
+			return
+		}
+		rows = append(rows, row)
+	}
+	inserted, err := c.AppendSeries(r.Context(), body.Namespace, rows...)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"inserted": inserted, "total": len(rows)})
+}
+
+func (c *Client) apiQuerySeries(w http.ResponseWriter, r *http.Request) {
+	q, err := seriesQueryFromURL(r)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	points, err := c.QuerySeries(r.Context(), r.PathValue("name"), q)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(points)})
+}
+
+func (c *Client) apiSeriesBuckets(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query()
+	rq, err := seriesQueryFromURL(r)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q := SeriesBucketQuery{
+		Namespace:     rq.Namespace,
+		AllNamespaces: rq.AllNamespaces,
+		Value:         p.Get("value"),
+		Bucket:        p.Get("bucket"),
+		Filters:       rq.Filters,
+		Since:         rq.Since,
+		Until:         rq.Until,
+		Limit:         rq.Limit,
+	}
+	if by := p.Get("by"); by != "" {
+		q.By = strings.Split(by, ",")
+	}
+	buckets, err := c.QuerySeriesBuckets(r.Context(), r.PathValue("name"), q)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": orEmpty(buckets)})
+}
+
+// seriesQueryFromURL is queryFromURL's series twin: since/until/order
+// join the reserved keys, everything else is a filter.
+func seriesQueryFromURL(r *http.Request) (SeriesQuery, error) {
+	p := r.URL.Query()
+	q := SeriesQuery{
+		Namespace: p.Get("namespace"),
+		Ascending: p.Get("order") == "asc",
+	}
+	if v := p.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return q, fmt.Errorf("bad since: %v", err)
+		}
+		q.Since = t
+	}
+	if v := p.Get("until"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return q, fmt.Errorf("bad until: %v", err)
+		}
+		q.Until = t
+	}
+	if v := p.Get("limit"); v != "" {
+		q.Limit, _ = strconv.Atoi(v)
+	}
+	if v := p.Get("offset"); v != "" {
+		q.Offset, _ = strconv.Atoi(v)
+	}
+	for key, values := range p {
+		switch key {
+		case "namespace", "order", "limit", "offset", "since", "until", "bucket", "value", "by":
+			continue
+		}
+		if len(values) == 0 {
+			continue
+		}
+		field, op := key, ""
+		if i := strings.LastIndex(key, "."); i > 0 {
+			field, op = key[:i], key[i+1:]
+		}
+		q.Filters = append(q.Filters, Filter{Field: field, Op: op, Value: values[0]})
+	}
+	return q, nil
 }
 
 // queryFromURL turns query params into a Query: reserved keys aside, every

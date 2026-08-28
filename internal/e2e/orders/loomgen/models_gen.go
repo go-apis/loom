@@ -224,3 +224,13 @@ func (s *OrderSummary) Fold(eventType string, data any) error {
 	}
 	return nil
 }
+
+type SkuPrice struct {
+	Note       string    `json:"note"`
+	ObservedAt time.Time `json:"observed_at"`
+	PriceCents int64     `json:"price_cents"`
+	Sku        string    `json:"sku"`
+	Source     string    `json:"source"`
+}
+
+func (*SkuPrice) LoomSeries() string { return "SkuPrice" }
