@@ -88,10 +88,11 @@ myservice/
 | `process` | async | local events: checkpointed off the log (no bus); foreign events: bus + dedup; retries then loud parking to dead letters |
 | `projection` | async | checkpointed catch-up over the global sequence; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
 
-Plus two persistence shapes: `aggregate` (event-sourced: handlers return
-events, state folds) and `record` (state-of-record: ledgers, balances —
+Plus three persistence shapes: `aggregate` (event-sourced: handlers return
+events, state folds), `record` (state-of-record: ledgers, balances —
 handlers mutate state directly; emitted events are announcements into the
-log, never a rebuild source).
+log, never a rebuild source), and `series` (append-only time-series
+observations — see below).
 
 Projections handle parent–child (1-\*) shapes without the parent
 aggregate folding its children: `key(field)` routes an event onto the
@@ -130,6 +131,57 @@ Note `Migrate` is per service once `@table` is in play: the shared
 `loom_*` DDL is identical from any client, but each service's typed
 tables ride its own registry — deployments that share one database must
 call `Migrate` on every service's client, not just one.
+
+## Series: time-series observations
+
+Facts you record about the world — price ticks, readings, scraped sales
+— are not domain decisions, and at their volumes they must never ride
+the event log. `series` stores them in a typed per-series table, keyed
+by dimensions plus time:
+
+```
+series PricePoint @time(recorded_at) @dim(product_id, grade) {
+  product_id:  uuid!
+  grade:       string!
+  recorded_at: timestamp!
+  price_cents: int!
+}
+```
+
+No commands, no events, no reactions — appends go straight to the table
+with `ON CONFLICT DO NOTHING` on the identity, so re-running a load
+converges (`inserted` counts only what was new):
+
+```go
+inserted, err := cli.AppendSeries(ctx, "prices", rows...)   // rows: generated *PricePoint
+```
+
+Reads are the raw time-range query (filters compile to real columns)
+and `date_trunc` buckets:
+
+```go
+points, _ := cli.QuerySeries(ctx, "PricePoint", loom.SeriesQuery{
+    Namespace: "prices", Filters: []loom.Filter{{Field: "grade", Value: "psa10"}},
+    Since: yearAgo, Ascending: true,
+})
+buckets, _ := cli.QuerySeriesBuckets(ctx, "PricePoint", loom.SeriesBucketQuery{
+    Namespace: "prices", Value: "price_cents", Bucket: "month", By: []string{"grade"},
+})
+```
+
+The declaration is engine-neutral: on a database with the TimescaleDB
+extension, `Migrate` makes the table a hypertable; on plain Postgres
+(Cloud SQL) it falls back to a BRIN time index. Same schema, same
+queries either way. When the dims don't identify a row (an external
+listing id does), `@key(external_id)` overrides the identity; the time
+field is always part of it. Unlike read models, series data is NOT
+rebuildable — the table is the only copy — so the additive migration
+diff reports incompatible drift for hand migration instead of
+drop-and-rebuild.
+
+The gateway serves each series as `{name}s` (range query),
+`{name}Buckets` (aggregation), and an `append{Name}s` mutation, under
+the same namespace authorization as everything else.
 
 ## Timers
 
@@ -297,6 +349,9 @@ GET  /entities/OrderSummary?namespace=demo&status=shipped&total_cents.gte=1000
 GET  /entities/OrderSummary/{id}               one row
 GET  /records/LedgerEntry/{id}                 state-of-record reads
 GET  /aggregates/Order/{id}                    folded state + version
+POST /series/PricePoint                        bulk append observations (idempotent on identity)
+GET  /series/PricePoint?namespace=...&since=   time-range read, filters on real columns
+GET  /series/PricePoint/buckets?bucket=month&value=price_cents&by=grade   bucketed aggregates
 GET  /events?correlation_id=...                log browser
 GET  /events/stats?since=...                   counts by type
 POST /batches                                  durable command fan-out

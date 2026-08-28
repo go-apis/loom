@@ -37,12 +37,12 @@ func TestOpenAPI(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/commands/PlaceOrder", "/entities/OrderSummary", "/entities/OrderSummary/{id}", "/aggregates/Order/{id}", "/uploads", "/files"} {
+	for _, path := range []string{"/commands/PlaceOrder", "/entities/OrderSummary", "/entities/OrderSummary/{id}", "/aggregates/Order/{id}", "/uploads", "/files", "/series/SkuPrice", "/series/SkuPrice/buckets"} {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing path %s", path)
 		}
 	}
-	for _, s := range []string{"Order", "OrderSummary", "OrderItem", "PlaceOrderCommand", "FileRef", "Upload"} {
+	for _, s := range []string{"Order", "OrderSummary", "OrderItem", "PlaceOrderCommand", "FileRef", "Upload", "SkuPrice", "SeriesBucket"} {
 		if doc.Components.Schemas[s] == nil {
 			t.Errorf("missing component schema %s", s)
 		}
@@ -88,6 +88,17 @@ func TestGraphQL(t *testing.T) {
 		"directive @role(anyOf: [String!]!) on FIELD_DEFINITION",
 		`shipOrder(input: ShipOrderInput!): DispatchResult! @role(anyOf: ["owner", "shipper"])`,
 		"cancelOrder(input: CancelOrderInput!): DispatchResult!\n", // ungated: no directive
+		// series: nullable row type, required-marked input, range +
+		// bucket queries, append mutation, shared shapes
+		"type SkuPrice {",
+		"input SkuPriceInput {",
+		"observedAt: Time!",
+		"enum SeriesBucketInterval {",
+		"type SeriesBucket {",
+		"type SeriesAppendResult {",
+		"skuPrices(namespace: Namespace!, where: [FilterInput!], since: Time, until: Time, order: String, limit: Int, offset: Int): [SkuPrice!]!",
+		"skuPriceBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!",
+		"appendSkuPrices(namespace: Namespace!, rows: [SkuPriceInput!]!): SeriesAppendResult!",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

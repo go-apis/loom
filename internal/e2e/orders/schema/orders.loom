@@ -130,6 +130,17 @@ consume billing.InvoicePaid {
 // stored v1 OrderCancelled rows predate `reason`
 upcast OrderCancelled @from(1)
 
+// series: append-only market-price observations per sku — facts about
+// the outside world, bypassing the log entirely. Identity is
+// (sku, source, observed_at); re-appending a batch converges.
+series SkuPrice @time(observed_at) @dim(sku, source) {
+  sku:         string!
+  source:      string!
+  observed_at: timestamp!
+  price_cents: int!
+  note:        string
+}
+
 type OrderItem {
   sku: string!
   quantity: int!

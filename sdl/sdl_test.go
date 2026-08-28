@@ -75,6 +75,15 @@ projection spend -> Spend @fold {
   on OrderPlaced key(customer_id)
 }
 
+series TickPrice @time(observed_at) @dim(sku, source) @key(external_id) {
+  sku: string!
+  source: string!
+  external_id: string!
+  observed_at: timestamp!
+  price_cents: int!
+  note: string
+}
+
 policy noteLocally {
   on OrderPlaced -> PlaceOrder
 }
@@ -171,6 +180,16 @@ func TestParse(t *testing.T) {
 	}
 	if _, c := s.FindCommand("AttachContract"); len(c.Roles) != 0 {
 		t.Fatalf("unannotated command grew roles: %+v", c.Roles)
+	}
+	// series: @time/@dim keep declared order, @key overrides identity
+	sr := s.FindSeries("TickPrice")
+	if sr == nil || sr.Time != "observed_at" ||
+		len(sr.Dims) != 2 || sr.Dims[0] != "sku" || sr.Dims[1] != "source" ||
+		len(sr.Keys) != 1 || sr.Keys[0] != "external_id" {
+		t.Fatalf("series misparsed: %+v", sr)
+	}
+	if id := sr.IdentityFields(); len(id) != 1 || id[0] != "external_id" {
+		t.Fatalf("series identity misparsed: %+v", id)
 	}
 }
 
@@ -553,6 +572,54 @@ process p {
 }
 `,
 			wantErr: "declares effect callout twice",
+		},
+		"series without @time": {
+			src: `
+service s
+series P @dim(sku) {
+  sku: string!
+  at: timestamp!
+}
+`,
+			wantErr: "needs @time",
+		},
+		"series dim not required": {
+			src: `
+service s
+series P @time(at) @dim(sku) {
+  sku: string
+  at: timestamp!
+}
+`,
+			wantErr: "@dim(sku) must be a required scalar field",
+		},
+		"series pii": {
+			src: `
+service s
+series P @time(at) @dim(sku) {
+  sku: string!
+  at: timestamp!
+  buyer: string @pii
+}
+`,
+			wantErr: "cannot live in a series",
+		},
+		"series collides with entity": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+entity P { x: string }
+projection p -> P { on E }
+series P @time(at) @dim(sku) {
+  sku: string!
+  at: timestamp!
+}
+`,
+			wantErr: "series P collides with entity P",
 		},
 	}
 	for name, tc := range cases {
