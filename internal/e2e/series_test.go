@@ -18,12 +18,13 @@ import (
 
 // TestSeries proves the series storage path end to end on plain
 // Postgres: Migrate creates the typed table with a BRIN time index,
-// AppendSeries dedups on identity so re-appending converges, range and
-// bucket queries compile to real columns, the HTTP surface serves
-// append/list/buckets, the gateway serves the generated queries and
-// mutation, and the column diff is additive-only with drift reported
-// for hand migration (series data has no rebuild source). The
-// hypertable path runs in TestSeriesHypertable.
+// AppendSeries dedups on identity so re-appending converges,
+// RetractSeries deletes by identity and converges the same way, range
+// and bucket queries compile to real columns, the HTTP surface serves
+// append/retract/list/buckets, the gateway serves the generated
+// queries and mutations, and the column diff is additive-only with
+// drift reported for hand migration (series data has no rebuild
+// source). The hypertable path runs in TestSeriesHypertable.
 func TestSeries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -245,6 +246,61 @@ func TestSeries(t *testing.T) {
 	appendRes := data["appendSkuPrices"].(map[string]any)
 	if appendRes["inserted"] != float64(1) || appendRes["total"] != float64(2) {
 		t.Fatalf("appendSkuPrices: %+v", appendRes)
+	}
+
+	// retraction: identity columns + time select the row, other fields
+	// are ignored (wrong price, still deleted); absent rows converge
+	deleted, err := cli.RetractSeries(ctx, "default",
+		&ordersgen.SkuPrice{Sku: "gadget", Source: "shop", ObservedAt: time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC), PriceCents: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("retract: want 1 deleted, got %d", deleted)
+	}
+	if deleted, err = cli.RetractSeries(ctx, "default",
+		&ordersgen.SkuPrice{Sku: "gadget", Source: "shop", ObservedAt: time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)}); err != nil || deleted != 0 {
+		t.Fatalf("re-retract must be a no-op: deleted %d, err %v", deleted, err)
+	}
+
+	// the HTTP surface: retract mirrors append
+	resp, err = http.Post(srv.URL+"/series/SkuPrice/retract", "application/json", strings.NewReader(`{
+		"namespace": "default",
+		"rows": [{"sku": "widget", "source": "shop", "observed_at": "2026-08-03T09:00:00Z"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retractOut struct {
+		Deleted int64 `json:"deleted"`
+		Total   int64 `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&retractOut); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || retractOut.Deleted != 1 || retractOut.Total != 1 {
+		t.Fatalf("POST /series/retract: %d %+v", resp.StatusCode, retractOut)
+	}
+
+	// the gateway: the generated retract mutation
+	data = gql(`mutation($rows: [SkuPriceInput!]!) { retractSkuPrices(namespace: "default", rows: $rows) { deleted total } }`, map[string]any{
+		"rows": []any{
+			map[string]any{"sku": "widget", "source": "ebay", "observedAt": base.AddDate(0, 0, 1).Format(time.RFC3339), "priceCents": 0},
+		},
+	})
+	retractRes := data["retractSkuPrices"].(map[string]any)
+	if retractRes["deleted"] != float64(1) || retractRes["total"] != float64(1) {
+		t.Fatalf("retractSkuPrices: %+v", retractRes)
+	}
+
+	// the other namespace never felt any of it
+	points, err = cli.QuerySeries(ctx, "SkuPrice", loom.SeriesQuery{Namespace: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("retract crossed namespaces: other has %d points", len(points))
 	}
 
 	// additive migration: a dropped value column comes back; type drift

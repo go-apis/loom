@@ -31,6 +31,7 @@ import (
 //	GET  /records/{Record}?namespace=   filtered list
 //	GET  /aggregates/{Aggregate}/{id}   folded state + version
 //	POST /series/{Series}               bulk append observations (body: namespace, rows[]) — idempotent on identity
+//	POST /series/{Series}/retract       delete observations by identity (body: namespace, rows[]) — idempotent
 //	GET  /series/{Series}?namespace=    time-range read (since, until, order=asc|desc, filters, limit, offset)
 //	GET  /series/{Series}/buckets       bucketed aggregates (bucket=day&value=col&by=dim,dim + range/filters)
 //	GET  /events                        log browser (type, aggregate_id, correlation_id, since, until, after_seq)
@@ -61,6 +62,7 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("GET /records/{name}/{id}", c.apiGetRecord)
 	mux.HandleFunc("GET /aggregates/{name}/{id}", c.apiGetAggregate)
 	mux.HandleFunc("POST /series/{name}", c.apiAppendSeries)
+	mux.HandleFunc("POST /series/{name}/retract", c.apiRetractSeries)
 	mux.HandleFunc("GET /series/{name}", c.apiQuerySeries)
 	mux.HandleFunc("GET /series/{name}/buckets", c.apiSeriesBuckets)
 	mux.HandleFunc("GET /events", c.apiEvents)
@@ -691,6 +693,46 @@ func (c *Client) apiAppendSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"inserted": inserted, "total": len(rows)})
+}
+
+// apiRetractSeries is append's mirror: rows decode into the generated
+// row type and their identity columns + time select what to delete —
+// other fields are ignored. Retracting an absent row converges
+// (deleted reports only what actually went away).
+func (c *Client) apiRetractSeries(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	def := c.reg.seriesDef(name)
+	if def == nil {
+		apiError(w, http.StatusNotFound, fmt.Sprintf("unknown series %s", name))
+		return
+	}
+	var body struct {
+		Namespace string            `json:"namespace"`
+		Rows      []json.RawMessage `json:"rows"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Namespace == "" || len(body.Rows) == 0 {
+		apiError(w, http.StatusBadRequest, "namespace and rows are required")
+		return
+	}
+	rows := make([]SeriesRow, 0, len(body.Rows))
+	for i, raw := range body.Rows {
+		row := def.New()
+		if err := json.Unmarshal(raw, row); err != nil {
+			apiError(w, http.StatusBadRequest, fmt.Sprintf("row %d: %v", i, err))
+			return
+		}
+		rows = append(rows, row)
+	}
+	deleted, err := c.RetractSeries(r.Context(), body.Namespace, rows...)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "total": len(rows)})
 }
 
 func (c *Client) apiQuerySeries(w http.ResponseWriter, r *http.Request) {

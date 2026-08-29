@@ -13,9 +13,9 @@ import (
 )
 
 // Series on the gateway: a {name}s range query, a {name}Buckets
-// aggregation query, and an append{Name}s mutation — matching the SDL
-// contract `loom graphql` emits. No subscriptions: observations arrive
-// in bulk, not row by row.
+// aggregation query, and append{Name}s / retract{Name}s mutations —
+// matching the SDL contract `loom graphql` emits. No subscriptions:
+// observations arrive in bulk, not row by row.
 
 // seriesService wires one service's series into the composed schema.
 func (b *builder) seriesService(cli *loom.Client) error {
@@ -32,6 +32,9 @@ func (b *builder) seriesService(cli *loom.Client) error {
 			return err
 		}
 		if err := b.seriesAppendMutation(cli, def); err != nil {
+			return err
+		}
+		if err := b.seriesRetractMutation(cli, def); err != nil {
 			return err
 		}
 	}
@@ -311,6 +314,70 @@ func (b *builder) seriesRowInput(def *loom.SeriesDef) (gql.Input, converter, err
 	input := gql.NewInputObject(gql.InputObjectConfig{Name: name, Fields: cfg})
 	b.inputs[name] = input
 	return input, structConv(convs), nil
+}
+
+// seriesRetractResult builds (once) the shared retract result type.
+func (b *builder) seriesRetractResult() *gql.Object {
+	if e, ok := b.types["SeriesRetractResult"]; ok {
+		return e.obj
+	}
+	obj := gql.NewObject(gql.ObjectConfig{Name: "SeriesRetractResult", Fields: gql.Fields{
+		"deleted": {Type: gql.NewNonNull(scalarLong), Resolve: mapField("deleted")},
+		"total":   {Type: gql.NewNonNull(scalarLong), Resolve: mapField("total")},
+	}})
+	b.types["SeriesRetractResult"] = &typeEntry{obj: obj, fields: []string{"deleted", "total"}}
+	return obj
+}
+
+// seriesRetractMutation mounts retract{Name}s — RetractSeries on the
+// wire, taking the same row input as append: identity columns + time
+// select the rows, the rest is ignored.
+func (b *builder) seriesRetractMutation(cli *loom.Client, def *loom.SeriesDef) error {
+	field := "retract" + def.Name + "s"
+	if _, dup := b.muts[field]; dup {
+		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
+	}
+	input, conv, err := b.seriesRowInput(def)
+	if err != nil {
+		return err
+	}
+	result := b.seriesRetractResult()
+	newRow := def.New
+	b.muts[field] = &gql.Field{
+		Type: gql.NewNonNull(result),
+		Args: gql.FieldConfigArgument{
+			"namespace": {Type: gql.NewNonNull(scalarNamespace)},
+			"rows":      {Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(input)))},
+		},
+		Resolve: func(p gql.ResolveParams) (any, error) {
+			ns := fmt.Sprint(p.Args["namespace"])
+			if err := decide(p.Context, Decision{Kind: "mutation", Field: field, Namespace: ns, Args: p.Args}); err != nil {
+				return nil, err
+			}
+			if ns == AllNamespaces {
+				return nil, fmt.Errorf("retract needs a concrete namespace")
+			}
+			rawRows, _ := p.Args["rows"].([]any)
+			rows := make([]loom.SeriesRow, 0, len(rawRows))
+			for i, rr := range rawRows {
+				raw, err := json.Marshal(conv(rr))
+				if err != nil {
+					return nil, err
+				}
+				row := newRow()
+				if err := json.Unmarshal(raw, row); err != nil {
+					return nil, fmt.Errorf("row %d: %v", i, err)
+				}
+				rows = append(rows, row)
+			}
+			deleted, err := cli.RetractSeries(p.Context, ns, rows...)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"deleted": deleted, "total": int64(len(rows))}, nil
+		},
+	}
+	return nil
 }
 
 func (b *builder) seriesAppendMutation(cli *loom.Client, def *loom.SeriesDef) error {

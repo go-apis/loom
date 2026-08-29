@@ -104,7 +104,7 @@ type UploadSession {
 	}
 	if len(s.Series) > 0 {
 		// the shared series shapes: bucketed aggregation rows and the
-		// append result
+		// append/retract results
 		b.WriteString(`enum SeriesBucketInterval {
   HOUR
   DAY
@@ -125,6 +125,11 @@ type SeriesBucket {
 
 type SeriesAppendResult {
   inserted: Long!
+  total: Long!
+}
+
+type SeriesRetractResult {
+  deleted: Long!
   total: Long!
 }
 
@@ -194,7 +199,8 @@ type SeriesAppendResult {
 			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], since: Time, until: Time, order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(sr.Name), sr.Name),
 			fmt.Sprintf("  %sBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!", lowerFirst(sr.Name)))
 		mutations = append(mutations,
-			fmt.Sprintf("  append%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesAppendResult!", sr.Name, sr.Name))
+			fmt.Sprintf("  append%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesAppendResult!", sr.Name, sr.Name),
+			fmt.Sprintf("  retract%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesRetractResult!", sr.Name, sr.Name))
 	}
 
 	writeBlock(&b, "type Mutation", mutations)

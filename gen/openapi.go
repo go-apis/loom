@@ -137,6 +137,7 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 	}
 	for _, sr := range s.Series {
 		paths["/series/"+sr.Name] = seriesPath(sr)
+		paths["/series/"+sr.Name+"/retract"] = seriesRetractPath(sr)
 		paths["/series/"+sr.Name+"/buckets"] = seriesBucketsPath(sr)
 	}
 
@@ -303,6 +304,33 @@ func seriesPath(sr *schema.Series) map[string]any {
 						"items": map[string]any{"type": "array", "items": item},
 					},
 				}),
+			},
+		},
+	}
+}
+
+// seriesRetractPath renders append's mirror: delete by identity.
+func seriesRetractPath(sr *schema.Series) map[string]any {
+	return map[string]any{
+		"post": map[string]any{
+			"operationId": "retract" + sr.Name + "s",
+			"requestBody": map[string]any{"required": true, "content": jsonContent(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"namespace": map[string]any{"type": "string"},
+					"rows":      map[string]any{"type": "array", "items": ref(sr.Name)},
+				},
+				"required": []string{"namespace", "rows"},
+			})},
+			"responses": map[string]any{
+				"200": responseOf("retracted (deleted counts rows that were actually present)", map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"deleted": map[string]any{"type": "integer", "format": "int64"},
+						"total":   map[string]any{"type": "integer", "format": "int64"},
+					},
+				}),
+				"400": responseOf("bad request", ref("Error")),
 			},
 		},
 	}
