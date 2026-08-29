@@ -196,6 +196,90 @@ func (c *Client) appendSeriesRows(ctx context.Context, ss *seriesSQL, namespace 
 	return inserted, nil
 }
 
+// RetractSeries deletes observations by identity — the mirror of
+// AppendSeries for the rare fact that stops being true upstream (a
+// source removes a sale, a correction re-buckets a row). Each row's
+// identity columns and time select at most one stored row; its other
+// columns are ignored. Rows may mix series. Returns how many stored
+// rows actually went away, so retracting an already-absent row
+// converges silently — the same idempotence contract as append.
+func (c *Client) RetractSeries(ctx context.Context, namespace string, rows ...SeriesRow) (int64, error) {
+	if namespace == "" {
+		return 0, fmt.Errorf("loom: RetractSeries needs a namespace")
+	}
+	var order []string
+	grouped := map[string][]SeriesRow{}
+	for _, row := range rows {
+		name := row.LoomSeries()
+		if _, ok := grouped[name]; !ok {
+			if c.series[name] == nil {
+				return 0, fmt.Errorf("loom: unknown series %s", name)
+			}
+			order = append(order, name)
+		}
+		grouped[name] = append(grouped[name], row)
+	}
+	var deleted int64
+	for _, name := range order {
+		n, err := c.retractSeriesRows(ctx, c.series[name], namespace, grouped[name])
+		deleted += n
+		if err != nil {
+			return deleted, err
+		}
+	}
+	return deleted, nil
+}
+
+func (c *Client) retractSeriesRows(ctx context.Context, ss *seriesSQL, namespace string, rows []SeriesRow) (int64, error) {
+	ident := append(append([]string{}, ss.def.IdentityColumns()...), ss.def.Time)
+	pos := map[string]int{}
+	for i, col := range ss.def.Columns {
+		pos[col.Name] = i
+	}
+	quoted := make([]string, len(ident))
+	for i, col := range ident {
+		quoted[i] = quoteIdent(col)
+	}
+	var deleted int64
+	for start := 0; start < len(rows); start += seriesAppendChunk {
+		chunk := rows[start:min(start+seriesAppendChunk, len(rows))]
+		var b strings.Builder
+		fmt.Fprintf(&b, "DELETE FROM %s WHERE service=$1 AND namespace=$2 AND (%s) IN (",
+			ss.def.Table, strings.Join(quoted, ", "))
+		args := make([]any, 0, 2+len(chunk)*len(ident))
+		args = append(args, c.reg.Service, namespace)
+		for i, row := range chunk {
+			values := ss.def.Values(row)
+			for _, v := range values {
+				if err, ok := v.(error); ok { // a JSONValue marshal failure
+					return deleted, fmt.Errorf("loom: retract %s: %w", ss.def.Name, err)
+				}
+			}
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("(")
+			for j := 0; j < len(ident); j++ {
+				if j > 0 {
+					b.WriteString(",")
+				}
+				fmt.Fprintf(&b, "$%d", len(args)+j+1)
+			}
+			b.WriteString(")")
+			for _, col := range ident {
+				args = append(args, values[pos[col]])
+			}
+		}
+		b.WriteString(")")
+		tag, err := c.db.Exec(ctx, b.String(), args...)
+		if err != nil {
+			return deleted, fmt.Errorf("loom: retract %s: %w", ss.def.Name, err)
+		}
+		deleted += tag.RowsAffected()
+	}
+	return deleted, nil
+}
+
 // SeriesQuery filters one series by namespace, columns, and time range.
 type SeriesQuery struct {
 	Namespace string
