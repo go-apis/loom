@@ -33,7 +33,7 @@ import (
 //	POST /series/{Series}               bulk append observations (body: namespace, rows[]) — idempotent on identity
 //	POST /series/{Series}/retract       delete observations by identity (body: namespace, rows[]) — idempotent
 //	GET  /series/{Series}?namespace=    time-range read (since, until, order=asc|desc, filters, limit, offset)
-//	GET  /series/{Series}/buckets       bucketed aggregates (bucket=day&value=col&by=dim,dim + range/filters)
+//	GET  /series/{Series}/buckets       bucketed aggregates (bucket=day|all&value=col&by=dim,dim&p=50,95 + range/filters)
 //	GET  /events                        log browser (type, aggregate_id, correlation_id, since, until, after_seq)
 //	GET  /events/stats?since=           counts by event type
 //	GET  /effects?status=               effect journal (running = in doubt if sustained)
@@ -768,6 +768,16 @@ func (c *Client) apiSeriesBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 	if by := p.Get("by"); by != "" {
 		q.By = strings.Split(by, ",")
+	}
+	if ps := p.Get("p"); ps != "" { // p=50,95,99.9
+		for _, one := range strings.Split(ps, ",") {
+			f, err := strconv.ParseFloat(strings.TrimSpace(one), 64)
+			if err != nil {
+				apiError(w, http.StatusBadRequest, "bad percentile "+one)
+				return
+			}
+			q.Percentiles = append(q.Percentiles, f)
+		}
 	}
 	buckets, err := c.QuerySeriesBuckets(r.Context(), r.PathValue("name"), q)
 	if err != nil {

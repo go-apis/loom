@@ -123,6 +123,53 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Records: []*loom.RecordDef{},
 		Series: []*loom.SeriesDef{
 			{
+				Name:  "ReqSample",
+				Table: "loom_s_orders_req_sample",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"at" timestamptz NOT NULL,
+	"duration_ms" double precision,
+	"route" text NOT NULL,
+	"sample_id" uuid NOT NULL,
+	"status" bigint,
+	PRIMARY KEY (service, namespace, "sample_id", "at")
+);`,
+				Time:       "at",
+				Dims:       []string{"route"},
+				Keys:       []string{"sample_id"},
+				RetainDays: 30,
+				PartitionDDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"at" timestamptz NOT NULL,
+	"duration_ms" double precision,
+	"route" text NOT NULL,
+	"sample_id" uuid NOT NULL,
+	"status" bigint,
+	PRIMARY KEY (service, namespace, "sample_id", "at")
+) PARTITION BY RANGE ("at");`,
+				Columns: []loom.TableColumn{
+					{Name: "at", Type: "timestamptz"},
+					{Name: "duration_ms", Type: "double precision"},
+					{Name: "route", Type: "text"},
+					{Name: "sample_id", Type: "uuid"},
+					{Name: "status", Type: "bigint"},
+				},
+				Required: []string{"at", "duration_ms", "route", "sample_id"},
+				New:      func() loom.SeriesRow { return &ReqSample{} },
+				Values: func(row loom.SeriesRow) []any {
+					e := row.(*ReqSample)
+					return []any{
+						e.At,
+						e.DurationMs,
+						e.Route,
+						e.SampleId,
+						e.Status,
+					}
+				},
+			},
+			{
 				Name:  "SkuPrice",
 				Table: "loom_s_orders_sku_price",
 				DDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_sku_price (

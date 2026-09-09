@@ -5,7 +5,8 @@
 -- drift is an error. @table remediation is drop table, Migrate, Rebuild;
 -- series data is NOT rebuildable — incompatible series drift is migrated
 -- by hand. On TimescaleDB, Migrate turns each series table into a
--- hypertable on its time column.
+-- hypertable on its time column (with a retention policy for @retain);
+-- on plain Postgres a @retain series is range-partitioned by day.
 
 CREATE TABLE IF NOT EXISTS loom_t_orders_order_summary (
 	service    text NOT NULL,
@@ -20,6 +21,30 @@ CREATE TABLE IF NOT EXISTS loom_t_orders_order_summary (
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, namespace, id)
 );
+
+CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"at" timestamptz NOT NULL,
+	"duration_ms" double precision,
+	"route" text NOT NULL,
+	"sample_id" uuid NOT NULL,
+	"status" bigint,
+	PRIMARY KEY (service, namespace, "sample_id", "at")
+);
+
+-- @retain(30d): on plain Postgres Migrate creates the partitioned form instead and drops day partitions past retention;
+-- on TimescaleDB it adds a retention policy to the hypertable.
+CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"at" timestamptz NOT NULL,
+	"duration_ms" double precision,
+	"route" text NOT NULL,
+	"sample_id" uuid NOT NULL,
+	"status" bigint,
+	PRIMARY KEY (service, namespace, "sample_id", "at")
+) PARTITION BY RANGE ("at");
 
 CREATE TABLE IF NOT EXISTS loom_s_orders_sku_price (
 	service    text NOT NULL,

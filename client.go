@@ -45,15 +45,18 @@ type Config struct {
 }
 
 type Client struct {
-	db         *pgxpool.Pool
-	bus        Bus
-	reg        *Registry
-	log        *slog.Logger
-	readerNudge chan struct{} // log advanced: wake the fan-out reader (runReader)
-	fan         *logFanout    // shared log tail + typed runner wake-ups
-	relayNudge  chan struct{} // outbox rows written: wake the relay
-	batchNudge  chan struct{} // batch enqueued: wake the batch runner
-	stepSem     chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
+	db *pgxpool.Pool
+	// seriesTimescale records what migrateSeries found: with the extension,
+	// retention is a hypertable policy and partition upkeep is a no-op.
+	seriesTimescale bool
+	bus             Bus
+	reg             *Registry
+	log             *slog.Logger
+	readerNudge     chan struct{} // log advanced: wake the fan-out reader (runReader)
+	fan             *logFanout    // shared log tail + typed runner wake-ups
+	relayNudge      chan struct{} // outbox rows written: wake the relay
+	batchNudge      chan struct{} // batch enqueued: wake the batch runner
+	stepSem         chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
@@ -96,23 +99,23 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("loom: the schema declares uploads — Config.Blobs is required (see gblob.New, loom.NewDirBlobStore)")
 	}
 	c := &Client{
-		db:         cfg.DB,
-		bus:        cfg.Bus,
-		reg:        cfg.Registry,
-		log:        cfg.Logger.With("service", cfg.Registry.Service),
+		db:          cfg.DB,
+		bus:         cfg.Bus,
+		reg:         cfg.Registry,
+		log:         cfg.Logger.With("service", cfg.Registry.Service),
 		readerNudge: make(chan struct{}, 1),
 		fan:         &logFanout{},
 		relayNudge:  make(chan struct{}, 1),
 		batchNudge:  make(chan struct{}, 1),
 		stepSem:     make(chan struct{}, cfg.StepConcurrency),
-		watchers:   map[chan struct{}]bool{},
-		keys:       cfg.Keys,
-		blobs:      cfg.Blobs,
-		deks:       map[string][]byte{},
-		tables:     buildTables(cfg.Registry),
-		series:     buildSeries(cfg.Registry),
-		tel:        newTelemetry(cfg.Registry.Service),
-		retries:    cfg.ConflictRetries,
+		watchers:    map[chan struct{}]bool{},
+		keys:        cfg.Keys,
+		blobs:       cfg.Blobs,
+		deks:        map[string][]byte{},
+		tables:      buildTables(cfg.Registry),
+		series:      buildSeries(cfg.Registry),
+		tel:         newTelemetry(cfg.Registry.Service),
+		retries:     cfg.ConflictRetries,
 	}
 	c.registerGauges()
 	// the dev store signals finalized uploads in-process; production

@@ -225,6 +225,16 @@ func (s *OrderSummary) Fold(eventType string, data any) error {
 	return nil
 }
 
+type ReqSample struct {
+	At         time.Time `json:"at"`
+	DurationMs float64   `json:"duration_ms"`
+	Route      string    `json:"route"`
+	SampleId   uuid.UUID `json:"sample_id"`
+	Status     int64     `json:"status"`
+}
+
+func (*ReqSample) LoomSeries() string { return "ReqSample" }
+
 type SkuPrice struct {
 	Note       string    `json:"note"`
 	ObservedAt time.Time `json:"observed_at"`

@@ -182,8 +182,10 @@ func (b *builder) seriesBucketObject() *gql.Object {
 		"min":   {Type: gql.Float, Resolve: mapField("min")},
 		"max":   {Type: gql.Float, Resolve: mapField("max")},
 		"last":  {Type: gql.Float, Resolve: mapField("last")},
+		"percentiles": {Type: scalarMap, Resolve: mapField("percentiles"),
+			Description: "requested percentiles of value, keyed p50, p95, …"},
 	}})
-	b.types["SeriesBucket"] = &typeEntry{obj: obj, fields: []string{"avg", "count", "group", "last", "max", "min", "t"}}
+	b.types["SeriesBucket"] = &typeEntry{obj: obj, fields: []string{"avg", "count", "group", "last", "max", "min", "percentiles", "t"}}
 	return obj
 }
 
@@ -199,9 +201,10 @@ func (b *builder) seriesBucketInterval() *gql.Enum {
 	e := gql.NewEnum(gql.EnumConfig{Name: "SeriesBucketInterval", Values: gql.EnumValueConfigMap{
 		"HOUR": {Value: "hour"}, "DAY": {Value: "day"}, "WEEK": {Value: "week"},
 		"MONTH": {Value: "month"}, "YEAR": {Value: "year"},
+		"ALL": {Value: "all", Description: "one bucket for the whole range (per group)"},
 	}})
 	b.enums["SeriesBucketInterval"] = e
-	b.enumVal["SeriesBucketInterval"] = []string{"hour", "day", "week", "month", "year"}
+	b.enumVal["SeriesBucketInterval"] = []string{"hour", "day", "week", "month", "year", "all"}
 	return e
 }
 
@@ -212,6 +215,7 @@ func seriesBuckets(cli *loom.Client, series string, obj *gql.Object, interval *g
 	args["value"] = &gql.ArgumentConfig{Type: gql.NewNonNull(gql.String), Description: "numeric column to aggregate"}
 	args["bucket"] = &gql.ArgumentConfig{Type: gql.NewNonNull(interval)}
 	args["by"] = &gql.ArgumentConfig{Type: gql.NewList(gql.NewNonNull(gql.String)), Description: "dim columns to group by"}
+	args["percentiles"] = &gql.ArgumentConfig{Type: gql.NewList(gql.NewNonNull(gql.Float)), Description: "percentiles of value to compute, as percentages (50, 95, 99.9)"}
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: args,
@@ -235,6 +239,13 @@ func seriesBuckets(cli *loom.Client, series string, obj *gql.Object, interval *g
 					q.By = append(q.By, fmt.Sprint(d))
 				}
 			}
+			if ps, ok := p.Args["percentiles"].([]any); ok {
+				for _, v := range ps {
+					if f, ok := v.(float64); ok {
+						q.Percentiles = append(q.Percentiles, f)
+					}
+				}
+			}
 			buckets, err := cli.QuerySeriesBuckets(p.Context, series, q)
 			if err != nil {
 				return nil, err
@@ -255,6 +266,13 @@ func seriesBuckets(cli *loom.Client, series string, obj *gql.Object, interval *g
 						group[k] = v
 					}
 					doc["group"] = group
+				}
+				if bkt.Percentiles != nil {
+					pcts := map[string]any{}
+					for k, v := range bkt.Percentiles {
+						pcts[k] = v
+					}
+					doc["percentiles"] = pcts
 				}
 				docs = append(docs, doc)
 			}

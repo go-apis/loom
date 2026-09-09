@@ -49,6 +49,9 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	}
 	c.fan.setHead(head)
 	go c.runReader(ctx, poll)
+	if c.hasRetainedSeries() {
+		go c.runSeriesMaintenance(ctx, time.Hour)
+	}
 
 	for _, p := range c.reg.Projections {
 		rw := c.fan.register("projection:"+p.Name, p.Events)
@@ -648,4 +651,35 @@ func saveCheckpoint(ctx context.Context, q executor, service, runner string, seq
 		ON CONFLICT (service, runner) DO UPDATE SET global_seq = EXCLUDED.global_seq, updated_at = now()`,
 		service, runner, seq)
 	return err
+}
+
+// hasRetainedSeries reports whether any series declares @retain; only
+// then does the runner carry a maintenance loop.
+func (c *Client) hasRetainedSeries() bool {
+	for _, ss := range c.series {
+		if ss.def.RetainDays > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// runSeriesMaintenance keeps @retain series' day partitions created
+// ahead and drops the expired ones (plain Postgres; a no-op under a
+// TimescaleDB retention policy). Every instance runs it — the work is
+// idempotent (CREATE/DROP IF EXISTS), so two runners crossing is
+// harmless — and a failure just logs and waits for the next tick.
+func (c *Client) runSeriesMaintenance(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		if err := c.MaintainSeries(ctx); err != nil && ctx.Err() == nil {
+			c.log.ErrorContext(ctx, "series maintenance failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

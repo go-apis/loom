@@ -519,9 +519,19 @@ func (p *parser) series() error {
 	}
 	sr := &schema.Series{Name: name}
 	for d := range dirs {
-		if d != "time" && d != "dim" && d != "key" {
-			return fmt.Errorf("series %s: unknown directive @%s (series take @time, @dim, @key)", name, d)
+		if d != "time" && d != "dim" && d != "key" && d != "retain" {
+			return fmt.Errorf("series %s: unknown directive @%s (series take @time, @dim, @key, @retain)", name, d)
 		}
+	}
+	if args, ok := dirs["retain"]; ok {
+		if len(args) != 1 {
+			return fmt.Errorf("series %s: @retain wants one duration, e.g. @retain(90d)", name)
+		}
+		days, err := schema.ParseRetain(args[0])
+		if err != nil {
+			return fmt.Errorf("series %s: %w", name, err)
+		}
+		sr.RetainDays = days
 	}
 	if args := dirs["time"]; len(args) == 1 {
 		sr.Time = args[0]

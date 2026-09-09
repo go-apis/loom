@@ -141,6 +141,17 @@ series SkuPrice @time(observed_at) @dim(sku, source) {
   note:        string
 }
 
+// Request latency samples: high volume, worthless after a month.
+// @retain makes the table day-partitioned on plain Postgres (expired
+// partitions dropped by the runner) and a retention policy on TimescaleDB.
+series ReqSample @time(at) @dim(route) @key(sample_id) @retain(30d) {
+  sample_id:   uuid!
+  route:       string!
+  at:          timestamp!
+  duration_ms: float!
+  status:      int
+}
+
 type OrderItem {
   sku: string!
   quantity: int!
