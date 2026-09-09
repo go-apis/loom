@@ -168,6 +168,22 @@ func (c *Client) MaintainSeries(ctx context.Context) error {
 	if c.seriesTimescale {
 		return nil
 	}
+	// One replica at a time: CREATE/DROP of the same partition from two
+	// instances can trip a catalog uniqueness race even with IF NOT
+	// EXISTS. The lock is transaction-scoped and released at commit; a
+	// replica that does not get it simply skips this tick.
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+	var locked bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('loom_series_retain_' || $1))`, c.reg.Service).Scan(&locked); err != nil {
+		return err
+	}
+	if !locked {
+		return nil
+	}
 	for _, ss := range sortedSeries(c.series) {
 		if ss.def.RetainDays > 0 && ss.def.PartitionDDL != "" {
 			if err := c.maintainSeriesPartitions(ctx, ss.def); err != nil {
@@ -175,7 +191,7 @@ func (c *Client) MaintainSeries(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (c *Client) maintainSeriesPartitions(ctx context.Context, def *SeriesDef) error {
