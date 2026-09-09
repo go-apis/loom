@@ -51,6 +51,8 @@ func OpenAPI(s *schema.Schema) ([]byte, error) {
 				"min":   map[string]any{"type": "number", "nullable": true},
 				"max":   map[string]any{"type": "number", "nullable": true},
 				"last":  map[string]any{"type": "number", "nullable": true},
+				"percentiles": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "number"},
+					"description": "requested percentiles of value, keyed p50, p95, …"},
 			},
 			"required": []string{"t", "count"},
 		}
@@ -345,9 +347,10 @@ func seriesBucketsPath(sr *schema.Series) map[string]any {
 			"operationId": "bucket" + sr.Name + "s",
 			"parameters": []any{
 				map[string]any{"name": "namespace", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
-				map[string]any{"name": "bucket", "in": "query", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"hour", "day", "week", "month", "year"}}},
+				map[string]any{"name": "bucket", "in": "query", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"hour", "day", "week", "month", "year", "all"}}, "description": "date_trunc unit, or all for one bucket per group over the range"},
 				map[string]any{"name": "value", "in": "query", "required": true, "schema": map[string]any{"type": "string"}, "description": "numeric column to aggregate"},
 				map[string]any{"name": "by", "in": "query", "schema": map[string]any{"type": "string"}, "description": "comma-separated dim columns to group by"},
+				map[string]any{"name": "p", "in": "query", "schema": map[string]any{"type": "string"}, "description": "comma-separated percentiles of value to compute, as percentages (50,95,99.9)"},
 				timeParam("since"), timeParam("until"),
 				map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer"}},
 			},

@@ -49,6 +49,13 @@ func lex(src string) ([]token, error) {
 			for i < n && isDigit(src[i]) {
 				i++
 			}
+			// A unit suffix glued to the digits (90d, 24h, 2w) is one
+			// token: the duration literal @retain takes. Anything that
+			// Atoi's the text still fails loudly where a bare count is
+			// expected.
+			for i < n && isIdentPart(rune(src[i])) {
+				i++
+			}
 			toks = append(toks, token{tNumber, src[start:i], line})
 		case c == '"':
 			start := i

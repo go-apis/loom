@@ -111,6 +111,7 @@ type UploadSession {
   WEEK
   MONTH
   YEAR
+  ALL
 }
 
 type SeriesBucket {
@@ -121,6 +122,7 @@ type SeriesBucket {
   min: Float
   max: Float
   last: Float
+  percentiles: Map
 }
 
 type SeriesAppendResult {
@@ -197,7 +199,7 @@ type SeriesRetractResult {
 	for _, sr := range s.Series {
 		queries = append(queries,
 			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], since: Time, until: Time, order: String, limit: Int, offset: Int): [%s!]!", lowerFirst(sr.Name), sr.Name),
-			fmt.Sprintf("  %sBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!", lowerFirst(sr.Name)))
+			fmt.Sprintf("  %sBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], percentiles: [Float!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!", lowerFirst(sr.Name)))
 		mutations = append(mutations,
 			fmt.Sprintf("  append%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesAppendResult!", sr.Name, sr.Name),
 			fmt.Sprintf("  retract%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesRetractResult!", sr.Name, sr.Name))

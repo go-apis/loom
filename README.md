@@ -179,9 +179,32 @@ rebuildable — the table is the only copy — so the additive migration
 diff reports incompatible drift for hand migration instead of
 drop-and-rebuild.
 
+Buckets also take percentiles (`Percentiles: []float64{50, 95}` →
+`bucket.Percentiles["p95"]`), and `Bucket: "all"` collapses the range
+into one bucket per group — the summary-table shape: p50/p95 per dim
+over a window in one query.
+
+Observations that lose their value — request samples, error events —
+declare how long they live:
+
+```
+series ReqSample @time(at) @dim(route) @key(sample_id) @retain(30d) {
+  ...
+}
+```
+
+On plain Postgres a `@retain` series is range-partitioned by day: the
+runner creates the coming days' partitions hourly and drops the ones
+past retention (DROP TABLE, never a bloating DELETE), and an append
+into a day with no partition yet creates it first. On TimescaleDB it
+is a hypertable with a retention policy. Adding `@retain` to a series
+whose table already exists unpartitioned is reported as drift for a
+hand migration, like any other incompatible series change.
+
 The gateway serves each series as `{name}s` (range query),
-`{name}Buckets` (aggregation), and an `append{Name}s` mutation, under
-the same namespace authorization as everything else.
+`{name}Buckets` (aggregation, with `percentiles` and `ALL`), and an
+`append{Name}s` mutation, under the same namespace authorization as
+everything else.
 
 ## Timers
 

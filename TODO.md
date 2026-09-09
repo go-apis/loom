@@ -92,9 +92,11 @@ parked in favor of ten99).
 - Foreign-event projections (would collapse ten99's RecipientMirror
   aggregate+process into a plain projection).
 - Series follow-ons: `@rollup` (continuous aggregates on TimescaleDB,
-  scheduled rollup tables elsewhere), `@retain`/`@compress` policy
-  directives, a console tab (row counts + latest observation per
-  series), gateway list subscriptions if a UI ever wants live ticks.
+  scheduled rollup tables elsewhere), `@compress`, a console tab (row
+  counts + latest observation per series), gateway list subscriptions
+  if a UI ever wants live ticks. `@retain` (day partitions on plain
+  Postgres / retention policy on Timescale) and bucket percentiles +
+  the `all` bucket landed on `series-retain-percentiles`.
   v1 (schema decl, hypertable-or-BRIN Migrate, idempotent AppendSeries,
   range + date_trunc bucket queries, HTTP + gateway surface) landed on
   the `series` branch.

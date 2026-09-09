@@ -227,6 +227,11 @@ type SeriesDef struct {
 	// Keys are the identity columns when @key overrides the dims; empty
 	// means identity is (Dims, Time).
 	Keys []string
+	// RetainDays (@retain) is how long rows are kept; 0 is forever.
+	RetainDays int
+	// PartitionDDL is the CREATE TABLE in its range-partitioned form,
+	// the one Migrate uses on plain Postgres when RetainDays > 0.
+	PartitionDDL string
 	// Columns lists every declared column in order, excluding the meta
 	// columns (service, namespace).
 	Columns []TableColumn

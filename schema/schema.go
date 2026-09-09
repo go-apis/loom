@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 const Version = 2
@@ -27,8 +29,8 @@ type Schema struct {
 }
 
 type Aggregate struct {
-	Name     string   `yaml:"name" json:"name"`
-	Snapshot int      `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
+	Name     string `yaml:"name" json:"name"`
+	Snapshot int    `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
 	// Table (@table) materializes the aggregate's state (minus @pii
 	// fields) into a typed per-aggregate table, written in the same
 	// transaction as the events — a queryable state mirror with no
@@ -135,8 +137,44 @@ type Series struct {
 	// Keys (@key) overrides row identity when the dims don't identify a
 	// row — e.g. an external listing id. Identity is (keys, time) when
 	// set, (dims, time) otherwise; the time field is always part of it.
-	Keys  []string `yaml:"keys,omitempty" json:"keys,omitempty"`
-	State *Payload `yaml:"state" json:"state"`
+	Keys []string `yaml:"keys,omitempty" json:"keys,omitempty"`
+	// RetainDays (@retain) bounds how long rows are kept, in whole days;
+	// 0 keeps forever. A retained series is range-partitioned by day on
+	// plain Postgres (expired partitions are dropped, never DELETEd) and
+	// gets a retention policy on TimescaleDB.
+	RetainDays int      `yaml:"retain_days,omitempty" json:"retain_days,omitempty"`
+	State      *Payload `yaml:"state" json:"state"`
+}
+
+// ParseRetain reads a @retain duration: a whole number of days ("90d"),
+// weeks ("2w"), or hours ("36h", rounded up to days — partitions are
+// daily), or a bare day count.
+func ParseRetain(s string) (int, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 0, fmt.Errorf("@retain wants a duration like 90d")
+	}
+	unit := s[len(s)-1]
+	num := s
+	mult := 1
+	switch unit {
+	case 'd':
+		num = s[:len(s)-1]
+	case 'w':
+		num, mult = s[:len(s)-1], 7
+	case 'h':
+		num = s[:len(s)-1]
+		n, err := strconv.Atoi(num)
+		if err != nil || n < 1 {
+			return 0, fmt.Errorf("@retain: bad duration %q (want e.g. 90d, 2w, 36h)", s)
+		}
+		return (n + 23) / 24, nil
+	}
+	n, err := strconv.Atoi(num)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("@retain: bad duration %q (want e.g. 90d, 2w, 36h)", s)
+	}
+	return n * mult, nil
 }
 
 // IdentityFields returns the fields (before the time field) that

@@ -98,7 +98,7 @@ func TestGraphQL(t *testing.T) {
 		"type SeriesAppendResult {",
 		"type SeriesRetractResult {",
 		"skuPrices(namespace: Namespace!, where: [FilterInput!], since: Time, until: Time, order: String, limit: Int, offset: Int): [SkuPrice!]!",
-		"skuPriceBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!",
+		"skuPriceBuckets(namespace: Namespace!, value: String!, bucket: SeriesBucketInterval!, by: [String!], percentiles: [Float!], where: [FilterInput!], since: Time, until: Time, limit: Int): [SeriesBucket!]!",
 		"appendSkuPrices(namespace: Namespace!, rows: [SkuPriceInput!]!): SeriesAppendResult!",
 		"retractSkuPrices(namespace: Namespace!, rows: [SkuPriceInput!]!): SeriesRetractResult!",
 	} {
