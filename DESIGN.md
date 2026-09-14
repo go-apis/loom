@@ -105,12 +105,15 @@ generated switches, folds from generated assignments.
   snapshot every N.
 - **Global sequence**: `loom_events.global_seq` (identity). Projections and
   local processes are checkpointed catch-up readers over it — rebuildable,
-  no bus, no publish-to-self hack for async self-handling. Each runner is
-  elected per service by a transaction-scoped advisory lock: a projection
-  step holds it across the batch (folds + checkpoint in one tx); a process
-  holds it per event (checkpoint re-read, reaction, parking and advance in
-  one tx — the reaction's dispatch is its own unit of work, so a crash
-  mid-reaction re-reacts, never parks twice, never skips).
+  no bus, no publish-to-self hack for async self-handling. Both are elected
+  so a scaled-out service runs one of each: a projection step by a
+  transaction-scoped advisory lock (folds + checkpoint in one tx); the
+  local-event processes by a per-service leader holding a session-scoped
+  lock on a dedicated connection (`election.go`). Not per event: a
+  reaction is an external call, and a lock that pinned a pool connection
+  through it doubled every process step's connection use and starved
+  projections and Dispatch (measured: projection lag ×3). A lease costs
+  one connection, only while leading; hand-over is at-least-once.
 - **Outbox relay**: the one component ported by design from the old
   runtime: advisory-lock election, SKIP LOCKED claims, insert-order drain,
   per-aggregate ordering keys.
