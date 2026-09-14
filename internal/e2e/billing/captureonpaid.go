@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/go-apis/loom"
 
@@ -16,11 +17,16 @@ var Gateway = &FakeGateway{}
 
 type FakeGateway struct {
 	mu        sync.Mutex
-	Calls     int // capture invocations that reached the "provider"
-	FailCalls int // make the next N capture calls fail
+	Calls     int           // capture invocations that reached the "provider"
+	FailCalls int           // make the next N capture calls fail
+	Delay     time.Duration // how long a capture takes (widens races)
 }
 
 func (g *FakeGateway) Capture(invoice string, cents int64) (string, error) {
+	g.mu.Lock()
+	delay := g.Delay
+	g.mu.Unlock()
+	time.Sleep(delay)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.Calls++
@@ -37,10 +43,14 @@ func (g *FakeGateway) CallsN() int { g.mu.Lock(); defer g.mu.Unlock(); return g.
 // SetFailCalls scripts the next N captures to fail.
 func (g *FakeGateway) SetFailCalls(n int) { g.mu.Lock(); g.FailCalls = n; g.mu.Unlock() }
 
+// SetDelay makes every capture take d — long enough for a second runner
+// to arrive while the first is mid-call.
+func (g *FakeGateway) SetDelay(d time.Duration) { g.mu.Lock(); g.Delay = d; g.mu.Unlock() }
+
 func (g *FakeGateway) Reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.Calls, g.FailCalls = 0, 0
+	g.Calls, g.FailCalls, g.Delay = 0, 0, 0
 }
 
 // stateMu guards the scripted-failure counter and the recorded receipt:
@@ -49,6 +59,14 @@ func (g *FakeGateway) Reset() {
 var stateMu sync.Mutex
 var failReactAfterCapture = 0
 var lastReceipt string
+var reactions = 0
+
+// Reactions counts OnInvoicePaid invocations — across every client in
+// the process, which is how a test sees a fleet.
+func Reactions() int { stateMu.Lock(); defer stateMu.Unlock(); return reactions }
+
+// ResetReactions zeroes the count.
+func ResetReactions() { stateMu.Lock(); reactions = 0; stateMu.Unlock() }
 
 // SetFailReactAfterCapture scripts the reaction to fail N times after
 // the capture call — retries must replay the journaled receipt.
@@ -62,6 +80,9 @@ func LastReceipt() string     { stateMu.Lock(); defer stateMu.Unlock(); return l
 type CaptureOnPaid struct{}
 
 func (h *CaptureOnPaid) OnInvoicePaid(ctx context.Context, evt *loom.Event, data *loomgen.InvoicePaid) ([]loom.Command, error) {
+	stateMu.Lock()
+	reactions++
+	stateMu.Unlock()
 	receipt, err := loom.Once(ctx, "gateway_capture", func(ctx context.Context) (string, error) {
 		return Gateway.Capture(evt.AggregateID.String(), data.AmountCents)
 	})

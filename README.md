@@ -85,8 +85,15 @@ myservice/
 | declaration | runs | guarantees |
 |---|---|---|
 | `policy` | inside the producing transaction | atomic with the triggering event; local events only |
-| `process` | async | local events: checkpointed off the log (no bus); foreign events: bus + dedup; retries then loud parking to dead letters |
-| `projection` | async | checkpointed catch-up over the global sequence; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
+| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters |
+| `projection` | async | checkpointed catch-up over the global sequence, one instance at a time per runner; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
+
+`Start` is safe on every instance of a scaled-out service: each
+checkpointed runner (every projection, every local-event process) is
+elected per service by a Postgres advisory lock, so exactly one instance
+folds or reacts at a time and the rest yield until the next wake. The
+relay and the timer/batch runners claim with `SKIP LOCKED` and need no
+election.
 
 Plus three persistence shapes: `aggregate` (event-sourced: handlers return
 events, state folds), `record` (state-of-record: ledgers, balances —

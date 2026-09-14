@@ -19,7 +19,9 @@ import (
 // Projections and processes subscribed to LOCAL events are checkpointed
 // catch-up readers over the service's slice of the global sequence — no bus
 // involved, rebuildable by resetting the checkpoint. This kills the old
-// world's publish-to-your-own-bus hack for async self-handling.
+// world's publish-to-your-own-bus hack for async self-handling. Each such
+// runner is elected per service by a Postgres advisory lock, so a
+// scaled-out deployment runs one of each at a time.
 //
 // Processes subscribed to FOREIGN events consume the bus, dedup on the
 // (service, process, envelope) key, and park to dead letters after
@@ -322,6 +324,13 @@ func (c *Client) Rebuild(ctx context.Context, projection string) error {
 // processStep runs a local-event process from the log: react, dispatch (its
 // own unit of work), advance the checkpoint. Failures retry, then park the
 // event to dead letters and move on — at-least-once, no head-of-line block.
+//
+// One instance at a time: each event is handled under the runner's
+// advisory lock, like a projection step, so a scaled-out service does
+// not react on every instance (the losers of the effect-claim race would
+// park in doubt, and a failing reaction would park once per instance).
+// The checkpoint is pre-read outside the lock to find work cheaply and
+// re-read under it — another instance may have advanced it meanwhile.
 func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Context) (int, error) {
 	runner := "process:" + p.Name
 	return func(ctx context.Context) (n int, retErr error) {
@@ -345,19 +354,61 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 				metric.WithAttributes(c.tel.service, attribute.String("loom.runner", runner)))
 		}()
 		for _, evt := range events {
-			if contains(local, evt.Type) {
-				if err := c.reactWithRetry(ctx, p, evt); err != nil {
-					if err := c.park(ctx, runner, evt, err); err != nil {
-						return 0, err
-					}
-				}
-			}
-			if err := c.writeCheckpoint(ctx, runner, evt.GlobalSeq); err != nil {
+			held, err := c.processOne(ctx, p, runner, local, evt)
+			if err != nil {
 				return 0, err
 			}
+			if !held {
+				// another instance holds this runner: yield the step; it
+				// advances the checkpoint, and the next wake or tick
+				// finds whatever it left
+				return n, nil
+			}
+			n++
 		}
-		return len(events), nil
+		return n, nil
 	}
+}
+
+// processOne handles one event under the runner's advisory lock. The
+// lock, the checkpoint re-read, the reaction (whose dispatch is its own
+// unit of work), any parking and the checkpoint advance share one
+// transaction: a crash mid-reaction re-reacts on the next pass
+// (at-least-once — effects are journaled, commands converge), never
+// parks twice, and never advances past an event it did not handle.
+// Returns false when the lock is held elsewhere.
+func (c *Client) processOne(ctx context.Context, p *ReactorDef, runner string, local []string, evt *Event) (bool, error) {
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var locked bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('loom_' || $1 || '_' || $2))`, c.reg.Service, runner).Scan(&locked); err != nil {
+		return false, err
+	}
+	if !locked {
+		return false, nil
+	}
+	seq, err := checkpoint(ctx, tx, c.reg.Service, runner)
+	if err != nil {
+		return false, err
+	}
+	if evt.GlobalSeq <= seq {
+		return true, nil // handled by the instance that held the lock before us
+	}
+	if contains(local, evt.Type) {
+		if err := c.reactWithRetry(ctx, p, evt); err != nil {
+			if err := c.parkWith(ctx, tx, runner, evt, err); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := saveCheckpoint(ctx, tx, c.reg.Service, runner, evt.GlobalSeq); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 func (c *Client) reactWithRetry(ctx context.Context, p *ReactorDef, evt *Event) error {
@@ -481,6 +532,12 @@ func (c *Client) markProcessed(ctx context.Context, process, key string) error {
 // via the console; parking is loud, dropping is impossible. @pii payload
 // fields are re-sealed — dead letters are at rest too.
 func (c *Client) park(ctx context.Context, runner string, evt *Event, cause error) error {
+	return c.parkWith(ctx, c.db, runner, evt, cause)
+}
+
+// parkWith writes the dead letter through exec — a process step's
+// transaction, so the parking and the checkpoint advance land together.
+func (c *Client) parkWith(ctx context.Context, exec executor, runner string, evt *Event, cause error) error {
 	parked := evt
 	if def := c.reg.eventDef(evt.Type); def != nil && len(def.PII) > 0 && evt.Data != nil {
 		if dataRaw, err := json.Marshal(evt.Data); err == nil {
@@ -497,7 +554,7 @@ func (c *Client) park(ctx context.Context, runner string, evt *Event, cause erro
 	}
 	c.log.ErrorContext(ctx, "parking event to dead letters", "runner", runner, "type", evt.Type, "error", cause)
 	c.tel.count(ctx, c.tel.parked, 1, attribute.String("loom.runner", runner))
-	_, err = c.db.Exec(ctx, `
+	_, err = exec.Exec(ctx, `
 		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
 		VALUES ($1,$2,$3,$4,$5)`,
 		c.reg.Service, runner, raw, cause.Error(), processRetries)
@@ -624,10 +681,6 @@ func (c *Client) redriveProcess(ctx context.Context, process string, raw []byte)
 
 func (c *Client) readCheckpoint(ctx context.Context, runner string) (int64, error) {
 	return checkpoint(ctx, c.db, c.reg.Service, runner)
-}
-
-func (c *Client) writeCheckpoint(ctx context.Context, runner string, seq int64) error {
-	return saveCheckpoint(ctx, c.db, c.reg.Service, runner, seq)
 }
 
 func checkpoint(ctx context.Context, q querier, service, runner string) (int64, error) {
