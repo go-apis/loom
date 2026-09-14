@@ -207,6 +207,50 @@ func TestAutoCancelTimer(t *testing.T) {
 }
 
 // TestProjectionRebuild wipes and refolds the read model from the log.
+// TestAwaitProjection: a dispatch followed by a read of its projection is
+// a race the caller can settle — Head after the dispatch, AwaitProjection
+// up to it, then the row is there; a bounded ctx ends a wait that cannot
+// be met.
+func TestAwaitProjection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Keys: testKeys(t), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.test")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, time.Second); err != nil { // a slow poll: the wait is real
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		id := uuid.New()
+		if err := cli.Dispatch(ctx, &ordersgen.PlaceOrder{
+			CommandBase: loom.CommandBase{AggregateID: id, Namespace: "default"},
+			CustomerId:  uuid.New(), Items: []ordersgen.OrderItem{{Sku: "sku", Quantity: 1}}, Currency: "USD",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		head, err := cli.Head(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cli.AwaitProjection(ctx, "orderSummary", head); err != nil {
+			t.Fatal(err)
+		}
+		if st, err := cli.Entity(ctx, "OrderSummary", "default", id); err != nil || st == nil {
+			t.Fatalf("after AwaitProjection the row must be there: %v %v", st, err)
+		}
+	}
+	short, cancelShort := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancelShort()
+	if err := cli.AwaitProjection(short, "orderSummary", 1<<40); err == nil {
+		t.Fatal("an unreachable seq must end with the ctx")
+	}
+}
+
 func TestProjectionRebuild(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

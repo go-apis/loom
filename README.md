@@ -219,6 +219,27 @@ The gateway serves each series as `{name}s` (range query),
 `append{Name}s` mutation, under the same namespace authorization as
 everything else.
 
+## Read your writes
+
+Read models are async. A request that dispatches and then reads the
+projection in the same breath — a sign-in that grants and then mints
+the token — races the runner, and usually wins by milliseconds. Make
+it explicit: take the log head after the dispatch, wait for the
+projection to reach it, then read.
+
+```go
+head, _ := cli.Head(ctx)                                  // after the Dispatch
+settle, cancel := context.WithTimeout(ctx, 2*time.Second) // never block a request forever
+defer cancel()
+if err := cli.AwaitProjection(settle, "grantIndex", head); err != nil {
+    log.Warn("grant index lagging; minting from what is there", "error", err)
+}
+rows, _ := cli.QueryEntities(ctx, "GrantIndex", ...)
+```
+
+The projection may be running on another instance; the checkpoint is
+polled with a short back-off.
+
 ## Timers
 
 Durable scheduled commands, written in the same transaction that decided
