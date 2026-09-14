@@ -57,6 +57,7 @@ type Client struct {
 	relayNudge      chan struct{} // outbox rows written: wake the relay
 	batchNudge      chan struct{} // batch enqueued: wake the batch runner
 	stepSem         chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
+	leader          leaderFlag    // this instance holds the service's process lease (election.go)
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances

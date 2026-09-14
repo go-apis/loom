@@ -88,12 +88,18 @@ myservice/
 | `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters |
 | `projection` | async | checkpointed catch-up over the global sequence, one instance at a time per runner; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
 
-`Start` is safe on every instance of a scaled-out service: each
-checkpointed runner (every projection, every local-event process) is
-elected per service by a Postgres advisory lock, so exactly one instance
-folds or reacts at a time and the rest yield until the next wake. The
-relay and the timer/batch runners claim with `SKIP LOCKED` and need no
-election.
+`Start` is safe on every instance of a scaled-out service. Each
+projection step takes a transaction-scoped advisory lock (its folds and
+checkpoint are one transaction anyway), so one instance folds at a time.
+The local-event processes are led: one instance per service holds a
+session-scoped advisory lock on a dedicated connection and its process
+runners react; the rest yield — a reaction is an external call that must
+not pin a pool connection, so the lease costs one connection, only while
+leading. Postgres drops the lease with the session, so a crashed or
+scaled-down leader is replaced at the followers' next poll; across that
+hand-over the guarantee is the at-least-once processes carry anyway.
+`Client.Leading()` says whether this instance leads. The relay and the
+timer/batch runners claim with `SKIP LOCKED` and need no election.
 
 Plus three persistence shapes: `aggregate` (event-sourced: handlers return
 events, state folds), `record` (state-of-record: ledgers, balances —
