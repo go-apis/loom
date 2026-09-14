@@ -40,7 +40,7 @@ func (c *Client) runElection(ctx context.Context, poll time.Duration) {
 			c.log.WarnContext(ctx, "process election", "error", err)
 		}
 		if held {
-			c.log.InfoContext(ctx, "process lease released", "service", c.reg.Service)
+			c.log.InfoContext(ctx, "process lease released")
 		}
 		select {
 		case <-ctx.Done():
@@ -68,7 +68,7 @@ func (c *Client) lead(ctx context.Context, poll time.Duration) (held bool, err e
 	}
 	c.leader.Store(true)
 	defer c.leader.Store(false)
-	c.log.InfoContext(ctx, "process lease acquired", "service", c.reg.Service)
+	c.log.InfoContext(ctx, "process lease acquired")
 	// the runners may be asleep on their tick: the lease is new work
 	c.fan.wakeAll()
 

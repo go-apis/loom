@@ -49,6 +49,15 @@ func (c *Client) Reset(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	// a projection step in flight on this or another instance has read
+	// its batch and is folding it: wait for every projection's lock so
+	// no step lands pre-reset rows after the truncate (each step's folds
+	// and checkpoint are its own transaction, gated by this lock)
+	for _, p := range c.reg.Projections {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('loom_' || $1 || '_' || $2))`, c.reg.Service, "projection:"+p.Name); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `TRUNCATE `+strings.Join(tables, ", ")+` CASCADE`); err != nil {
 		return nil, err
 	}
@@ -68,6 +77,10 @@ func (c *Client) Reset(ctx context.Context) ([]string, error) {
 		}
 		tables = append(tables, ts.def.Name)
 	}
+	// the fan-out buffer holds pre-reset events, pre-decrypted: drop it
+	// while the projections are still held, so the first step after the
+	// commit reads an empty log, not the buffer
+	c.fan.flush()
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -76,6 +89,7 @@ func (c *Client) Reset(ctx context.Context) ([]string, error) {
 	c.dekMu.Lock()
 	c.deks = map[string][]byte{}
 	c.dekMu.Unlock()
+	c.fan.wakeAll()
 
 	return tables, nil
 }
