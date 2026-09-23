@@ -192,6 +192,84 @@ func TestEffectInDoubt(t *testing.T) {
 	}
 }
 
+// TestEffectSettlesAfterContextCancelled proves the settle write outlives
+// the reaction's own context: a per-step deadline that fires while the
+// external call is still in flight must not turn a call the handler
+// asserted did not happen into an in-doubt 'running' row.
+func TestEffectSettlesAfterContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: billing.NewRegistry(), Keys: testKeys(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+
+	// every capture fails, so the reaction exhausts its retries and parks —
+	// a dead letter is the handle a test has on running one reaction with a
+	// context of its own choosing
+	billing.Gateway.Reset()
+	billing.SetLastReceipt("")
+	billing.SetFailReactAfterCapture(0)
+	billing.Gateway.SetFailCalls(100)
+
+	invoice := uuid.New()
+	payInvoice(t, ctx, cli, invoice)
+
+	var letterID int64
+	waitFor(t, ctx, "failing capture to park", func() bool {
+		return pool.QueryRow(ctx, `
+			SELECT id FROM loom_dead_letters WHERE service='billing'`).Scan(&letterID) == nil
+	})
+
+	// start the effect from scratch so the status after the redrive is the
+	// deadline-cancelled attempt's own verdict, nobody else's
+	if _, err := pool.Exec(ctx, `DELETE FROM loom_effects WHERE service='billing'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// the capture now outlives the reaction's deadline: the claim lands
+	// well inside it, the call returns after it has fired
+	billing.Gateway.SetDelay(300 * time.Millisecond)
+
+	stepCtx, stepCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer stepCancel()
+	err = cli.RedriveDeadLetter(stepCtx, letterID)
+	if err == nil {
+		t.Fatal("redrive of a declined capture should have failed")
+	}
+	if stepCtx.Err() == nil {
+		t.Fatal("the step context should have expired while the capture was in flight")
+	}
+
+	// a fresh, uncancelled context reads the journal: the call is settled,
+	// not in doubt
+	effects, err := cli.Effects(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(effects) != 1 {
+		t.Fatalf("journal rows: %+v", effects)
+	}
+	if effects[0].Status != "failed" {
+		t.Fatalf("effect status %q after a cancelled reaction, want \"failed\" (never \"running\"): %+v",
+			effects[0].Status, effects[0])
+	}
+	if effects[0].SettledAt == nil {
+		t.Fatalf("settled effect has no settled_at: %+v", effects[0])
+	}
+	if !strings.Contains(effects[0].Error, "declined") {
+		t.Fatalf("journaled error %q does not record the call's own failure", effects[0].Error)
+	}
+}
+
 // payInvoice raises and immediately pays an invoice, producing the local
 // InvoicePaid event captureOnPaid reacts to.
 func payInvoice(t *testing.T, ctx context.Context, cli *loom.Client, invoice uuid.UUID) {

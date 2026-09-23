@@ -174,12 +174,16 @@ generated switches, folds from generated assignments.
   cousin for the request/response direction. `loom.Once(ctx, key, fn)` in a
   process reaction claims a row (committed before fn runs), settles it with
   the JSON result or the error, and replays `done` results on every retry
-  or redelivery. An unsettled claim (crash between call and record) is *in
-  doubt*: the runtime refuses to re-run it and parks the reaction — an
-  operator resolves it (recording what actually happened on the other side)
-  and redrives the dead letter. At-most-once with loud ambiguity, the
-  strongest guarantee non-idempotent APIs admit. Failed settles re-run on
-  retry: an error return is the handler asserting the call did not happen.
+  or redelivery. The settle write runs on `context.WithoutCancel` of the
+  reaction's ctx: once the call has returned, its outcome is a settled fact,
+  so a per-step deadline that fires while the call was in flight records
+  `failed` (or `done`) instead of leaving the row in doubt. An unsettled
+  claim (crash between call and record) is *in doubt*: the runtime refuses
+  to re-run it and parks the reaction — an operator resolves it (recording
+  what actually happened on the other side) and redrives the dead letter.
+  At-most-once with loud ambiguity, the strongest guarantee non-idempotent
+  APIs admit. Failed settles re-run on retry: an error return is the
+  handler asserting the call did not happen.
 - **PII encryption** (`loom_keys`): `@pii` fields are sealed with
   AES-256-GCM under a per-stream data key wrapped by a `KeyWrapper`
   (`LocalKeys` master key today; a KMS wrapper is the same interface).

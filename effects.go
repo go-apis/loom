@@ -28,6 +28,12 @@ import (
 // the next attempt re-runs it — returning an error is the handler asserting
 // the call did not happen.
 //
+// The settle write is decoupled from the reaction's own cancellation
+// (context.WithoutCancel): once fn has returned, the outcome is a settled
+// fact, and a per-step deadline that fires while the call was in flight
+// must not turn it back into doubt. Only the call itself sees the
+// reaction's ctx; recording what it did always completes.
+//
 // A crash between claim and settle leaves the effect in doubt: the call may
 // or may not have executed. Once refuses to re-run it — the reaction parks
 // to dead letters — until an operator settles the question (check with the
@@ -103,9 +109,14 @@ func Once[T any](ctx context.Context, key string, fn func(context.Context) (T, e
 	}
 
 	out, err := fn(ctx)
+	// fn has returned a definite answer, so the settle write must land even
+	// if the reaction's own ctx died while the call was in flight — a
+	// per-step deadline that fires as the call returns would otherwise
+	// leave the row 'running', in doubt over a settled question
+	settleCtx := context.WithoutCancel(ctx)
 	if err != nil {
 		defer outcome("failed", err)
-		if serr := es.c.settleEffect(ctx, es.scope, key, nil, err.Error()); serr != nil {
+		if serr := es.c.settleEffect(settleCtx, es.scope, key, nil, err.Error()); serr != nil {
 			return zero, fmt.Errorf("loom: effect %s %s failed (%w) and the journal write also failed: %v", es.scope, key, err, serr)
 		}
 		return zero, err
@@ -117,7 +128,7 @@ func Once[T any](ctx context.Context, key string, fn func(context.Context) (T, e
 	}
 	// if this write fails the effect stays 'running': in doubt, never
 	// silently re-executed
-	if err := es.c.settleEffect(ctx, es.scope, key, raw, ""); err != nil {
+	if err := es.c.settleEffect(settleCtx, es.scope, key, raw, ""); err != nil {
 		outcome("executed", err)
 		return zero, fmt.Errorf("loom: effect %s %s executed but recording the result failed: %w", es.scope, key, err)
 	}
