@@ -331,7 +331,8 @@ type EventDef struct {
 	Publish       bool
 	Service       string // owning service; empty = local
 	// Retired (@retired) marks an event that still decodes — stored rows
-	// replay and fold — but can never be produced or subscribed to again.
+	// replay and decode-skip — but can never be produced or subscribed
+	// to again.
 	// Validate rejects it in emits, `on` subscriptions, and upcasts; it
 	// stays in the registry so Migrate's unknown-type check passes and
 	// old rows decode-skip cleanly instead of failing every reader.
