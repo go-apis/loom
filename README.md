@@ -85,7 +85,7 @@ myservice/
 | declaration | runs | guarantees |
 |---|---|---|
 | `policy` | inside the producing transaction | atomic with the triggering event; local events only |
-| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters |
+| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters. A process with no checkpoint row starts at the log's head (`@from(head)`, the default): it reacts to what happens after it is deployed, never to the service's whole history. Declare `@from(origin)` to replay everything (a backfill) |
 | `projection` | async | checkpointed catch-up over the global sequence, one instance at a time per runner; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
 
 `Start` is safe on every instance of a scaled-out service. Each
@@ -107,6 +107,24 @@ everything else — `Dispatch`, `Load`, the readers, the relay — queues
 behind what is left. `pgxpool` defaults to `max(NumCPU, 4)` connections,
 so two services sharing one pool on a four-core host park all four and
 deadlock. Size `MaxConns` for the services on the pool, not for the host.
+
+A process reacts to what happens after it is deployed. On `Start`, a
+process with no checkpoint row is checkpointed at the log's head before
+its runner can take a step, so shipping a new process into a service
+with years of history does not replay that history through it (and does
+not perform its effects for it). Say so explicitly when you want the
+opposite — a backfilling process:
+
+```
+process backfillTaxIds @from(origin) {   // @from(head) is the default
+  on PayeeRegistered
+}
+```
+
+Only a brand-new process is affected: a process that has checkpointed
+before — a redeploy, a rolling restart — keeps the position it had.
+Projections are unaffected either way; folding from the origin is what a
+read model is, and `Rebuild()` is how you replay one.
 
 Plus three persistence shapes: `aggregate` (event-sourced: handlers return
 events, state folds), `record` (state-of-record: ledgers, balances —

@@ -651,13 +651,38 @@ func (p *parser) join(ent *schema.Entity) error {
 	return nil
 }
 
+// reactor parses a policy or a process. A process may carry a start
+// position — `process settleOnPaid @from(origin) { ... }` — which says
+// where a process that has never checkpointed begins: at the log's head
+// (the default: only what happens after the deploy) or at the origin
+// (replay everything, for a backfill). A policy runs inside the
+// producing transaction and has no start position.
 func (p *parser) reactor(into *[]*schema.Reactor, kind string) error {
 	p.next()
 	name, err := p.ident()
 	if err != nil {
 		return err
 	}
+	t := p.peek()
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
 	r := &schema.Reactor{Name: name}
+	for d := range dirs {
+		if d != "from" {
+			return p.errf(t, "%s %s: unknown directive @%s (a process takes @from)", kind, name, d)
+		}
+	}
+	if args, ok := dirs["from"]; ok {
+		if kind != "process" {
+			return p.errf(t, "%s %s cannot declare @from — a %s runs inside the producing transaction and has no start position", kind, name, kind)
+		}
+		if len(args) != 1 {
+			return p.errf(t, "process %s: @from wants one start position — head or origin", name)
+		}
+		r.From = args[0]
+	}
 	if err := p.expect("{"); err != nil {
 		return err
 	}

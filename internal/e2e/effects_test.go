@@ -120,6 +120,15 @@ func TestEffectInDoubt(t *testing.T) {
 		scope); err != nil {
 		t.Fatal(err)
 	}
+	// the crashed instance had been running, so it also left a checkpoint
+	// just short of the event it was reacting to. Without the row this
+	// would be a brand-new process, which starts at the head (@from(head))
+	// and would never look at the event at all.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO loom_checkpoints (service, runner, global_seq, updated_at)
+		VALUES ('billing', 'process:captureOnPaid', $1, now())`, seq-1); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
 		t.Fatal(err)

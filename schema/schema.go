@@ -234,7 +234,22 @@ type Reactor struct {
 	// (loom.Once keys). Processes only — policies run in the producing
 	// transaction and must not touch the outside world.
 	Effects []string `yaml:"effects,omitempty" json:"effects,omitempty"`
+	// From is a process's start position on its first run — `@from(head)`
+	// (the default, empty here) or `@from(origin)`. A process that has
+	// never checkpointed starts at the log's head: it reacts to what
+	// happens after it is deployed, not to the service's whole history.
+	// @from(origin) is the explicit opt-in to replay everything (a
+	// backfilling process). Processes only: a policy runs inside the
+	// producing transaction and has no start position.
+	From string `yaml:"from,omitempty" json:"from,omitempty"`
 }
+
+// Start positions for Reactor.From. FromHead is the default and is
+// written as the empty string when nobody said otherwise.
+const (
+	FromHead   = "head"
+	FromOrigin = "origin"
+)
 
 type Subscription struct {
 	Event string `yaml:"event" json:"event"`
@@ -575,6 +590,9 @@ func (s *Schema) Validate() error {
 		if len(p.Effects) > 0 {
 			fail("policy %s declares effects — policies run in the producing transaction; external calls belong in a process", p.Name)
 		}
+		if p.From != "" {
+			fail("policy %s declares @from(%s) — a policy runs inside the producing transaction and has no start position; only a process does", p.Name, p.From)
+		}
 		for _, sub := range p.Subscriptions {
 			evt := s.FindEvent(sub.Event)
 			if evt == nil {
@@ -592,6 +610,9 @@ func (s *Schema) Validate() error {
 		}
 	}
 	for _, p := range s.Processes {
+		if p.From != "" && p.From != FromHead && p.From != FromOrigin {
+			fail("process %s: @from(%s) is not a start position — use @from(head) (the default: react to what happens after the deploy) or @from(origin) (replay the whole log)", p.Name, p.From)
+		}
 		seenEffects := map[string]bool{}
 		for _, e := range p.Effects {
 			if seenEffects[e] {

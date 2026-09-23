@@ -67,6 +67,9 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 		local, foreign := c.splitSubscriptions(p)
 		if len(local) > 0 {
 			localProcesses = true
+			if err := c.seedProcessCheckpoint(ctx, p, head); err != nil {
+				return err
+			}
 			rw := c.fan.register("process:"+p.Name, local)
 			go c.runLogLoop(ctx, "process:"+p.Name, poll, rw, c.processStep(p, local))
 		}
@@ -80,6 +83,28 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 		go c.runElection(ctx, poll)
 	}
 	return nil
+}
+
+// seedProcessCheckpoint fixes a brand-new process's start position
+// before its runner can take a step. Without a checkpoint row a process
+// reads from sequence 0 — it would react to the service's entire
+// history on its first run, which is how a newly deployed process ends
+// up re-notifying every member it ever had. The default (@from(head),
+// and what an unset From means) seeds the row at the current head, so
+// the process reacts to what happens after it exists. @from(origin) is
+// the explicit opt-in to replay everything, and a process that has
+// checkpointed before — a redeploy, another instance that started
+// first — keeps the row it has: the insert never overwrites.
+func (c *Client) seedProcessCheckpoint(ctx context.Context, p *ReactorDef, head int64) error {
+	if p.From == FromOrigin || head == 0 {
+		return nil
+	}
+	_, err := c.db.Exec(ctx, `
+		INSERT INTO loom_checkpoints (service, runner, global_seq, updated_at)
+		VALUES ($1,$2,$3, now())
+		ON CONFLICT (service, runner) DO NOTHING`,
+		c.reg.Service, "process:"+p.Name, head)
+	return err
 }
 
 func (c *Client) splitSubscriptions(p *ReactorDef) (local, foreign []string) {
