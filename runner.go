@@ -172,7 +172,8 @@ func (c *Client) runReader(ctx context.Context, poll time.Duration) {
 // readEvents serves a runner's next batch: from the shared buffer when
 // it covers the runner's checkpoint, straight from the log otherwise
 // (catch-up after skipped wakes, rebuilds). Buffered events are shared
-// pointers, pre-decrypted — folds treat them as read-only.
+// pointers, pre-decrypted but undecoded — callers treat them as read-only
+// and decode their own subscribed types with decodeEvent.
 func (c *Client) readEvents(ctx context.Context, afterSeq int64, limit int) ([]*Event, error) {
 	if evts, ok := c.fan.tail(afterSeq, limit); ok {
 		return evts, nil
@@ -226,10 +227,15 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			if !contains(p.Events, evt.Type) {
 				continue
 			}
+			// decode only what this projection subscribes to, into a copy:
+			// the batch is shared with every other runner on this instance
+			evt, err := c.decodeEvent(evt)
+			if err != nil {
+				return 0, err
+			}
 			id := p.EntityID(evt)
 			state := p.NewState()
 			var data []byte
-			var err error
 			if table != nil {
 				err = tx.QueryRow(ctx, table.selectForUpdate, c.reg.Service, evt.Namespace, id).Scan(&data)
 			} else {
@@ -362,8 +368,14 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 		}()
 		for _, evt := range events {
 			if contains(local, evt.Type) {
-				if err := c.reactWithRetry(ctx, p, evt); err != nil {
-					if err := c.park(ctx, runner, evt, err); err != nil {
+				// same as the projection: decode this process's own types
+				// only, and into a copy of the shared event
+				decoded, err := c.decodeEvent(evt)
+				if err != nil {
+					return 0, err
+				}
+				if err := c.reactWithRetry(ctx, p, decoded); err != nil {
+					if err := c.park(ctx, runner, decoded, err); err != nil {
 						return 0, err
 					}
 				}

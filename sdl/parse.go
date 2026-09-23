@@ -379,6 +379,9 @@ func (p *parser) event() (*schema.Event, error) {
 	if _, ok := dirs["publish"]; ok {
 		evt.Publish = true
 	}
+	if _, ok := dirs["retired"]; ok {
+		evt.Retired = true
+	}
 	if args, ok := dirs["alias"]; ok {
 		evt.Aliases = args
 	}

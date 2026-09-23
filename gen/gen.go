@@ -745,8 +745,12 @@ func loomErrNilEvent(eventType string) error {
 			}
 			ups = fmt.Sprintf(" Upcasts: map[int]loom.UpcastFunc{%s},", strings.Join(hops, ", "))
 		}
-		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q, Aliases: %s,%s%s New: func() any { return &%s{} }},\n",
-			e.Name, version, e.Publish, e.Service, stringSlice(e.Aliases), pii, ups, e.Name)
+		ret := ""
+		if e.Retired {
+			ret = " Retired: true,"
+		}
+		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q,%s Aliases: %s,%s%s New: func() any { return &%s{} }},\n",
+			e.Name, version, e.Publish, e.Service, ret, stringSlice(e.Aliases), pii, ups, e.Name)
 	}
 	b.WriteString("\t\t},\n")
 

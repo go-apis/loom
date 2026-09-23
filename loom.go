@@ -74,6 +74,14 @@ type Event struct {
 	At            time.Time `json:"at"`
 	Meta          Metadata  `json:"meta"`
 	Data          any       `json:"data"`
+
+	// raw is the decrypted-but-undecoded payload carried by the local log
+	// read path (readLog). Runners decode lazily, per subscriber, so one
+	// row of a type they don't subscribe to — undeclared, @retired, or
+	// simply someone else's — cannot fail their batch. Never decode into
+	// the shared *Event: the fan-out buffer hands the same pointer to
+	// every runner concurrently (see Client.decodeEvent).
+	raw []byte
 }
 
 // ConflictError is returned when an append loses an optimistic-concurrency
@@ -322,7 +330,13 @@ type EventDef struct {
 	SchemaVersion int
 	Publish       bool
 	Service       string // owning service; empty = local
-	Aliases       []string
+	// Retired (@retired) marks an event that still decodes — stored rows
+	// replay and fold — but can never be produced or subscribed to again.
+	// Validate rejects it in emits, `on` subscriptions, and upcasts; it
+	// stays in the registry so Migrate's unknown-type check passes and
+	// old rows decode-skip cleanly instead of failing every reader.
+	Retired bool
+	Aliases []string
 	// PII names payload fields encrypted at rest in the log.
 	PII []string
 	New func() any
