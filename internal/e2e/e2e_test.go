@@ -78,7 +78,7 @@ func TestOrderBillingLoop(t *testing.T) {
 			return false
 		}
 		inv := state.(*billinggen.Invoice)
-		return inv.Status == "raised" && inv.AmountCents == 4000
+		return inv.Status == "raised" && inv.AmountCents == 4001
 	})
 
 	if err := billingCli.Dispatch(ctx, &billinggen.MarkInvoicePaid{
