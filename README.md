@@ -751,6 +751,25 @@ collection cycle (`loom.outbox.depth`, `.oldest_age`,
 `.failed`, and `loom.runner.lag` per runner — the stuck-runner alarm as a
 metric).
 
+Logs go through whatever `slog` handler you put in `Config.Logger`. On
+Google Cloud, wire `loom.CloudLogHandler` — a plain JSON handler writes
+`level`, which Cloud Logging ignores, so every line lands at DEFAULT
+severity and `severity>=ERROR` never finds `runner step failed`:
+
+```go
+slog.SetDefault(slog.New(loom.CloudLogHandler(os.Stdout)))
+```
+
+It renames `level` → `severity` (DEBUG/INFO/WARNING/ERROR — slog's WARN
+is Cloud Logging's WARNING) and `msg` → `message`, and promotes the
+context's OTel trace onto the entry (`logging.googleapis.com/trace`,
+`/spanId`, `/trace_sampled`), so a log line links to the span that wrote
+it — `projects/<id>/traces/...` when `GOOGLE_CLOUD_PROJECT` is set, the
+bare trace id otherwise. `CloudLogHandlerOptions(w, opts)` takes the JSON
+handler's options (a minimum level, `AddSource`); your own `ReplaceAttr`
+runs after the mapping. Adopting it is the consumer's call — loom's
+default is still `slog.Default()`.
+
 ## Storage (schema v2)
 
 Postgres via pgx, hand-written SQL, no ORM. Events carry a global sequence

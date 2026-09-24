@@ -138,7 +138,14 @@ generated switches, folds from generated assignments.
   counters/histograms at the natural code points and DB-observed gauges
   (outbox depth/age, dead letters, timers, effects, per-runner lag) on
   the SDK's collection cycle. Correlation/causation ids ride spans as
-  attributes.
+  attributes. Logs are the same stance: loom logs through the `slog`
+  handler the deployment gives it, and `loom.CloudLogHandler(w)` is an
+  opt-in JSON handler a consumer's `main` wires when that deployment is
+  Google Cloud — `level`→`severity` (DEBUG/INFO/WARNING/ERROR; slog's
+  WARN is Cloud Logging's WARNING), `msg`→`message`, and the context's
+  OTel trace promoted to Cloud Logging's trace/span fields. Without it a
+  plain `slog.NewJSONHandler` writes `level`, which Cloud Logging does
+  not read, and `severity>=ERROR` never finds `runner step failed`.
 - **Context-injected reads**: every handler/reaction invocation carries
   read access (`loom.Load`/`GetRecord`/`GetEntity` on the ctx), so
   implementations never hold a client and registries wire without the
