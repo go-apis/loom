@@ -85,7 +85,7 @@ myservice/
 | declaration | runs | guarantees |
 |---|---|---|
 | `policy` | inside the producing transaction | atomic with the triggering event; local events only |
-| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters |
+| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters. A process with no checkpoint row starts at the log's head (`@from(head)`, the default): it reacts to what happens after it is deployed, never to the service's whole history. Declare `@from(origin)` to replay everything (a backfill) |
 | `projection` | async | checkpointed catch-up over the global sequence, one instance at a time per runner; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
 
 `Start` is safe on every instance of a scaled-out service. Each
@@ -107,6 +107,24 @@ everything else — `Dispatch`, `Load`, the readers, the relay — queues
 behind what is left. `pgxpool` defaults to `max(NumCPU, 4)` connections,
 so two services sharing one pool on a four-core host park all four and
 deadlock. Size `MaxConns` for the services on the pool, not for the host.
+
+A process reacts to what happens after it is deployed. On `Start`, a
+process with no checkpoint row is checkpointed at the log's head before
+its runner can take a step, so shipping a new process into a service
+with years of history does not replay that history through it (and does
+not perform its effects for it). Say so explicitly when you want the
+opposite — a backfilling process:
+
+```
+process backfillTaxIds @from(origin) {   // @from(head) is the default
+  on PayeeRegistered
+}
+```
+
+Only a brand-new process is affected: a process that has checkpointed
+before — a redeploy, a rolling restart — keeps the position it had.
+Projections are unaffected either way; folding from the origin is what a
+read model is, and `Rebuild()` is how you replay one.
 
 Plus three persistence shapes: `aggregate` (event-sourced: handlers return
 events, state folds), `record` (state-of-record: ledgers, balances —
@@ -357,6 +375,24 @@ deploy skew) is a loud `UpcastError`, never a silent zero-value fold.
 Events without upcasts keep the permissive unmarshal, so purely additive
 changes don't need ceremony.
 
+Retiring an event is the other direction. Deleting the declaration leaves
+the log holding rows nothing can name, so mark it instead:
+
+```
+event PromotionExpired @retired {
+  code: string!
+}
+```
+
+The struct stays generated, so replays and rebuilds still decode old rows
+and then fold nothing — but emitting it, subscribing to it (policy,
+process, or projection), or upcasting it are all validation errors. Runners decode
+lazily, only the types they subscribe to, so a retired event costs a
+subscriber nothing. `Migrate` enforces the other half: it fails if the
+service's log holds any type the registry doesn't declare, so a dropped
+declaration is caught at deploy time rather than by whichever runner
+happens to read that row.
+
 ## PII: encrypted at rest, shreddable forever
 
 Mark the fields that identify a person and give the client a key wrapper:
@@ -459,7 +495,8 @@ POST /shred                                    delete a stream's PII key and fil
 GET  /stats                                    outbox / dead letters / timers / effects health
 GET  /console                                  the ops console (see below)
 GET  /registry                                 the service as its schema sees it
-GET  /runners                                  checkpoint lag per projection/process
+GET  /runners                                  checkpoint lag per projection/process, and a stalled projection's failing seq/error
+POST /runners/projection:{name}/skip           park a stalled projection's failing event to dead letters and move past it
 GET  /timers                                   pending schedule (overdue flagged)
 GET  /batches                                  recent batches
 ```
@@ -726,7 +763,8 @@ node to trace its edges — plus the schema tables: aggregates, reactions
 with dispatch contracts and effects, projections, uploads), **Data**
 (browse read models and records with filters, fetch any row or aggregate
 by id), **Events** (log browser: filter by type/aggregate/correlation,
-inspect payloads), **Issues** (runner lag against the log head, in-doubt
+inspect payloads), **Issues** (runner lag against the log head, a stalled
+projection's failing event and error with skip, in-doubt
 effects with resolve, dead letters with redrive, overdue timers). One
 embedded self-contained page over the JSON endpoints — no build step, no
 external assets (the topology layout is ~80 lines of hand-rolled layered

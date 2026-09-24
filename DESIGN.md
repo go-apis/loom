@@ -18,7 +18,7 @@ upload      := "upload" IDENT "{" ("on" ("started"|"uploaded") "->" IDENT)* "}"
 consume     := "consume" IDENT "." IDENT fields?
 upcast      := "upcast" eventRef "@from" "(" NUM ("," NUM)* ")"
 policy      := "policy" IDENT "{" on* "}"
-process     := "process" IDENT "{" (on | effect)* "}"
+process     := "process" IDENT directives? "{" (on | effect)* "}"
 effect      := "effect" IDENT "@idempotent"?
 projection  := "projection" IDENT "->" IDENT "@fold"? "{" projOn* "}"
 projOn      := "on" eventRef ("key" "(" IDENT ")")?
@@ -32,6 +32,8 @@ fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
 builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
+             | "@retired"
+             | "@from(head|origin)"      // process start position
 ```
 
 Rules enforced at parse/validate time:
@@ -44,6 +46,14 @@ Rules enforced at parse/validate time:
   code flat and contracts referencable across languages)
 - foreign events (`consume`/qualified refs) are implicitly published
   contracts
+- `@from` is a process's start position on its first run and belongs to
+  processes only (a policy runs inside the producing transaction and has
+  no start position): `@from(head)` — the default when omitted — means a
+  process with no checkpoint row starts at the log's head and reacts only
+  to what happens after it is deployed; `@from(origin)` is the explicit
+  opt-in to replaying the whole log (a backfilling process). A process
+  that already has a checkpoint row keeps it, so a redeploy is untouched.
+  Projections are not affected: they always fold from the origin by design
 - effects are declared on processes only (a policy runs in the producing
   transaction and must not touch the outside world); `loom.Once` refuses
   undeclared keys — a typo'd key would be a fresh journal identity and a
@@ -80,6 +90,14 @@ Rules enforced at parse/validate time:
   become API surface (`create{Name}Upload`)
 - a projection's `key(field)` must name a required uuid field on that
   event's payload — a missing key would route to the nil row
+- `event X @retired` keeps a declaration alive for its stored rows alone:
+  the payload struct stays generated, so replays and rebuilds still decode
+  X and then fold nothing (folds are generated from what commands emit,
+  and a retired event is emitted by nothing) — decode-skip, cleanly.
+  Nothing may emit it, subscribe to it (policy, process, or projection
+  `on`), or `upcast` it: all four are validation errors. Deleting the
+  declaration instead is what leaves the log holding a type nothing can
+  name, which `Migrate` now refuses (see Runtime)
 
 ## Generated code
 
@@ -106,6 +124,21 @@ generated switches, folds from generated assignments.
   automatic retry against fresh state), run subscribed policies in the same
   transaction (depth-capped), write outbox rows for published events,
   snapshot every N.
+- **Lazy decode**: the local log read (`readLog`) decrypts every row but
+  decodes none: the payload rides `Event.raw` and each runner decodes only
+  the types its own subscription check already let through, into a copy
+  (the fan-out buffer hands one `*Event` to every runner at once, so
+  decoding must never write to the shared pointer). Decoding eagerly for
+  everyone meant one row of an undeclared or `@retired` type failed the
+  whole batch for every runner sharing the buffer, including the ones that
+  never look at that type. Aggregate replay (`loadState`) and bus
+  deliveries (`eventFromEnvelope`, already subscription-filtered) decode
+  as they always did. The cost of lazy decode is that an undeclared type
+  is now invisible until something subscribes to it, so `Migrate` closes
+  the gap: after the DDL and table/series diff it reads
+  `SELECT DISTINCT type FROM loom_events` for the service and fails if any
+  stored type is absent from the registry (active or `@retired`). Loud
+  once at deploy time beats every runner tripping on it forever.
 - **Global sequence**: `loom_events.global_seq` (identity). Projections and
   local processes are checkpointed catch-up readers over it — rebuildable,
   no bus, no publish-to-self hack for async self-handling. Both are elected
@@ -117,6 +150,39 @@ generated switches, folds from generated assignments.
   through it doubled every process step's connection use and starved
   projections and Dispatch (measured: projection lag ×3). A lease costs
   one connection, only while leading; hand-over is at-least-once.
+- **Process start position**: a missing checkpoint row reads as sequence
+  0, so a process deployed into a service with history would react to all
+  of it on its first run. `Start` closes that: before a process runner can
+  step, it inserts the runner's checkpoint at the current head unless the
+  process declares `@from(origin)` (`ON CONFLICT DO NOTHING` — an existing
+  row, from a redeploy or another instance, is never moved). Projections
+  are deliberately exempt: folding from the origin is what a read model
+  is.
+- **A projection halts; it does not retry forever or skip.** An event a
+  projection cannot decode, fold, or write stops it at that event: the
+  events before it commit, the checkpoint stops just short of it, and the
+  same transaction records the stall on the `loom_checkpoints` row —
+  `failing_seq` (the event), `attempts`, `last_error`, `stalled_since`
+  (first failure only). Skipping would be worse than stopping: a read
+  model folded out of order is wrong in ways no later event repairs.
+  The runner backs off by attempts (twice the poll, doubling, capped at
+  five minutes) instead of refolding the batch on every wake — the
+  incident this replaces retried one unwritable row every 2s for six
+  hours. The next step that gets past the event clears the stall. The
+  way out is the operator's: fix the fold and `Rebuild`, or
+  `POST /runners/{name}/skip` (`Client.SkipStalled`), which parks the
+  event to `loom_dead_letters` in park's shape and advances the
+  checkpoint past it in one transaction under the runner's lock.
+  `GET /runners` carries `stalled`/`failing_seq`/`last_error`/
+  `stalled_since`, so the read surface shows what skip acts on. Every
+  runner is loud without being noisy: `runner step failed` logs at most
+  once a minute per runner, with the failures since the last line; a
+  runner whose checkpoint row still doesn't exist one poll after `Start`
+  logs `runner never checkpointed` under the same ceiling (an idle
+  runner seeds its row, so silence means it never got to step — a lock
+  held elsewhere, a starved pool). Processes keep their own policy:
+  retry, then park and move on. The four columns are additive; a
+  consumer upgrading runs `Migrate` before the new runners start.
 - **Outbox relay**: the one component ported by design from the old
   runtime: advisory-lock election, SKIP LOCKED claims, insert-order drain,
   per-aggregate ordering keys.
@@ -380,7 +446,9 @@ JSON endpoints. Overview (health cards, batches, event volumes), Design
 (the registry as a document — commands' emit contracts, reactions'
 dispatch contracts via `ReactorDef.Subs`, effects, PII markers), Events
 (log browser), Issues (checkpoint lag per runner — the stuck-detection
-signal, in-doubt effect resolution, dead-letter redrive, overdue timers).
+signal — with a stalled projection's failing seq, error, and a skip
+button over `POST /runners/{name}/skip`; in-doubt effect resolution,
+dead-letter redrive, overdue timers).
 Deliberately no framework UI dependency and no build step; a topology
 graph and the Performance tab are the deferred follow-ons.
 

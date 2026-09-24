@@ -1,0 +1,55 @@
+name: Tag on merge
+
+# Every merged PR into main tags its merge commit: the next MINOR by default,
+# the next PATCH when the PR carries the `patch` label.
+# See docs/adr/0001-ci-and-release-tagging.md.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Two merges landing close together must not compute the same next tag.
+concurrency:
+  group: tag-on-merge
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag merge commit
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute and push the next tag
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          BUMP: ${{ contains(github.event.pull_request.labels.*.name, 'patch') && 'patch' || 'minor' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+
+          existing="$(git tag --points-at "$MERGE_SHA" --list 'v*.*.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+          if [ -n "$existing" ]; then
+            echo "$MERGE_SHA is already tagged $existing; nothing to do"
+            exit 0
+          fi
+
+          tag="$(.github/scripts/next-tag.sh "$BUMP")"
+          echo "tagging $MERGE_SHA as $tag ($BUMP)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$MERGE_SHA" -m "$tag: #$PR_NUMBER $PR_TITLE"
+          git push origin "refs/tags/$tag"

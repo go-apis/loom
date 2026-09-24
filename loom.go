@@ -74,6 +74,14 @@ type Event struct {
 	At            time.Time `json:"at"`
 	Meta          Metadata  `json:"meta"`
 	Data          any       `json:"data"`
+
+	// raw is the decrypted-but-undecoded payload carried by the local log
+	// read path (readLog). Runners decode lazily, per subscriber, so one
+	// row of a type they don't subscribe to — undeclared, @retired, or
+	// simply someone else's — cannot fail their batch. Never decode into
+	// the shared *Event: the fan-out buffer hands the same pointer to
+	// every runner concurrently (see Client.decodeEvent).
+	raw []byte
 }
 
 // ConflictError is returned when an append loses an optimistic-concurrency
@@ -322,7 +330,14 @@ type EventDef struct {
 	SchemaVersion int
 	Publish       bool
 	Service       string // owning service; empty = local
-	Aliases       []string
+	// Retired (@retired) marks an event that still decodes — stored rows
+	// replay and decode-skip — but can never be produced or subscribed
+	// to again.
+	// Validate rejects it in emits, `on` subscriptions, and upcasts; it
+	// stays in the registry so Migrate's unknown-type check passes and
+	// old rows decode-skip cleanly instead of failing every reader.
+	Retired bool
+	Aliases []string
 	// PII names payload fields encrypted at rest in the log.
 	PII []string
 	New func() any
@@ -378,8 +393,22 @@ type ReactorDef struct {
 	// to repeat, so a claim a crash left running re-runs instead of
 	// parking in doubt.
 	IdempotentEffects []string
-	React             func(ctx context.Context, evt *Event) ([]Command, error)
+	// From is where a process with no checkpoint row starts: FromHead
+	// (the default, and what "" means) or FromOrigin. Start seeds the
+	// checkpoint of a from-head process at the log's head before its
+	// runner can step, so a newly deployed process reacts to what
+	// happens next and not to the service's whole history. A process
+	// that has checkpointed before is never re-seeded.
+	From  string
+	React func(ctx context.Context, evt *Event) ([]Command, error)
 }
+
+// Start positions for ReactorDef.From, mirroring the schema's
+// @from(head) / @from(origin).
+const (
+	FromHead   = "head"
+	FromOrigin = "origin"
+)
 
 type SubscriptionDef struct {
 	Event      string

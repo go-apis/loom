@@ -165,6 +165,14 @@ type runnerStatus struct {
 	Latest    int64      `json:"latest"`
 	Lag       int64      `json:"lag"`
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	// Stalled: a projection halted on an event it cannot fold or write —
+	// FailingSeq is that event, LastError why, StalledSince the first
+	// failure. POST /runners/{name}/skip parks it and moves on.
+	Stalled      bool       `json:"stalled"`
+	FailingSeq   int64      `json:"failing_seq,omitempty"`
+	Attempts     int        `json:"attempts,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	StalledSince *time.Time `json:"stalled_since,omitempty"`
 }
 
 func (c *Client) apiRunners(w http.ResponseWriter, r *http.Request) {
@@ -173,11 +181,17 @@ func (c *Client) apiRunners(w http.ResponseWriter, r *http.Request) {
 	_ = c.db.QueryRow(ctx, `SELECT coalesce(max(global_seq),0) FROM loom_events WHERE service=$1`, c.reg.Service).Scan(&latest)
 
 	type cp struct {
-		seq int64
-		at  time.Time
+		seq        int64
+		at         time.Time
+		failingSeq int64
+		attempts   int
+		lastError  string
+		since      *time.Time
 	}
 	cps := map[string]cp{}
-	rows, err := c.db.Query(ctx, `SELECT runner, global_seq, updated_at FROM loom_checkpoints WHERE service=$1`, c.reg.Service)
+	rows, err := c.db.Query(ctx, `
+		SELECT runner, global_seq, updated_at, failing_seq, attempts, last_error, stalled_since
+		FROM loom_checkpoints WHERE service=$1`, c.reg.Service)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -185,7 +199,7 @@ func (c *Client) apiRunners(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var name string
 		var v cp
-		if err := rows.Scan(&name, &v.seq, &v.at); err != nil {
+		if err := rows.Scan(&name, &v.seq, &v.at, &v.failingSeq, &v.attempts, &v.lastError, &v.since); err != nil {
 			rows.Close()
 			apiError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -200,6 +214,8 @@ func (c *Client) apiRunners(w http.ResponseWriter, r *http.Request) {
 		if v, ok := cps[runner]; ok {
 			at := v.at
 			st.Seq, st.UpdatedAt = v.seq, &at
+			st.Stalled = v.since != nil
+			st.FailingSeq, st.Attempts, st.LastError, st.StalledSince = v.failingSeq, v.attempts, v.lastError, v.since
 		}
 		if checkpointed {
 			st.Lag = latest - st.Seq

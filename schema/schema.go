@@ -71,10 +71,16 @@ type Command struct {
 }
 
 type Event struct {
-	Name    string   `yaml:"name" json:"name"`
-	Service string   `yaml:"service,omitempty" json:"service,omitempty"` // set = consumed foreign event
-	Publish bool     `yaml:"publish,omitempty" json:"publish,omitempty"`
-	Version int      `yaml:"version,omitempty" json:"version,omitempty"` // schema version, default 1
+	Name    string `yaml:"name" json:"name"`
+	Service string `yaml:"service,omitempty" json:"service,omitempty"` // set = consumed foreign event
+	Publish bool   `yaml:"publish,omitempty" json:"publish,omitempty"`
+	Version int    `yaml:"version,omitempty" json:"version,omitempty"` // schema version, default 1
+	// Retired (@retired) keeps the declaration alive purely so stored rows
+	// still decode: the event can never be emitted, subscribed to, or
+	// upcast again (Validate enforces all three). Deleting the
+	// declaration instead would leave undecodable rows in the log —
+	// which Migrate now refuses outright.
+	Retired bool     `yaml:"retired,omitempty" json:"retired,omitempty"`
 	Aliases []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	// Upcasts lists the versions this event can be lifted FROM (`upcast X
 	// @from(n)`): each n names a hand-written hop n → n+1 run at decode
@@ -232,7 +238,22 @@ type Reactor struct {
 	// external call is safe to repeat, so a claim left running by a crash
 	// re-runs instead of parking in doubt. A subset of Effects.
 	Idempotent []string `yaml:"idempotent,omitempty" json:"idempotent,omitempty"`
+	// From is a process's start position on its first run — `@from(head)`
+	// (the default, empty here) or `@from(origin)`. A process that has
+	// never checkpointed starts at the log's head: it reacts to what
+	// happens after it is deployed, not to the service's whole history.
+	// @from(origin) is the explicit opt-in to replay everything (a
+	// backfilling process). Processes only: a policy runs inside the
+	// producing transaction and has no start position.
+	From string `yaml:"from,omitempty" json:"from,omitempty"`
 }
+
+// Start positions for Reactor.From. FromHead is the default and is
+// written as the empty string when nobody said otherwise.
+const (
+	FromHead   = "head"
+	FromOrigin = "origin"
+)
 
 type Subscription struct {
 	Event string `yaml:"event" json:"event"`
@@ -500,6 +521,8 @@ func (s *Schema) Validate() error {
 					fail("command %s emits undeclared event %s", c.Name, e)
 				} else if evt.Service != "" {
 					fail("command %s emits foreign event %s (only %s can emit it)", c.Name, e, evt.Service)
+				} else if evt.Retired {
+					fail("command %s emits @retired event %s — a retired event is declared so old rows still decode, never to be produced again", c.Name, e)
 				}
 			}
 		}
@@ -519,6 +542,8 @@ func (s *Schema) Validate() error {
 					fail("record command %s emits undeclared event %s", c.Name, e)
 				} else if evt.Service != "" {
 					fail("record command %s emits foreign event %s", c.Name, e)
+				} else if evt.Retired {
+					fail("record command %s emits @retired event %s — a retired event is declared so old rows still decode, never to be produced again", c.Name, e)
 				}
 			}
 		}
@@ -570,12 +595,17 @@ func (s *Schema) Validate() error {
 		if len(p.Effects) > 0 {
 			fail("policy %s declares effects — policies run in the producing transaction; external calls belong in a process", p.Name)
 		}
+		if p.From != "" {
+			fail("policy %s declares @from(%s) — a policy runs inside the producing transaction and has no start position; only a process does", p.Name, p.From)
+		}
 		for _, sub := range p.Subscriptions {
 			evt := s.FindEvent(sub.Event)
 			if evt == nil {
 				fail("policy %s subscribes to undeclared event %s", p.Name, sub.Event)
 			} else if evt.Service != "" {
 				fail("policy %s subscribes to foreign event %s — policies run in the producing transaction; use a process", p.Name, sub.Event)
+			} else if evt.Retired {
+				fail("policy %s subscribes to @retired event %s — a retired event is never produced again, so the subscription can never fire", p.Name, sub.Event)
 			}
 			for _, d := range sub.Dispatches {
 				if !commandExists(d) {
@@ -585,6 +615,9 @@ func (s *Schema) Validate() error {
 		}
 	}
 	for _, p := range s.Processes {
+		if p.From != "" && p.From != FromHead && p.From != FromOrigin {
+			fail("process %s: @from(%s) is not a start position — use @from(head) (the default: react to what happens after the deploy) or @from(origin) (replay the whole log)", p.Name, p.From)
+		}
 		seenEffects := map[string]bool{}
 		for _, e := range p.Effects {
 			if seenEffects[e] {
@@ -601,6 +634,8 @@ func (s *Schema) Validate() error {
 			evt := s.FindEvent(sub.Event)
 			if evt == nil {
 				fail("process %s subscribes to undeclared event %s", p.Name, sub.Event)
+			} else if evt.Retired {
+				fail("process %s subscribes to @retired event %s — a retired event is never produced again, so the subscription can never fire", p.Name, sub.Event)
 			} else if evt.Service != "" && !evt.Publish {
 				// foreign events are only reachable if the owner publishes;
 				// the consuming side records them as published contracts.
@@ -618,6 +653,10 @@ func (s *Schema) Validate() error {
 	// every version below the gap with no path to current.
 	for _, e := range s.Events {
 		if len(e.Upcasts) == 0 {
+			continue
+		}
+		if e.Retired {
+			fail("event %s is @retired and declares upcasts — a retired event is read as stored; lifting it forward has no reader to lift it for", e.Name)
 			continue
 		}
 		version := e.Version
@@ -821,6 +860,8 @@ func (s *Schema) Validate() error {
 			evt := s.FindEvent(sub.Event)
 			if evt == nil {
 				fail("projection %s subscribes to undeclared event %s", p.Name, sub.Event)
+			} else if evt.Retired {
+				fail("projection %s subscribes to @retired event %s — a retired event is never produced again; drop the `on` and rebuild if the fold must forget it", p.Name, sub.Event)
 			}
 			if sub.Key == "" || evt == nil {
 				continue

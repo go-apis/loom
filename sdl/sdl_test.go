@@ -88,7 +88,7 @@ policy noteLocally {
   on OrderPlaced -> PlaceOrder
 }
 
-process shipOnPayment {
+process shipOnPayment @from(origin) {
   on billing.InvoicePaid -> PlaceOrder
   effect carrier_pickup
   effect notify_customer @idempotent
@@ -137,6 +137,14 @@ func TestParse(t *testing.T) {
 	}
 	if len(s.Records) != 1 || len(s.Records[0].Commands) != 2 {
 		t.Fatalf("record misparsed: %+v", s.Records)
+	}
+	// @from(origin): the explicit opt-in to replaying the whole log; a
+	// process that says nothing starts at the head, recorded as ""
+	if from := s.Processes[0].From; from != "origin" {
+		t.Fatalf("process @from misparsed: %q", from)
+	}
+	if from := s.Policies[0].From; from != "" {
+		t.Fatalf("policy grew a start position: %q", from)
 	}
 	// effects sort alphabetically on the process
 	if fx := s.Processes[0].Effects; len(fx) != 2 || fx[0] != "carrier_pickup" || fx[1] != "notify_customer" {
@@ -638,6 +646,54 @@ series P @time(at) @dim(sku) {
 }
 `,
 			wantErr: "series P collides with entity P",
+		},
+		"policy declares a start position": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+policy p @from(head) { on E -> C }
+`,
+			wantErr: "has no start position",
+		},
+		"process start position is not a position": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p @from(yesterday) { on E -> C }
+`,
+			wantErr: "is not a start position",
+		},
+		"process start position takes one argument": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p @from(head, origin) { on E -> C }
+`,
+			wantErr: "@from wants one start position",
+		},
+		"process takes no other directive": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p @snapshot(5) { on E -> C }
+`,
+			wantErr: "unknown directive @snapshot",
 		},
 	}
 	for name, tc := range cases {

@@ -590,8 +590,8 @@ async function loadIssues() {
     (r.runners||[]).map(x => `<tr><td class="mono">${esc(x.runner)}</td><td>${esc(x.kind)}</td>
       <td class="mono">${x.seq}</td><td class="mono">${x.latest}</td>
       <td class="mono ${x.lag > 100 ? "bad" : x.lag > 0 ? "warn" : "ok"}">${x.kind==="process(bus)" ? "—" : x.lag}</td>
-      <td>${ago(x.updated_at)}</td>
-      <td>${x.kind==="projection"?`<button class="act" onclick="rebuild('${esc(x.runner.slice(11))}')">rebuild</button>`:""}</td></tr>`),
+      <td>${x.stalled ? `<span class="bad" title="${esc(x.last_error)}">stalled at ${x.failing_seq} since ${ago(x.stalled_since)} (${x.attempts} attempts)</span>` : ago(x.updated_at)}</td>
+      <td>${x.stalled?`<button class="act" onclick="skipStalled('${esc(x.runner)}')">skip</button> `:""}${x.kind==="projection"?`<button class="act" onclick="rebuild('${esc(x.runner.slice(11))}')">rebuild</button>`:""}</td></tr>`),
     "no runners");
 
   const fx = await get("effects?status=running&limit=100");
@@ -625,6 +625,11 @@ async function loadIssues() {
 window.redrive = async (id) => {
   try { await post("dead_letters/" + id + "/redrive"); loadIssues(); }
   catch (e) { alert("redrive failed: " + e.message); }
+};
+window.skipStalled = async (runner) => {
+  if (!confirm("Park the event " + runner + " is stalled on to dead letters and move past it? The read model never sees it.")) return;
+  try { await post("runners/" + encodeURIComponent(runner) + "/skip"); loadIssues(); }
+  catch (e) { alert("skip failed: " + e.message); }
 };
 window.rebuild = async (name) => {
   if (!confirm("Refold " + name + " from the event log? The read model empties, then repopulates.")) return;

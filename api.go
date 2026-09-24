@@ -42,6 +42,7 @@ import (
 //	POST /dead_letters/{id}/redrive     re-run one parked delivery
 //	POST /shred                         delete a stream's @pii data key and files (body: namespace, id) — irreversible
 //	POST /projections/{name}/rebuild    refold one read model from the event log
+//	POST /runners/{name}/skip           park a stalled projection's failing event to dead letters and advance past it
 //	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?) — the junk lever, irreversible
 //	POST /reset                         factory-reset: truncate every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
@@ -77,6 +78,7 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("POST /dead_letters/{id}/redrive", c.apiRedrive)
 	mux.HandleFunc("POST /shred", c.apiShred)
 	mux.HandleFunc("POST /projections/{name}/rebuild", c.apiRebuild)
+	mux.HandleFunc("POST /runners/{name}/skip", c.apiSkip)
 	mux.HandleFunc("POST /streams/delete", c.apiDeleteStreams)
 	mux.HandleFunc("POST /reset", c.apiReset)
 	mux.HandleFunc("GET /console", c.apiConsole)
@@ -574,6 +576,21 @@ func (c *Client) apiRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// apiSkip unsticks a stalled projection (GET /runners shows which, and
+// on what): 409 when it is not stalled.
+func (c *Client) apiSkip(w http.ResponseWriter, r *http.Request) {
+	seq, err := c.SkipStalled(r.Context(), r.PathValue("name"))
+	if errors.Is(err, ErrNotStalled) {
+		apiError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "seq": seq})
 }
 
 // apiDeleteStreams deletes one or many streams in a namespace. Streams
