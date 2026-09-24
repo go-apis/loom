@@ -466,7 +466,8 @@ POST /shred                                    delete a stream's PII key and fil
 GET  /stats                                    outbox / dead letters / timers / effects health
 GET  /console                                  the ops console (see below)
 GET  /registry                                 the service as its schema sees it
-GET  /runners                                  checkpoint lag per projection/process
+GET  /runners                                  checkpoint lag per projection/process, and a stalled projection's failing seq/error
+POST /runners/projection:{name}/skip           park a stalled projection's failing event to dead letters and move past it
 GET  /timers                                   pending schedule (overdue flagged)
 GET  /batches                                  recent batches
 ```
@@ -733,7 +734,8 @@ node to trace its edges — plus the schema tables: aggregates, reactions
 with dispatch contracts and effects, projections, uploads), **Data**
 (browse read models and records with filters, fetch any row or aggregate
 by id), **Events** (log browser: filter by type/aggregate/correlation,
-inspect payloads), **Issues** (runner lag against the log head, in-doubt
+inspect payloads), **Issues** (runner lag against the log head, a stalled
+projection's failing event and error with skip, in-doubt
 effects with resolve, dead letters with redrive, overdue timers). One
 embedded self-contained page over the JSON endpoints — no build step, no
 external assets (the topology layout is ~80 lines of hand-rolled layered

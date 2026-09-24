@@ -9,9 +9,12 @@ const fanoutBufCap = 1024
 
 // runnerWake is one runner's registration with the fan-out reader: a
 // cap-1 wake channel plus the event types it subscribes to (nil = all).
+// kick is the operator's channel: a skip or rebuild cuts short a stalled
+// runner's backoff, which ordinary wakes deliberately do not.
 type runnerWake struct {
 	name     string
 	ch       chan struct{}
+	kick     chan struct{}
 	interest map[string]bool
 }
 
@@ -44,7 +47,7 @@ type logFanout struct {
 }
 
 func (f *logFanout) register(name string, events []string) *runnerWake {
-	rw := &runnerWake{name: name, ch: make(chan struct{}, 1)}
+	rw := &runnerWake{name: name, ch: make(chan struct{}, 1), kick: make(chan struct{}, 1)}
 	if len(events) > 0 {
 		rw.interest = make(map[string]bool, len(events))
 		for _, e := range events {
@@ -102,6 +105,22 @@ func (f *logFanout) wake(types map[string]bool) {
 }
 
 func (f *logFanout) wakeAll() { f.wake(nil) }
+
+// kickRunner ends one runner's stall backoff on this instance (other
+// instances wait theirs out) and wakes it.
+func (f *logFanout) kickRunner(name string) {
+	f.mu.Lock()
+	runners := f.runners
+	f.mu.Unlock()
+	for _, rw := range runners {
+		if rw.name == name {
+			select {
+			case rw.kick <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
 
 // flush drops the buffered tail without moving head. Runners behind head
 // fall back to direct log reads, which decrypt afresh. Required whenever

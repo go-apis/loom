@@ -155,6 +155,31 @@ generated switches, folds from generated assignments.
   row, from a redeploy or another instance, is never moved). Projections
   are deliberately exempt: folding from the origin is what a read model
   is.
+- **A projection halts; it does not retry forever or skip.** An event a
+  projection cannot decode, fold, or write stops it at that event: the
+  events before it commit, the checkpoint stops just short of it, and the
+  same transaction records the stall on the `loom_checkpoints` row —
+  `failing_seq` (the event), `attempts`, `last_error`, `stalled_since`
+  (first failure only). Skipping would be worse than stopping: a read
+  model folded out of order is wrong in ways no later event repairs.
+  The runner backs off by attempts (twice the poll, doubling, capped at
+  five minutes) instead of refolding the batch on every wake — the
+  incident this replaces retried one unwritable row every 2s for six
+  hours. The next step that gets past the event clears the stall. The
+  way out is the operator's: fix the fold and `Rebuild`, or
+  `POST /runners/{name}/skip` (`Client.SkipStalled`), which parks the
+  event to `loom_dead_letters` in park's shape and advances the
+  checkpoint past it in one transaction under the runner's lock.
+  `GET /runners` carries `stalled`/`failing_seq`/`last_error`/
+  `stalled_since`, so the read surface shows what skip acts on. Every
+  runner is loud without being noisy: `runner step failed` logs at most
+  once a minute per runner, with the failures since the last line; a
+  runner whose checkpoint row still doesn't exist one poll after `Start`
+  logs `runner never checkpointed` under the same ceiling (an idle
+  runner seeds its row, so silence means it never got to step — a lock
+  held elsewhere, a starved pool). Processes keep their own policy:
+  retry, then park and move on. The four columns are additive; a
+  consumer upgrading runs `Migrate` before the new runners start.
 - **Outbox relay**: the one component ported by design from the old
   runtime: advisory-lock election, SKIP LOCKED claims, insert-order drain,
   per-aggregate ordering keys.
@@ -402,7 +427,9 @@ JSON endpoints. Overview (health cards, batches, event volumes), Design
 (the registry as a document — commands' emit contracts, reactions'
 dispatch contracts via `ReactorDef.Subs`, effects, PII markers), Events
 (log browser), Issues (checkpoint lag per runner — the stuck-detection
-signal, in-doubt effect resolution, dead-letter redrive, overdue timers).
+signal — with a stalled projection's failing seq, error, and a skip
+button over `POST /runners/{name}/skip`; in-doubt effect resolution,
+dead-letter redrive, overdue timers).
 Deliberately no framework UI dependency and no build step; a topology
 graph and the Performance tab are the deferred follow-ons.
 
