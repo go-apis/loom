@@ -620,7 +620,8 @@ func (c *Client) SkipStalled(ctx context.Context, runner string) (int64, error) 
 
 // processStep runs a local-event process from the log: react, dispatch (its
 // own unit of work), advance the checkpoint. Failures retry, then park the
-// event to dead letters and move on — at-least-once, no head-of-line block.
+// event to dead letters (or, under @retry, re-arm it as a durable timer —
+// see retry.go) and move on — at-least-once, no head-of-line block.
 // Steps only while this instance leads the service's processes (see
 // election.go): one instance reacts at a time, and the reaction runs on
 // no pinned connection — a process may be a long external call.
@@ -660,9 +661,17 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 				if err != nil {
 					return 0, err
 				}
-				if err := c.reactWithRetry(ctx, p, decoded); err != nil {
-					if err := c.park(ctx, runner, decoded, err); err != nil {
-						return 0, err
+				// a durable retry already owns this event (@retry): the
+				// redelivery converges on it rather than reacting twice
+				pending, err := c.retryPending(ctx, p, decoded)
+				if err != nil {
+					return 0, err
+				}
+				if !pending {
+					if err := c.reactWithRetry(ctx, p, decoded); err != nil {
+						if err := c.exhausted(ctx, runner, p, decoded, err); err != nil {
+							return 0, err
+						}
 					}
 				}
 			}
@@ -709,7 +718,8 @@ func (c *Client) react(ctx context.Context, p *ReactorDef, evt *Event) error {
 }
 
 // subscribeForeign consumes foreign events off the bus for one process:
-// dedup, react with retries, park on exhaustion.
+// dedup, react with retries, park (or durably retry, under @retry) on
+// exhaustion.
 func (c *Client) subscribeForeign(ctx context.Context, p *ReactorDef, foreign []string) error {
 	group := c.reg.Service + "." + p.Name
 	return c.bus.Subscribe(ctx, group, func(ctx context.Context, env *Envelope) (retErr error) {
@@ -738,8 +748,11 @@ func (c *Client) subscribeForeign(ctx context.Context, p *ReactorDef, foreign []
 			c.tel.count(ctx, c.tel.dedupHits, 1, attribute.String("loom.process", p.Name))
 			return nil
 		}
+		if pending, err := c.retryPending(ctx, p, evt); err != nil || pending {
+			return err // a durable retry owns it, and marks it processed
+		}
 		if err := c.reactWithRetry(ctx, p, evt); err != nil {
-			return c.park(ctx, "process:"+p.Name, evt, err)
+			return c.exhausted(ctx, "process:"+p.Name, p, evt, err)
 		}
 		return c.markProcessed(ctx, p.Name, key)
 	})
@@ -801,6 +814,20 @@ func (c *Client) park(ctx context.Context, runner string, evt *Event, cause erro
 // parkOn is park on a given connection or transaction, with the attempts
 // the runner actually made.
 func (c *Client) parkOn(ctx context.Context, q executor, runner string, evt *Event, cause error, attempts int) error {
+	raw := c.sealedEnvelope(ctx, evt)
+	c.log.ErrorContext(ctx, "parking event to dead letters", "runner", runner, "type", evt.Type, "error", cause)
+	c.tel.count(ctx, c.tel.parked, 1, attribute.String("loom.runner", runner))
+	_, err := q.Exec(ctx, `
+		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
+		VALUES ($1,$2,$3,$4,$5)`,
+		c.reg.Service, runner, raw, cause.Error(), attempts)
+	return err
+}
+
+// sealedEnvelope is an event as it rests outside the log — a dead letter
+// or a durable retry — with its @pii payload fields re-sealed. openEnvelope
+// reads it back.
+func (c *Client) sealedEnvelope(ctx context.Context, evt *Event) []byte {
 	parked := evt
 	if def := c.reg.eventDef(evt.Type); def != nil && len(def.PII) > 0 && evt.Data != nil {
 		if dataRaw, err := json.Marshal(evt.Data); err == nil {
@@ -815,13 +842,27 @@ func (c *Client) parkOn(ctx context.Context, q executor, runner string, evt *Eve
 	if err != nil {
 		raw = []byte(fmt.Sprintf(`{"type":%q}`, evt.Type))
 	}
-	c.log.ErrorContext(ctx, "parking event to dead letters", "runner", runner, "type", evt.Type, "error", cause)
-	c.tel.count(ctx, c.tel.parked, 1, attribute.String("loom.runner", runner))
-	_, err = q.Exec(ctx, `
-		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
-		VALUES ($1,$2,$3,$4,$5)`,
-		c.reg.Service, runner, raw, cause.Error(), attempts)
-	return err
+	return raw
+}
+
+// openEnvelope decodes a sealedEnvelope back into a typed event.
+func (c *Client) openEnvelope(ctx context.Context, raw []byte) (*Event, error) {
+	var parked struct {
+		Event
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &parked); err != nil {
+		return nil, err
+	}
+	evt := parked.Event
+	data, err := c.decryptEventData(ctx, evt.Namespace, evt.AggregateID, evt.Type, parked.Data)
+	if err != nil {
+		return nil, err
+	}
+	if evt.Data, err = c.decode(evt.Type, evt.SchemaVersion, data); err != nil {
+		return nil, err
+	}
+	return &evt, nil
 }
 
 // DeadLetter is one parked delivery, as listed by DeadLetters and the
@@ -905,39 +946,31 @@ func (c *Client) RedriveDeadLetter(ctx context.Context, id int64) error {
 }
 
 func (c *Client) redriveProcess(ctx context.Context, process string, raw []byte) error {
-	var p *ReactorDef
-	for _, cand := range c.reg.Processes {
-		if cand.Name == process {
-			p = cand
-		}
-	}
+	p := c.process(process)
 	if p == nil {
 		return fmt.Errorf("loom: dead letter belongs to unknown process %s", process)
 	}
-	var parked struct {
-		Event
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &parked); err != nil {
-		return err
-	}
-	evt := parked.Event
-	data, err := c.decryptEventData(ctx, evt.Namespace, evt.AggregateID, evt.Type, parked.Data)
+	evt, err := c.openEnvelope(ctx, raw)
 	if err != nil {
 		return err
 	}
-	payload, err := c.decode(evt.Type, evt.SchemaVersion, data)
-	if err != nil {
-		return err
-	}
-	evt.Data = payload
-	if err := c.react(ctx, p, &evt); err != nil {
+	if err := c.react(ctx, p, evt); err != nil {
 		return err
 	}
 	// foreign events parked instead of being marked processed; mark now so a
 	// later redelivery no-ops
 	if evt.Service != c.reg.Service {
 		return c.markProcessed(ctx, p.Name, fmt.Sprintf("%s:%d", evt.Service, evt.GlobalSeq))
+	}
+	return nil
+}
+
+// process finds a registered process by name; nil when none.
+func (c *Client) process(name string) *ReactorDef {
+	for _, p := range c.reg.Processes {
+		if p.Name == name {
+			return p
+		}
 	}
 	return nil
 }

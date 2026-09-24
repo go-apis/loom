@@ -1000,6 +1000,13 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 		if r.From != "" {
 			fmt.Fprintf(b, "\t\t\t\tFrom: %q,\n", r.From)
 		}
+		if r.Retry != nil {
+			// Validate has parsed the bounds; emit them as nanoseconds so
+			// the generated file needs no time import
+			lo, hi, _ := r.Retry.Durations()
+			fmt.Fprintf(b, "\t\t\t\tRetry: &loom.RetryPolicy{Max: %d, Min: %d, MaxBackoff: %d}, // @retry(%d, %s..%s)\n",
+				r.Retry.Max, int64(lo), int64(hi), r.Retry.Max, r.Retry.Min, r.Retry.MaxBackoff)
+		}
 		fmt.Fprintf(b, "\t\t\t\tReact: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
 		for _, sub := range r.Subscriptions {
 			fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n", sub.Event)

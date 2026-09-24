@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const Version = 2
@@ -246,6 +247,38 @@ type Reactor struct {
 	// backfilling process). Processes only: a policy runs inside the
 	// producing transaction and has no start position.
 	From string `yaml:"from,omitempty" json:"from,omitempty"`
+	// Retry is a process's `@retry(max, min..max)`: after the immediate
+	// in-process attempts fail, the reaction is re-armed as a durable
+	// timer up to Max more times, backing off between Min and MaxBackoff,
+	// before the event parks to dead letters. Nil keeps today's fixed
+	// attempts-then-park. Processes only.
+	Retry *Retry `yaml:"retry,omitempty" json:"retry,omitempty"`
+}
+
+// Retry is a process's durable retry policy. Min and MaxBackoff are Go
+// duration strings ("100ms", "5s", "5m").
+type Retry struct {
+	Max        int    `yaml:"max" json:"max"`
+	Min        string `yaml:"min" json:"min"`
+	MaxBackoff string `yaml:"max_backoff" json:"max_backoff"`
+}
+
+// Durations parses the retry's backoff bounds and checks them: both
+// positive, Min no greater than MaxBackoff, and at least one attempt.
+func (r *Retry) Durations() (min, max time.Duration, err error) {
+	if r.Max < 1 {
+		return 0, 0, fmt.Errorf("@retry wants at least one attempt, got %d", r.Max)
+	}
+	if min, err = time.ParseDuration(r.Min); err != nil || min <= 0 {
+		return 0, 0, fmt.Errorf("@retry: bad minimum backoff %q (want e.g. 5s)", r.Min)
+	}
+	if max, err = time.ParseDuration(r.MaxBackoff); err != nil || max <= 0 {
+		return 0, 0, fmt.Errorf("@retry: bad maximum backoff %q (want e.g. 5m)", r.MaxBackoff)
+	}
+	if min > max {
+		return 0, 0, fmt.Errorf("@retry: minimum backoff %s exceeds maximum %s", r.Min, r.MaxBackoff)
+	}
+	return min, max, nil
 }
 
 // Start positions for Reactor.From. FromHead is the default and is
@@ -595,6 +628,9 @@ func (s *Schema) Validate() error {
 		if len(p.Effects) > 0 {
 			fail("policy %s declares effects — policies run in the producing transaction; external calls belong in a process", p.Name)
 		}
+		if p.Retry != nil {
+			fail("policy %s declares @retry — a policy runs inside the producing transaction and fails with it; only a process retries", p.Name)
+		}
 		if p.From != "" {
 			fail("policy %s declares @from(%s) — a policy runs inside the producing transaction and has no start position; only a process does", p.Name, p.From)
 		}
@@ -617,6 +653,11 @@ func (s *Schema) Validate() error {
 	for _, p := range s.Processes {
 		if p.From != "" && p.From != FromHead && p.From != FromOrigin {
 			fail("process %s: @from(%s) is not a start position — use @from(head) (the default: react to what happens after the deploy) or @from(origin) (replay the whole log)", p.Name, p.From)
+		}
+		if p.Retry != nil {
+			if _, _, err := p.Retry.Durations(); err != nil {
+				fail("process %s: %v", p.Name, err)
+			}
 		}
 		seenEffects := map[string]bool{}
 		for _, e := range p.Effects {
