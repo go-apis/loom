@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+
+    # internal/e2e's testDB helper defaults to
+    # postgres://postgres:mysecret@localhost:5432/postgres and skips when it
+    # cannot reach it, so these credentials and the port must match that
+    # default exactly or the whole e2e suite silently skips.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: mysecret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The service container's own health check runs inside Docker; this
+      # proves the mapped port answers on the runner at the exact DSN
+      # internal/e2e defaults to. Without it a misconfigured service leaves
+      # the e2e suite skipping and `go test ./...` still reports ok.
+      - name: Wait for Postgres on the DSN the tests use
+        run: |
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U postgres -d postgres && exit 0
+            sleep 2
+          done
+          echo "postgres never became ready on localhost:5432" >&2
+          exit 1
+
+      - name: go test
+        run: go test ./... -count=1
