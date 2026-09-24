@@ -101,6 +101,13 @@ hand-over the guarantee is the at-least-once processes carry anyway.
 `Client.Leading()` says whether this instance leads. The relay and the
 timer/batch runners claim with `SKIP LOCKED` and need no election.
 
+Budget the pool for that: a started client parks one connection on
+`LISTEN` for its whole life, plus the lease connection while it leads, and
+everything else — `Dispatch`, `Load`, the readers, the relay — queues
+behind what is left. `pgxpool` defaults to `max(NumCPU, 4)` connections,
+so two services sharing one pool on a four-core host park all four and
+deadlock. Size `MaxConns` for the services on the pool, not for the host.
+
 Plus three persistence shapes: `aggregate` (event-sourced: handlers return
 events, state folds), `record` (state-of-record: ledgers, balances —
 handlers mutate state directly; emitted events are announcements into the
