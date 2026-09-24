@@ -669,6 +669,16 @@ func (p *parser) reactor(into *[]*schema.Reactor, kind string) error {
 				return err
 			}
 			r.Effects = append(r.Effects, effect)
+			dirs, err := p.directives()
+			if err != nil {
+				return err
+			}
+			for d, args := range dirs {
+				if d != "idempotent" || len(args) > 0 {
+					return p.errf(t, "effect %s: unknown directive @%s (effects take @idempotent)", effect, d)
+				}
+				r.Idempotent = append(r.Idempotent, effect)
+			}
 			continue
 		}
 		if err := p.expect("on"); err != nil {

@@ -374,7 +374,11 @@ type ReactorDef struct {
 	// Effects are the declared journaled external calls this process may
 	// perform via loom.Once (processes only).
 	Effects []string
-	React   func(ctx context.Context, evt *Event) ([]Command, error)
+	// IdempotentEffects are the declared effects marked `@idempotent`: safe
+	// to repeat, so a claim a crash left running re-runs instead of
+	// parking in doubt.
+	IdempotentEffects []string
+	React             func(ctx context.Context, evt *Event) ([]Command, error)
 }
 
 type SubscriptionDef struct {

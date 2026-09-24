@@ -42,6 +42,12 @@ type Config struct {
 	// connection. Default: half the pool's MaxConns, floor 2, so
 	// dispatches always find headroom regardless of pool size.
 	StepConcurrency int
+
+	// Reconcile maps a declared effect name (the part of a Once key before
+	// any "/suffix") to a hook Once consults before declaring that effect
+	// in doubt. Optional; an effect with no hook (and not @idempotent)
+	// still parks for an operator. See ReconcileFunc.
+	Reconcile map[string]ReconcileFunc
 }
 
 type Client struct {
@@ -72,6 +78,8 @@ type Client struct {
 	tel    *telemetry
 
 	retries int
+
+	reconcile map[string]ReconcileFunc // Config.Reconcile, by effect name
 }
 
 func New(cfg Config) (*Client, error) {
@@ -99,6 +107,11 @@ func New(cfg Config) (*Client, error) {
 	if len(cfg.Registry.Uploads) > 0 && cfg.Blobs == nil {
 		return nil, fmt.Errorf("loom: the schema declares uploads — Config.Blobs is required (see gblob.New, loom.NewDirBlobStore)")
 	}
+	for name := range cfg.Reconcile {
+		if !cfg.Registry.declaresEffect(name) {
+			return nil, fmt.Errorf("loom: Config.Reconcile names effect %q, which no process declares", name)
+		}
+	}
 	c := &Client{
 		db:          cfg.DB,
 		bus:         cfg.Bus,
@@ -117,6 +130,7 @@ func New(cfg Config) (*Client, error) {
 		series:      buildSeries(cfg.Registry),
 		tel:         newTelemetry(cfg.Registry.Service),
 		retries:     cfg.ConflictRetries,
+		reconcile:   cfg.Reconcile,
 	}
 	c.registerGauges()
 	// the dev store signals finalized uploads in-process; production

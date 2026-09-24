@@ -91,7 +91,7 @@ policy noteLocally {
 process shipOnPayment {
   on billing.InvoicePaid -> PlaceOrder
   effect carrier_pickup
-  effect notify_customer
+  effect notify_customer @idempotent
 }
 
 consume billing.InvoicePaid {
@@ -141,6 +141,9 @@ func TestParse(t *testing.T) {
 	// effects sort alphabetically on the process
 	if fx := s.Processes[0].Effects; len(fx) != 2 || fx[0] != "carrier_pickup" || fx[1] != "notify_customer" {
 		t.Fatalf("effects misparsed: %+v", fx)
+	}
+	if idem := s.Processes[0].Idempotent; len(idem) != 1 || idem[0] != "notify_customer" {
+		t.Fatalf("@idempotent misparsed: %+v", idem)
 	}
 	if pii := s.Records[0].State.PIIFields(); len(pii) != 1 || pii[0] != "account_ref" {
 		t.Fatalf("@pii misparsed: %+v", pii)
@@ -572,6 +575,21 @@ process p {
 }
 `,
 			wantErr: "declares effect callout twice",
+		},
+		"unknown effect directive": {
+			src: `
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p {
+  on E -> C
+  effect callout @retry
+}
+`,
+			wantErr: "unknown directive @retry",
 		},
 		"series without @time": {
 			src: `
