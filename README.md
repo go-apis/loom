@@ -101,6 +101,13 @@ hand-over the guarantee is the at-least-once processes carry anyway.
 `Client.Leading()` says whether this instance leads. The relay and the
 timer/batch runners claim with `SKIP LOCKED` and need no election.
 
+Budget the pool for that: a started client parks one connection on
+`LISTEN` for its whole life, plus the lease connection while it leads, and
+everything else — `Dispatch`, `Load`, the readers, the relay — queues
+behind what is left. `pgxpool` defaults to `max(NumCPU, 4)` connections,
+so two services sharing one pool on a four-core host park all four and
+deadlock. Size `MaxConns` for the services on the pool, not for the host.
+
 Plus three persistence shapes: `aggregate` (event-sourced: handlers return
 events, state folds), `record` (state-of-record: ledgers, balances —
 handlers mutate state directly; emitted events are announcements into the
@@ -743,6 +750,25 @@ collection cycle (`loom.outbox.depth`, `.oldest_age`,
 `loom.dead_letters.depth`, `loom.timers.pending`, `loom.effects.running`,
 `.failed`, and `loom.runner.lag` per runner — the stuck-runner alarm as a
 metric).
+
+Logs go through whatever `slog` handler you put in `Config.Logger`. On
+Google Cloud, wire `loom.CloudLogHandler` — a plain JSON handler writes
+`level`, which Cloud Logging ignores, so every line lands at DEFAULT
+severity and `severity>=ERROR` never finds `runner step failed`:
+
+```go
+slog.SetDefault(slog.New(loom.CloudLogHandler(os.Stdout)))
+```
+
+It renames `level` → `severity` (DEBUG/INFO/WARNING/ERROR — slog's WARN
+is Cloud Logging's WARNING) and `msg` → `message`, and promotes the
+context's OTel trace onto the entry (`logging.googleapis.com/trace`,
+`/spanId`, `/trace_sampled`), so a log line links to the span that wrote
+it — `projects/<id>/traces/...` when `GOOGLE_CLOUD_PROJECT` is set, the
+bare trace id otherwise. `CloudLogHandlerOptions(w, opts)` takes the JSON
+handler's options (a minimum level, `AddSource`); your own `ReplaceAttr`
+runs after the mapping. Adopting it is the consumer's call — loom's
+default is still `slog.Default()`.
 
 ## Storage (schema v2)
 

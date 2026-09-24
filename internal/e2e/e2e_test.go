@@ -623,6 +623,14 @@ func testDB(t *testing.T, ctx context.Context) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.Database = name
+	// Every running client parks two connections for the life of the
+	// process: one on LISTEN, one holding the process lease. These tests
+	// run two services off a single pool, so four connections are gone
+	// before a query is issued. pgx sizes a pool at max(NumCPU, 4), which
+	// is exactly four on a CI runner -- every Load and Dispatch then
+	// blocks on the pool until the test's context expires. Size the pool
+	// for the harness rather than for the host's core count.
+	cfg.MaxConns = 20
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
