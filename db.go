@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS loom_checkpoints (
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, runner)
 );
+-- a projection halted on an event it cannot fold: the event's seq, how
+-- many steps have failed on it, the last error, and when it first did
+ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS failing_seq bigint NOT NULL DEFAULT 0;
+ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS attempts int NOT NULL DEFAULT 0;
+ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
+ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS stalled_since timestamptz;
 
 CREATE TABLE IF NOT EXISTS loom_dedup (
 	service   text NOT NULL,
