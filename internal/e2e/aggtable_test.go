@@ -104,7 +104,7 @@ func TestAggregateTable(t *testing.T) {
 	srv := httptest.NewServer(gateway)
 	defer srv.Close()
 	body, _ := json.Marshal(map[string]any{
-		"query": `query($ns: Namespace!) { payees(namespace: $ns) { id name tinLast4 tin } }`,
+		"query":     `query($ns: Namespace!) { payees(namespace: $ns) { id name tinLast4 tin } }`,
 		"variables": map[string]any{"ns": "default"},
 	})
 	resp, err := http.Post(srv.URL, "application/json", bytes.NewReader(body))
