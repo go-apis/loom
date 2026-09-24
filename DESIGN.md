@@ -33,7 +33,7 @@ ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nulla
 builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
              | "@retired"
-               | "@from(head|origin)"      // process start position
+             | "@from(head|origin)"      // process start position
 ```
 
 Rules enforced at parse/validate time:
