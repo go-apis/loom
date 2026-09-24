@@ -32,6 +32,7 @@ fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
 builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
+             | "@retired"
 ```
 
 Rules enforced at parse/validate time:
@@ -77,6 +78,14 @@ Rules enforced at parse/validate time:
   become API surface (`create{Name}Upload`)
 - a projection's `key(field)` must name a required uuid field on that
   event's payload — a missing key would route to the nil row
+- `event X @retired` keeps a declaration alive for its stored rows alone:
+  the payload struct stays generated, so replays and rebuilds still decode
+  X and then fold nothing (folds are generated from what commands emit,
+  and a retired event is emitted by nothing) — decode-skip, cleanly.
+  Nothing may emit it, subscribe to it (policy, process, or projection
+  `on`), or `upcast` it: all four are validation errors. Deleting the
+  declaration instead is what leaves the log holding a type nothing can
+  name, which `Migrate` now refuses (see Runtime)
 
 ## Generated code
 
@@ -103,6 +112,21 @@ generated switches, folds from generated assignments.
   automatic retry against fresh state), run subscribed policies in the same
   transaction (depth-capped), write outbox rows for published events,
   snapshot every N.
+- **Lazy decode**: the local log read (`readLog`) decrypts every row but
+  decodes none: the payload rides `Event.raw` and each runner decodes only
+  the types its own subscription check already let through, into a copy
+  (the fan-out buffer hands one `*Event` to every runner at once, so
+  decoding must never write to the shared pointer). Decoding eagerly for
+  everyone meant one row of an undeclared or `@retired` type failed the
+  whole batch for every runner sharing the buffer, including the ones that
+  never look at that type. Aggregate replay (`loadState`) and bus
+  deliveries (`eventFromEnvelope`, already subscription-filtered) decode
+  as they always did. The cost of lazy decode is that an undeclared type
+  is now invisible until something subscribes to it, so `Migrate` closes
+  the gap: after the DDL and table/series diff it reads
+  `SELECT DISTINCT type FROM loom_events` for the service and fails if any
+  stored type is absent from the registry (active or `@retired`). Loud
+  once at deploy time beats every runner tripping on it forever.
 - **Global sequence**: `loom_events.global_seq` (identity). Projections and
   local processes are checkpointed catch-up readers over it — rebuildable,
   no bus, no publish-to-self hack for async self-handling. Both are elected

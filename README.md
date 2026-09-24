@@ -328,6 +328,24 @@ deploy skew) is a loud `UpcastError`, never a silent zero-value fold.
 Events without upcasts keep the permissive unmarshal, so purely additive
 changes don't need ceremony.
 
+Retiring an event is the other direction. Deleting the declaration leaves
+the log holding rows nothing can name, so mark it instead:
+
+```
+event PromotionExpired @retired {
+  code: string!
+}
+```
+
+The struct stays generated, so replays and rebuilds still decode old rows
+and then fold nothing — but emitting it, subscribing to it (policy,
+process, or projection), or upcasting it are all validation errors. Runners decode
+lazily, only the types they subscribe to, so a retired event costs a
+subscriber nothing. `Migrate` enforces the other half: it fails if the
+service's log holds any type the registry doesn't declare, so a dropped
+declaration is caught at deploy time rather than by whichever runner
+happens to read that row.
+
 ## PII: encrypted at rest, shreddable forever
 
 Mark the fields that identify a person and give the client a key wrapper:

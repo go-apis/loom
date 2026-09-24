@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -181,7 +183,45 @@ func (c *Client) Migrate(ctx context.Context) error {
 	if err := c.migrateTables(ctx); err != nil {
 		return err
 	}
-	return c.migrateSeries(ctx)
+	if err := c.migrateSeries(ctx); err != nil {
+		return err
+	}
+	return c.checkLogTypes(ctx)
+}
+
+// checkLogTypes refuses a migration whose registry cannot name every event
+// type already in this service's log. Runners decode lazily now, so an
+// undeclared type is invisible until some subscriber trips on it — this
+// is the one place it can be said loudly and once, at deploy time, rather
+// than forever in a runner's error log. The remedy is to declare the type:
+// `event X @retired` keeps old rows decodable without letting anything
+// produce or subscribe to X again.
+func (c *Client) checkLogTypes(ctx context.Context) error {
+	rows, err := c.db.Query(ctx,
+		`SELECT DISTINCT type FROM loom_events WHERE service=$1`, c.reg.Service)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var unknown []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return err
+		}
+		if c.reg.eventDef(t) == nil {
+			unknown = append(unknown, t)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("loom: %s log holds event types this build does not declare: %s — declare each one (`event %s @retired` if nothing should produce it again) and migrate again",
+		c.reg.Service, strings.Join(unknown, ", "), unknown[0])
 }
 
 type storedEvent struct {
@@ -328,6 +368,24 @@ func (c *Client) decode(eventType string, storedVersion int, data []byte) (any, 
 	return payload, nil
 }
 
+// decodeEvent decodes a log-read event's payload, returning a COPY with
+// Data set. Buffered events are shared by every runner on this instance —
+// decoding must stay local to the caller, never a write to the shared
+// pointer. Events that already carry a payload (bus deliveries, redrives)
+// pass through untouched.
+func (c *Client) decodeEvent(evt *Event) (*Event, error) {
+	if evt.Data != nil {
+		return evt, nil
+	}
+	payload, err := c.decode(evt.Type, evt.SchemaVersion, evt.raw)
+	if err != nil {
+		return nil, err
+	}
+	local := *evt
+	local.Data = payload
+	return &local, nil
+}
+
 func (c *Client) saveSnapshot(ctx context.Context, tx pgx.Tx, agg *AggregateDef, namespace string, id uuid.UUID, state AggregateState, version int) error {
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -346,7 +404,12 @@ func (c *Client) saveSnapshot(ctx context.Context, tx pgx.Tx, agg *AggregateDef,
 }
 
 // readLog returns up to limit events after seq for this service — the
-// catch-up read that feeds projection and local process runners.
+// catch-up read that feeds projection and local process runners. Rows are
+// decrypted but NOT decoded: the payload rides Event.raw and each runner
+// decodes only the types it subscribes to (see decodeEvent). Eager decode
+// here meant one row of an undeclared or @retired type failed the whole
+// batch — for every runner sharing it through the fan-out buffer, even
+// the ones that never look at that type.
 func (c *Client) readLog(ctx context.Context, afterSeq int64, limit int) ([]*Event, error) {
 	rows, err := c.db.Query(ctx, `
 		SELECT global_seq, namespace, aggregate_type, aggregate_id, version, type, schema_version, at, correlation_id, causation_id, actor, data
@@ -370,11 +433,7 @@ func (c *Client) readLog(ctx context.Context, afterSeq int64, limit int) ([]*Eve
 		if data, err = c.decryptEventData(ctx, e.Namespace, e.AggregateID, e.Type, data); err != nil {
 			return nil, err
 		}
-		payload, err := c.decode(e.Type, e.SchemaVersion, data)
-		if err != nil {
-			return nil, err
-		}
-		e.Data = payload
+		e.raw = data
 		out = append(out, e)
 	}
 	return out, rows.Err()
