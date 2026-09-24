@@ -293,6 +293,7 @@ the effect on the process and wrap the call in `loom.Once`:
 process captureOnPaid {
   on InvoicePaid
   effect gateway_capture
+  effect receipt_email @idempotent   # safe to repeat: re-runs instead of doubting
 }
 ```
 
@@ -307,9 +308,37 @@ and redeliveries replay the journaled result instead of calling again. If
 the process crashes between call and record, the effect is *in doubt* —
 the runtime refuses to guess, parks the reaction to dead letters, and an
 operator settles it (`POST /effects/resolve` with what actually happened)
-and redrives (`POST /dead_letters/{id}/redrive`). At-most-once, with loud
-ambiguity instead of silent duplicates. Undeclared effect keys are runtime
-errors — a typo must not mint a fresh journal identity.
+and redrives (`POST /dead_letters/{id}/redrive`) — or both at once, with
+`"redrive": true` on the resolve. At-most-once, with loud ambiguity instead
+of silent duplicates. Undeclared effect keys are runtime errors — a typo
+must not mint a fresh journal identity.
+
+Two opt-ins resolve the doubt without a person. An effect marked
+`@idempotent` declares the call safe to repeat, so an unsettled claim just
+re-runs. A `Reconcile` hook asks the other side what happened before doubt
+is declared:
+
+```go
+loom.Config{
+    // ...
+    Reconcile: map[string]loom.ReconcileFunc{
+        "gateway_capture": func(ctx context.Context, scope, key string) (json.RawMessage, bool, error) {
+            cap, found, err := gateway.FindCapture(ctx, scope+"/"+key) // the idempotency key the call sent
+            if err != nil || !found {
+                return nil, false, err // err: stays in doubt; not found: re-runs
+            }
+            return json.RawMessage(strconv.Quote(cap.ID)), true, nil // settles done; Once returns it
+        },
+    },
+}
+```
+
+```
+POST /effects/resolve
+{"scope": "process:captureOnPaid/billing:1042", "key": "gateway_capture",
+ "result": "cap_123", "redrive": true}
+→ {"status": "resolved", "redriven": 7}
+```
 
 ## Event versions and upcasts
 
@@ -457,7 +486,7 @@ GET  /events/stats?since=...                   counts by type
 POST /batches                                  durable command fan-out
 GET  /batches/{id}                             batch progress (+ /failures, /stream)
 GET  /effects?status=running                   the effect journal
-POST /effects/resolve                          settle an in-doubt effect
+POST /effects/resolve                          settle an in-doubt effect ("redrive": true re-runs its dead letter too)
 GET  /dead_letters                             parked deliveries
 POST /dead_letters/{id}/redrive                re-run one parked delivery
 POST /uploads                                  open a resumable file-upload session

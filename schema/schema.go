@@ -234,6 +234,10 @@ type Reactor struct {
 	// (loom.Once keys). Processes only — policies run in the producing
 	// transaction and must not touch the outside world.
 	Effects []string `yaml:"effects,omitempty" json:"effects,omitempty"`
+	// Idempotent names the declared effects marked `@idempotent`: the
+	// external call is safe to repeat, so a claim left running by a crash
+	// re-runs instead of parking in doubt. A subset of Effects.
+	Idempotent []string `yaml:"idempotent,omitempty" json:"idempotent,omitempty"`
 	// From is a process's start position on its first run — `@from(head)`
 	// (the default, empty here) or `@from(origin)`. A process that has
 	// never checkpointed starts at the log's head: it reacts to what
@@ -456,6 +460,7 @@ func (s *Schema) Sort() {
 	for _, r := range s.Processes {
 		sort.Slice(r.Subscriptions, func(i, j int) bool { return r.Subscriptions[i].Event < r.Subscriptions[j].Event })
 		sort.Strings(r.Effects)
+		sort.Strings(r.Idempotent)
 	}
 	for _, p := range s.Projections {
 		sort.Slice(p.Subscriptions, func(i, j int) bool { return p.Subscriptions[i].Event < p.Subscriptions[j].Event })
@@ -619,6 +624,11 @@ func (s *Schema) Validate() error {
 				fail("process %s declares effect %s twice", p.Name, e)
 			}
 			seenEffects[e] = true
+		}
+		for _, e := range p.Idempotent {
+			if !seenEffects[e] {
+				fail("process %s marks undeclared effect %s @idempotent", p.Name, e)
+			}
 		}
 		for _, sub := range p.Subscriptions {
 			evt := s.FindEvent(sub.Event)

@@ -27,15 +27,15 @@ type telemetry struct {
 	tracer  trace.Tracer
 	service attribute.KeyValue
 
-	dispatches  metric.Int64Counter   // loom.dispatch.count
-	conflicts   metric.Int64Counter   // loom.dispatch.conflicts
-	appended    metric.Int64Counter   // loom.events.appended
-	published   metric.Int64Counter   // loom.outbox.published
-	dedupHits   metric.Int64Counter   // loom.consume.dedup_hits
-	parked      metric.Int64Counter   // loom.dead_letters.parked
-	timersFired metric.Int64Counter   // loom.timers.fired
-	batchItems  metric.Int64Counter   // loom.batch.items
-	effects     metric.Int64Counter   // loom.effects.calls
+	dispatches  metric.Int64Counter // loom.dispatch.count
+	conflicts   metric.Int64Counter // loom.dispatch.conflicts
+	appended    metric.Int64Counter // loom.events.appended
+	published   metric.Int64Counter // loom.outbox.published
+	dedupHits   metric.Int64Counter // loom.consume.dedup_hits
+	parked      metric.Int64Counter // loom.dead_letters.parked
+	timersFired metric.Int64Counter // loom.timers.fired
+	batchItems  metric.Int64Counter // loom.batch.items
+	effects     metric.Int64Counter // loom.effects.calls
 	dispatchDur metric.Float64Histogram
 	stepDur     metric.Float64Histogram
 }

@@ -389,6 +389,10 @@ type ReactorDef struct {
 	// Effects are the declared journaled external calls this process may
 	// perform via loom.Once (processes only).
 	Effects []string
+	// IdempotentEffects are the declared effects marked `@idempotent`: safe
+	// to repeat, so a claim a crash left running re-runs instead of
+	// parking in doubt.
+	IdempotentEffects []string
 	// From is where a process with no checkpoint row starts: FromHead
 	// (the default, and what "" means) or FromOrigin. Start seeds the
 	// checkpoint of a from-head process at the log's head before its

@@ -19,7 +19,7 @@ consume     := "consume" IDENT "." IDENT fields?
 upcast      := "upcast" eventRef "@from" "(" NUM ("," NUM)* ")"
 policy      := "policy" IDENT "{" on* "}"
 process     := "process" IDENT directives? "{" (on | effect)* "}"
-effect      := "effect" IDENT
+effect      := "effect" IDENT "@idempotent"?
 projection  := "projection" IDENT "->" IDENT "@fold"? "{" projOn* "}"
 projOn      := "on" eventRef ("key" "(" IDENT ")")?
 on          := "on" eventRef ("->" identList)?
@@ -58,6 +58,9 @@ Rules enforced at parse/validate time:
   transaction and must not touch the outside world); `loom.Once` refuses
   undeclared keys — a typo'd key would be a fresh journal identity and a
   repeated call, so declaration is the safety net, not ceremony
+- `@idempotent` is the only directive an effect takes, with no arguments;
+  it lands on `schema.Reactor.Idempotent` and the generated
+  `ReactorDef.IdempotentEffects`, beside the unchanged `Effects` list
 - `@pii` lives only on top-level fields of local unpublished events and
   aggregate/record/entity states: commands are transient inputs, published
   events cross the bus in plaintext (keep PII on a private event — the
@@ -251,9 +254,25 @@ generated switches, folds from generated assignments.
   reaction's ctx: once the call has returned, its outcome is a settled fact,
   so a per-step deadline that fires while the call was in flight records
   `failed` (or `done`) instead of leaving the row in doubt. An unsettled
-  claim (crash between call and record) is *in doubt*: the runtime refuses
-  to re-run it and parks the reaction — an operator resolves it (recording
-  what actually happened on the other side) and redrives the dead letter.
+  claim (crash between call and record) is *in doubt*. Before declaring
+  it, the claim consults what the service told it: an `@idempotent` effect
+  (the call is safe to repeat) is re-claimed like a failed one — attempts
+  bumped, back to running — and re-runs; otherwise a `Config.Reconcile`
+  hook registered for the effect name
+  (`func(ctx, scope, key) (result, executed, err)`) is asked: executed
+  settles the row `done` with the hook's result (on `WithoutCancel`, like
+  every settle) and `Once` replays it; not executed re-claims and re-runs;
+  an error keeps the doubt. With neither — the default for most effects —
+  the runtime refuses to re-run it and parks the reaction with
+  `EffectInDoubtError`: an operator resolves it (recording what actually
+  happened on the other side) and redrives the dead letter, in one call
+  with `POST /effects/resolve {…, "redrive": true}` /
+  `ResolveEffect(…, ResolveOptions{Redrive: true})`. The redrive finds the
+  letter from the effect's scope, `process:<name>/<service>:<global_seq>`:
+  runner `process:<name>`, envelope `service` and `global_seq`. The resolve
+  commits first and stands if the redrive fails (the letter stays; a
+  plain redrive retries it); no letter yet (the reaction is still in its
+  retries) is not an error — the next retry sees the resolution.
   At-most-once with loud ambiguity, the strongest guarantee non-idempotent
   APIs admit. Failed settles re-run on retry: an error return is the
   handler asserting the call did not happen.

@@ -153,3 +153,44 @@ func TestFoldersLayout(t *testing.T) {
 		}
 	}
 }
+
+// TestIdempotentEffect proves `@idempotent` on an effect reaches the
+// generated ReactorDef, where Once consults it before declaring doubt.
+func TestIdempotentEffect(t *testing.T) {
+	s, err := sdl.Parse(`
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p {
+  on E -> C
+  effect notify @idempotent
+  effect charge
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	res, err := gen.Generate(s, gen.Config{Dir: dir, Package: "s", Module: "example.com/s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	for _, w := range res.Written {
+		raw, err := os.ReadFile(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.Write(raw)
+	}
+	// gofmt aligns the values, so compare with spaces squeezed out
+	flat := strings.Join(strings.Fields(all.String()), "")
+	for _, want := range []string{`Effects:[]string{"charge","notify"}`, `IdempotentEffects:[]string{"notify"}`} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("generated code missing %q", want)
+		}
+	}
+}

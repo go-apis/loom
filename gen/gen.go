@@ -994,6 +994,9 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 		if len(r.Effects) > 0 {
 			fmt.Fprintf(b, "\t\t\t\tEffects: %s,\n", stringSlice(r.Effects))
 		}
+		if len(r.Idempotent) > 0 {
+			fmt.Fprintf(b, "\t\t\t\tIdempotentEffects: %s,\n", stringSlice(r.Idempotent))
+		}
 		if r.From != "" {
 			fmt.Fprintf(b, "\t\t\t\tFrom: %q,\n", r.From)
 		}

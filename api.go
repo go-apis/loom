@@ -489,6 +489,9 @@ func (c *Client) apiResolveEffect(w http.ResponseWriter, r *http.Request) {
 		Scope  string          `json:"scope"`
 		Key    string          `json:"key"`
 		Result json.RawMessage `json:"result"`
+		// Redrive re-runs the dead letter the effect's reaction parked, in
+		// the same request, once the resolve lands
+		Redrive bool `json:"redrive"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		apiError(w, http.StatusBadRequest, err.Error())
@@ -498,11 +501,30 @@ func (c *Client) apiResolveEffect(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "scope and key are required")
 		return
 	}
-	if err := c.ResolveEffect(r.Context(), body.Scope, body.Key, body.Result); err != nil {
+	if !body.Redrive {
+		if err := c.ResolveEffect(r.Context(), body.Scope, body.Key, body.Result); err != nil {
+			apiError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+		return
+	}
+	// resolve first (409 if not in doubt), then redrive: a failed redrive
+	// leaves the resolve standing and the dead letter in place
+	if err := c.resolveEffect(r.Context(), body.Scope, body.Key, body.Result); err != nil {
 		apiError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	id, err := c.redriveEffectLetter(r.Context(), body.Scope, body.Key)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := map[string]any{"status": "resolved"}
+	if id != 0 {
+		out["redriven"] = id
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (c *Client) apiDeadLetters(w http.ResponseWriter, r *http.Request) {
