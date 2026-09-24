@@ -18,7 +18,7 @@ upload      := "upload" IDENT "{" ("on" ("started"|"uploaded") "->" IDENT)* "}"
 consume     := "consume" IDENT "." IDENT fields?
 upcast      := "upcast" eventRef "@from" "(" NUM ("," NUM)* ")"
 policy      := "policy" IDENT "{" on* "}"
-process     := "process" IDENT "{" (on | effect)* "}"
+process     := "process" IDENT directives? "{" (on | effect)* "}"
 effect      := "effect" IDENT
 projection  := "projection" IDENT "->" IDENT "@fold"? "{" projOn* "}"
 projOn      := "on" eventRef ("key" "(" IDENT ")")?
@@ -33,6 +33,7 @@ ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nulla
 builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
              | "@retired"
+             | "@from(head|origin)"      // process start position
 ```
 
 Rules enforced at parse/validate time:
@@ -45,6 +46,14 @@ Rules enforced at parse/validate time:
   code flat and contracts referencable across languages)
 - foreign events (`consume`/qualified refs) are implicitly published
   contracts
+- `@from` is a process's start position on its first run and belongs to
+  processes only (a policy runs inside the producing transaction and has
+  no start position): `@from(head)` — the default when omitted — means a
+  process with no checkpoint row starts at the log's head and reacts only
+  to what happens after it is deployed; `@from(origin)` is the explicit
+  opt-in to replaying the whole log (a backfilling process). A process
+  that already has a checkpoint row keeps it, so a redeploy is untouched.
+  Projections are not affected: they always fold from the origin by design
 - effects are declared on processes only (a policy runs in the producing
   transaction and must not touch the outside world); `loom.Once` refuses
   undeclared keys — a typo'd key would be a fresh journal identity and a
@@ -138,6 +147,14 @@ generated switches, folds from generated assignments.
   through it doubled every process step's connection use and starved
   projections and Dispatch (measured: projection lag ×3). A lease costs
   one connection, only while leading; hand-over is at-least-once.
+- **Process start position**: a missing checkpoint row reads as sequence
+  0, so a process deployed into a service with history would react to all
+  of it on its first run. `Start` closes that: before a process runner can
+  step, it inserts the runner's checkpoint at the current head unless the
+  process declares `@from(origin)` (`ON CONFLICT DO NOTHING` — an existing
+  row, from a redeploy or another instance, is never moved). Projections
+  are deliberately exempt: folding from the origin is what a read model
+  is.
 - **Outbox relay**: the one component ported by design from the old
   runtime: advisory-lock election, SKIP LOCKED claims, insert-order drain,
   per-aggregate ordering keys.

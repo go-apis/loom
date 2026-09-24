@@ -389,8 +389,22 @@ type ReactorDef struct {
 	// Effects are the declared journaled external calls this process may
 	// perform via loom.Once (processes only).
 	Effects []string
-	React   func(ctx context.Context, evt *Event) ([]Command, error)
+	// From is where a process with no checkpoint row starts: FromHead
+	// (the default, and what "" means) or FromOrigin. Start seeds the
+	// checkpoint of a from-head process at the log's head before its
+	// runner can step, so a newly deployed process reacts to what
+	// happens next and not to the service's whole history. A process
+	// that has checkpointed before is never re-seeded.
+	From  string
+	React func(ctx context.Context, evt *Event) ([]Command, error)
 }
+
+// Start positions for ReactorDef.From, mirroring the schema's
+// @from(head) / @from(origin).
+const (
+	FromHead   = "head"
+	FromOrigin = "origin"
+)
 
 type SubscriptionDef struct {
 	Event      string
