@@ -26,15 +26,15 @@ import (
 func cancelTimerKey(id uuid.UUID) string { return "CancelOrder/default/" + id.String() }
 
 // timerOrders starts orders with the auto-cancel timer shortened and
-// extra reactors added (withPolicy / withProcess), the harness pool
+// extra reactors added, the harness pool
 // handed to them so a reactor can probe the database mid-dispatch.
-func timerOrders(t *testing.T, setup, run context.Context, extra func(reg *loom.Registry, pool *pgxpool.Pool)) (*pgxpool.Pool, *loom.Client) {
+func timerOrders(t *testing.T, ctx context.Context, extra func(reg *loom.Registry, pool *pgxpool.Pool)) (*pgxpool.Pool, *loom.Client) {
 	t.Helper()
 	old := orders.AutoCancelAfter
 	orders.AutoCancelAfter = 200 * time.Millisecond
 	t.Cleanup(func() { orders.AutoCancelAfter = old })
 
-	pool := testDB(t, setup)
+	pool := testDB(t, ctx)
 	reg := orders.NewRegistry()
 	if extra != nil {
 		extra(reg, pool)
@@ -43,10 +43,10 @@ func timerOrders(t *testing.T, setup, run context.Context, extra func(reg *loom.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cli.Migrate(setup); err != nil {
+	if err := cli.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := cli.Start(run, 100*time.Millisecond); err != nil {
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	return pool, cli
@@ -103,9 +103,10 @@ func TestTimerRearmSameKeyDoesNotHang(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			setup, cancelSetup := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancelSetup()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			pool, cli := timerOrders(t, setup, tc.extra)
+			// the 5s bound covers the fire and the re-arm, not database setup
+			ctx, cancel := context.WithTimeout(setup, 5*time.Second)
 			defer cancel()
-			pool, cli := timerOrders(t, setup, ctx, tc.extra)
 
 			id := placeUnpaidOrder(t, ctx, cli)
 			waitFor(t, ctx, "the fired CancelOrder to commit", func() bool {
@@ -139,7 +140,7 @@ func TestTimerRearmSameKeyDoesNotHang(t *testing.T) {
 func TestTimerFailingFireIsParkedNotLost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, cli := timerOrders(t, ctx, ctx, nil)
+	pool, cli := timerOrders(t, ctx, nil)
 
 	// cancelling an order that was never placed fails every time
 	ghost := uuid.New()
@@ -216,7 +217,7 @@ func TestTimerClaimCommittedBeforeDispatch(t *testing.T) {
 			},
 		})
 	}
-	_, cli := timerOrders(t, ctx, ctx, probe)
+	_, cli := timerOrders(t, ctx, probe)
 
 	id := placeUnpaidOrder(t, ctx, cli)
 	waitFor(t, ctx, "the fired CancelOrder to commit", func() bool {
