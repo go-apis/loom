@@ -215,19 +215,21 @@ generated switches, folds from generated assignments.
   `loom:retry:process:<name>/<service>:<global_seq>` (one per process and
   event), `command` holding the event in dead-letter shape (@pii
   re-sealed), the durable attempts so far and the last error — and the
-  timer runner's existing SKIP LOCKED claim re-fires it. Each durable
-  attempt is one reaction, after a backoff of full jitter over
-  `[min, min(min·2^(n-1), max)]`. Success deletes the row (and marks a
-  foreign event processed in `loom_dedup`); failure re-arms it with the
-  next backoff; the `max`-th failure parks the event to
-  `loom_dead_letters` in park's shape (attempts = 3 + max, runner
-  `process:<name>`, redrivable as ever) and deletes the row in the same
-  transaction. Keying by (process, event) makes it converge: arming
+  timer runner's existing lease re-fires it (claim -> commit -> fire, see
+  Timers below). Each durable attempt is one reaction, after a backoff of
+  full jitter over `[min, min(min·2^(n-1), max)]`. The reaction runs with
+  no transaction open; its outcome is written afterwards in a short
+  transaction of its own, every write conditional on the row still being
+  the version the lease claimed (leased `fire_at` and `command`).
+  Success deletes the row (and marks a foreign event processed in
+  `loom_dedup`); failure re-arms it with the next backoff; the `max`-th
+  failure parks the event to `loom_dead_letters` in park's shape
+  (attempts = 3 + max, runner `process:<name>`, redrivable as ever) and
+  deletes the row in the same transaction. Keying by (process, event) makes it converge: arming
   inserts `ON CONFLICT DO NOTHING`, and a redelivery of an event a retry
   row already owns (a checkpoint rewound by a crash, a bus redelivery) is
   skipped rather than reacted to twice. Retry rows fire on any instance,
-  like timers, not only the process leader — the row lock is the
-  election. **Visible while it waits**: between the immediate attempts
+  like timers, not only the process leader — the lease is the election. **Visible while it waits**: between the immediate attempts
   and the eventual park the reaction is a `loom:retry` row on
   `GET /timers` (its `fire_at` is the next attempt; overdue flags a stuck
   runner) and counts in `/stats`' `timers_pending` and the timers gauge;
@@ -276,8 +278,29 @@ generated switches, folds from generated assignments.
 - **Timers** (`loom_timers`): durable scheduled commands, written in the
   scheduling unit's transaction. Keyed idempotently (default: command type
   + target) so redelivered reactions overwrite; `loom.CancelTimer` deletes
-  by the same key. SKIP LOCKED claims, retry then park. The same claim
-  carries `@retry` processes' durable retry rows (`loom:retry`, above).
+  by the same key. The runner goes **claim -> commit -> fire**, and no
+  transaction is open while it dispatches (ADR 0002). The claim is one
+  autocommitted statement that leases a batch of due rows: `UPDATE …
+  SET fire_at = now() + 5m WHERE (service, key) IN (SELECT … FOR UPDATE
+  SKIP LOCKED LIMIT n) RETURNING …`. SKIP LOCKED separates concurrent
+  pollers only while that statement runs; after it, the pushed-out
+  `fire_at` keeps them apart. Each claimed timer then fires in its own
+  unit of work (three in-process attempts). A fire that still fails is
+  parked (runner `timer`). Either way the row is deleted afterwards,
+  conditionally: `WHERE fire_at = <leased> AND command = <claimed>`. A
+  reaction to the fired command that re-armed the same key has changed
+  that row (`writeTimer`'s upsert) and has made the next firing, so the
+  delete leaves it alone. Delivery is at-least-once. A process that dies
+  between the claim and the delete leaves a leased row that comes due
+  again when the lease expires. A fire that outlasts the lease may be
+  repeated by another poller. A runner stopping mid-batch hands its unfired
+  claims back at their original due time. Before this change the claim's
+  FOR UPDATE was held across the fires. A same-key re-arm then waited on
+  that lock while holding the namespace append lock, and the poller waited
+  on the dispatch, which is a cycle Postgres cannot detect (runsheet,
+  2026-09-25). A leased row shows on `GET /timers` with its lease expiry
+  as `fire_at`. The same claim carries `@retry` processes' durable retry
+  rows (`loom:retry`, above).
 - **Batches** (`loom_batches`/`loom_batch_items`): durable chunked fan-out
   of many commands (CopyFrom insert, SKIP LOCKED chunk claims, stale-claim
   reclaim). Per-item outcomes are recorded (at-least-once per item — use

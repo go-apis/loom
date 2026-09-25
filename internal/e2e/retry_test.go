@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-apis/loom"
 	"github.com/go-apis/loom/internal/e2e/billing"
+	billinggen "github.com/go-apis/loom/internal/e2e/billing/loomgen"
 )
 
 // retryingBilling starts billing with captureOnPaid declaring what
@@ -23,11 +25,23 @@ func retryingBilling(t *testing.T, ctx context.Context) (*pgxpool.Pool, *loom.Cl
 
 func retryingBillingWith(t *testing.T, ctx context.Context, policy *loom.RetryPolicy) (*pgxpool.Pool, *loom.Client) {
 	t.Helper()
+	return retryingBillingWrapped(t, ctx, policy, nil)
+}
+
+// retryingBillingWrapped is retryingBillingWith with captureOnPaid's
+// reaction wrapped, the harness pool handed to the wrapper.
+func retryingBillingWrapped(t *testing.T, ctx context.Context, policy *loom.RetryPolicy,
+	wrap func(pool *pgxpool.Pool, react func(context.Context, *loom.Event) ([]loom.Command, error)) func(context.Context, *loom.Event) ([]loom.Command, error),
+) (*pgxpool.Pool, *loom.Client) {
+	t.Helper()
 	pool := testDB(t, ctx)
 	reg := billing.NewRegistry()
 	for _, p := range reg.Processes {
 		if p.Name == "captureOnPaid" {
 			p.Retry = policy
+			if wrap != nil {
+				p.React = wrap(pool, p.React)
+			}
 		}
 	}
 	cli, err := loom.New(loom.Config{DB: pool, Registry: reg, Keys: testKeys(t)})
@@ -172,5 +186,75 @@ func TestRetryRedeliveryConverges(t *testing.T) {
 	}
 	if n := deadLetterCount(t, ctx, pool); n != 0 {
 		t.Fatalf("redelivery parked %d dead letters", n)
+	}
+}
+
+// TestRetryReactionRearmsConverges proves a durable retry's reaction runs
+// with no claim transaction open (docs/adr/0002): while the successful
+// durable attempt reacts, another connection can lock the retry row with
+// NOWAIT, and the timer the reaction re-arms is written straight through.
+// The retry then clears conditionally and nothing hangs or parks.
+func TestRetryReactionRearmsConverges(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	var probes []error
+	wrap := func(pool *pgxpool.Pool, react func(context.Context, *loom.Event) ([]loom.Command, error)) func(context.Context, *loom.Event) ([]loom.Command, error) {
+		return func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+			cmds, err := react(ctx, evt)
+			if err != nil {
+				return nil, err
+			}
+			// a durable attempt: its retry row exists; it must not be locked
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				return nil, err
+			}
+			defer tx.Rollback(ctx)
+			var n int
+			rows, err := tx.Query(ctx, `
+				SELECT 1 FROM loom_timers WHERE service='billing' AND command_type='loom:retry'
+				FOR UPDATE NOWAIT`)
+			if err == nil {
+				for rows.Next() {
+					n++
+				}
+				rows.Close()
+				err = rows.Err()
+			}
+			mu.Lock()
+			if err != nil || n > 0 {
+				probes = append(probes, err)
+			}
+			mu.Unlock()
+			return append(cmds, loom.WithKey(loom.After(&billinggen.MarkInvoicePaid{
+				CommandBase: loom.CommandBase{AggregateID: evt.AggregateID, Namespace: evt.Namespace},
+			}, time.Hour), "rearm:"+evt.AggregateID.String())), nil
+		}
+	}
+	pool, cli := retryingBillingWrapped(t, ctx, &loom.RetryPolicy{Max: 5, Min: 100 * time.Millisecond, MaxBackoff: 300 * time.Millisecond}, wrap)
+
+	// the three immediate attempts fail; the first durable one succeeds
+	billing.Gateway.SetFailCalls(3)
+	invoice := uuid.New()
+	payInvoice(t, ctx, cli, invoice)
+
+	waitFor(t, ctx, "the durable retry to converge", func() bool {
+		return billing.LastReceipt() == "cap_"+invoice.String()
+	})
+	waitFor(t, ctx, "retry row to clear", func() bool { return retryRows(t, ctx, pool) == 0 })
+	var fireAt time.Time
+	if err := pool.QueryRow(ctx, `SELECT fire_at FROM loom_timers WHERE service='billing' AND key=$1`,
+		"rearm:"+invoice.String()).Scan(&fireAt); err != nil || time.Until(fireAt) < 50*time.Minute {
+		t.Fatalf("re-armed timer: fire_at %v (%v)", fireAt, err)
+	}
+	if n := deadLetterCount(t, ctx, pool); n != 0 {
+		t.Fatalf("converged reaction left %d dead letters", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(probes) != 1 || probes[0] != nil {
+		t.Fatalf("durable attempt's retry row probes (want one, unlocked): %v", probes)
 	}
 }
