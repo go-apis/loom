@@ -34,6 +34,7 @@ builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
              | "@retired"
              | "@from(head|origin)"      // process start position
+             | "@retry(N, DUR..DUR)"     // process durable retry: max, min..max backoff
 ```
 
 Rules enforced at parse/validate time:
@@ -54,6 +55,14 @@ Rules enforced at parse/validate time:
   opt-in to replaying the whole log (a backfilling process). A process
   that already has a checkpoint row keeps it, so a redeploy is untouched.
   Projections are not affected: they always fold from the origin by design
+- `@retry(max, min..max)` is a process's durable retry policy and belongs
+  to processes only (a policy fails with the producing transaction):
+  `max` is a positive count of durable attempts, `min`/`max` are Go
+  durations (`100ms`, `5s`, `5m`) with `0 < min <= max`. The range is one
+  directive argument, `5s..5m`. It lands on `schema.Reactor.Retry` and the
+  generated `ReactorDef.Retry` (`loom.RetryPolicy`, bounds emitted as
+  nanoseconds). Without it a process keeps the fixed in-process attempts,
+  then parks — opt-in, not a default change
 - effects are declared on processes only (a policy runs in the producing
   transaction and must not touch the outside world); `loom.Once` refuses
   undeclared keys — a typo'd key would be a fresh journal identity and a
@@ -198,6 +207,33 @@ generated switches, folds from generated assignments.
 - **Processes**: local events from the log; foreign events from the bus
   with consumer-side dedup (`loom_dedup`). Retries with backoff, then loud
   parking to `loom_dead_letters`. Silent drops are structurally impossible.
+- **Durable retries** (`@retry(max, min..max)`, `retry.go`): the fixed
+  in-process attempts (three, 100/200/300ms) cover a blip, not an outage
+  of minutes. A process declaring `@retry` does not park when they run
+  out: the reaction is written to `loom_timers` as a retry row —
+  `command_type = 'loom:retry'`, key
+  `loom:retry:process:<name>/<service>:<global_seq>` (one per process and
+  event), `command` holding the event in dead-letter shape (@pii
+  re-sealed), the durable attempts so far and the last error — and the
+  timer runner's existing SKIP LOCKED claim re-fires it. Each durable
+  attempt is one reaction, after a backoff of full jitter over
+  `[min, min(min·2^(n-1), max)]`. Success deletes the row (and marks a
+  foreign event processed in `loom_dedup`); failure re-arms it with the
+  next backoff; the `max`-th failure parks the event to
+  `loom_dead_letters` in park's shape (attempts = 3 + max, runner
+  `process:<name>`, redrivable as ever) and deletes the row in the same
+  transaction. Keying by (process, event) makes it converge: arming
+  inserts `ON CONFLICT DO NOTHING`, and a redelivery of an event a retry
+  row already owns (a checkpoint rewound by a crash, a bus redelivery) is
+  skipped rather than reacted to twice. Retry rows fire on any instance,
+  like timers, not only the process leader — the row lock is the
+  election. **Visible while it waits**: between the immediate attempts
+  and the eventual park the reaction is a `loom:retry` row on
+  `GET /timers` (its `fire_at` is the next attempt; overdue flags a stuck
+  runner) and counts in `/stats`' `timers_pending` and the timers gauge;
+  each failed attempt logs `durable retry failed; re-arming` at WARN with
+  the attempt and max, and each fire is a `loom.retry.fire` span. No
+  schema change: the rows reuse `loom_timers`' columns.
 - **Metadata**: correlation ids propagate across dispatches and the bus;
   causation records the triggering event. Both are columns, not folklore.
 - **Observability**: OTel API only (no SDK dependency, no exporters, no
@@ -240,7 +276,8 @@ generated switches, folds from generated assignments.
 - **Timers** (`loom_timers`): durable scheduled commands, written in the
   scheduling unit's transaction. Keyed idempotently (default: command type
   + target) so redelivered reactions overwrite; `loom.CancelTimer` deletes
-  by the same key. SKIP LOCKED claims, retry then park.
+  by the same key. SKIP LOCKED claims, retry then park. The same claim
+  carries `@retry` processes' durable retry rows (`loom:retry`, above).
 - **Batches** (`loom_batches`/`loom_batch_items`): durable chunked fan-out
   of many commands (CopyFrom insert, SKIP LOCKED chunk claims, stale-claim
   reclaim). Per-item outcomes are recorded (at-least-once per item — use

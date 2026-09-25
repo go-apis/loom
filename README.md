@@ -85,7 +85,7 @@ myservice/
 | declaration | runs | guarantees |
 |---|---|---|
 | `policy` | inside the producing transaction | atomic with the triggering event; local events only |
-| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters. A process with no checkpoint row starts at the log's head (`@from(head)`, the default): it reacts to what happens after it is deployed, never to the service's whole history. Declare `@from(origin)` to replay everything (a backfill) |
+| `process` | async | local events: checkpointed off the log (no bus), one instance at a time per runner; foreign events: bus + dedup; retries then loud parking to dead letters (`@retry(max, min..max)` re-arms an exhausted reaction as a durable timer first). A process with no checkpoint row starts at the log's head (`@from(head)`, the default): it reacts to what happens after it is deployed, never to the service's whole history. Declare `@from(origin)` to replay everything (a backfill) |
 | `projection` | async | checkpointed catch-up over the global sequence, one instance at a time per runner; entity writes + checkpoint in one tx; `Rebuild()` refolds from history |
 
 `Start` is safe on every instance of a scaled-out service. Each
@@ -123,6 +123,25 @@ process backfillTaxIds @from(origin) {   // @from(head) is the default
 
 Only a brand-new process is affected: a process that has checkpointed
 before — a redeploy, a rolling restart — keeps the position it had.
+
+A reaction that fails is retried three times in-process (100/200/300ms),
+then parked to dead letters. That covers a blip, not a gateway that is
+down for minutes. Declare `@retry` to keep trying durably first:
+
+```
+process captureOnPaid @retry(20, 5s..5m) {   // 20 more attempts, 5s..5m apart
+  on InvoicePaid
+  effect gateway_capture
+}
+```
+
+Once the in-process attempts run out, the reaction becomes a `loom:retry`
+row in `loom_timers` — keyed by process and event, so a redelivery joins
+it rather than doubling it — and re-fires after an exponential, jittered
+backoff between the bounds. It shows on `GET /timers` while it waits. Only
+when the 20th durable attempt fails does the event park, exactly as it
+would have without `@retry`. Journaled effects make the repeats safe: a
+`done` capture replays, a failed one re-runs.
 Projections are unaffected either way; folding from the origin is what a
 read model is, and `Rebuild()` is how you replay one.
 
@@ -497,7 +516,7 @@ GET  /console                                  the ops console (see below)
 GET  /registry                                 the service as its schema sees it
 GET  /runners                                  checkpoint lag per projection/process, and a stalled projection's failing seq/error
 POST /runners/projection:{name}/skip           park a stalled projection's failing event to dead letters and move past it
-GET  /timers                                   pending schedule (overdue flagged)
+GET  /timers                                   pending schedule and @retry rows (overdue flagged)
 GET  /batches                                  recent batches
 ```
 

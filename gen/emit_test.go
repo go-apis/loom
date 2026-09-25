@@ -194,3 +194,43 @@ process p {
 		}
 	}
 }
+
+// TestRetryPolicy proves `@retry(max, min..max)` reaches the generated
+// ReactorDef as a loom.RetryPolicy, and an undeclared process gets none.
+func TestRetryPolicy(t *testing.T) {
+	s, err := sdl.Parse(`
+service s
+aggregate A {
+  state { x: string }
+  command C -> E
+  event E { x: string }
+}
+process p @retry(20, 5s..5m) {
+  on E -> C
+}
+process q {
+  on E -> C
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	res, err := gen.Generate(s, gen.Config{Dir: dir, Package: "s", Module: "example.com/s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	for _, w := range res.Written {
+		raw, err := os.ReadFile(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.Write(raw)
+	}
+	flat := strings.Join(strings.Fields(all.String()), "")
+	want := `Retry:&loom.RetryPolicy{Max:20,Min:5000000000,MaxBackoff:300000000000}`
+	if n := strings.Count(flat, want); n != 1 {
+		t.Fatalf("generated code has %q %d times, want once", want, n)
+	}
+}

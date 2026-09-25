@@ -399,8 +399,25 @@ type ReactorDef struct {
 	// runner can step, so a newly deployed process reacts to what
 	// happens next and not to the service's whole history. A process
 	// that has checkpointed before is never re-seeded.
-	From  string
+	From string
+	// Retry (@retry) is a process's durable retry policy: nil keeps the
+	// fixed in-process attempts and then parks. Set, a reaction that
+	// exhausts its in-process attempts is re-armed as a durable timer
+	// instead of parking — see RetryPolicy.
+	Retry *RetryPolicy
 	React func(ctx context.Context, evt *Event) ([]Command, error)
+}
+
+// RetryPolicy is a process's `@retry(max, min..max)`: once a reaction
+// exhausts its immediate in-process attempts, it is re-fired from a
+// durable loom_timers row up to Max more times, each after a backoff
+// drawn from [Min, MaxBackoff] (exponential with full jitter, capped at
+// MaxBackoff). Only when the Max-th durable attempt fails does the event
+// park to dead letters.
+type RetryPolicy struct {
+	Max        int
+	Min        time.Duration
+	MaxBackoff time.Duration
 }
 
 // Start positions for ReactorDef.From, mirroring the schema's

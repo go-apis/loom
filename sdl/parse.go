@@ -3,6 +3,7 @@ package sdl
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/go-apis/loom/schema"
 )
@@ -132,7 +133,18 @@ func (p *parser) directives() (map[string][]string, error) {
 				if t.kind != tIdent && t.kind != tNumber && t.kind != tString {
 					return nil, p.errf(t, "bad directive argument %q", t.text)
 				}
-				args = append(args, t.text)
+				arg := t.text
+				// a range argument — @retry(20, 5s..5m) — is one arg,
+				// "5s..5m": the lexer sees two '.' puncts between them
+				if p.peek().text == "." && p.peekAt(1).text == "." && p.peek().kind == tPunct {
+					p.pos += 2
+					hi := p.next()
+					if hi.kind != tIdent && hi.kind != tNumber {
+						return nil, p.errf(hi, "bad range end %q", hi.text)
+					}
+					arg += ".." + hi.text
+				}
+				args = append(args, arg)
 				if p.accept(")") {
 					break
 				}
@@ -655,8 +667,11 @@ func (p *parser) join(ent *schema.Entity) error {
 // position — `process settleOnPaid @from(origin) { ... }` — which says
 // where a process that has never checkpointed begins: at the log's head
 // (the default: only what happens after the deploy) or at the origin
-// (replay everything, for a backfill). A policy runs inside the
-// producing transaction and has no start position.
+// (replay everything, for a backfill). A process may also carry a
+// durable retry policy — `process captureOnPaid @retry(20, 5s..5m)` —
+// re-arming an exhausted reaction as a timer up to 20 more times,
+// backing off between 5s and 5m, before it parks. A policy runs inside
+// the producing transaction and has neither.
 func (p *parser) reactor(into *[]*schema.Reactor, kind string) error {
 	p.next()
 	name, err := p.ident()
@@ -670,8 +685,29 @@ func (p *parser) reactor(into *[]*schema.Reactor, kind string) error {
 	}
 	r := &schema.Reactor{Name: name}
 	for d := range dirs {
-		if d != "from" {
-			return p.errf(t, "%s %s: unknown directive @%s (a process takes @from)", kind, name, d)
+		if d != "from" && d != "retry" {
+			return p.errf(t, "%s %s: unknown directive @%s (a process takes @from, @retry)", kind, name, d)
+		}
+	}
+	if args, ok := dirs["retry"]; ok {
+		if kind != "process" {
+			return p.errf(t, "%s %s cannot declare @retry — a %s runs inside the producing transaction and fails with it", kind, name, kind)
+		}
+		var max int
+		var lo, hi string
+		ok := len(args) == 2
+		if ok {
+			var err error
+			max, err = strconv.Atoi(args[0])
+			lo, hi, ok = strings.Cut(args[1], "..")
+			ok = ok && err == nil
+		}
+		if !ok {
+			return p.errf(t, "process %s: @retry wants attempts and a backoff range, e.g. @retry(20, 5s..5m)", name)
+		}
+		r.Retry = &schema.Retry{Max: max, Min: lo, MaxBackoff: hi}
+		if _, _, err := r.Retry.Durations(); err != nil {
+			return p.errf(t, "process %s: %v", name, err)
 		}
 	}
 	if args, ok := dirs["from"]; ok {

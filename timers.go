@@ -172,6 +172,12 @@ func (c *Client) fireDueTimers(ctx context.Context, limit int) (int, error) {
 	}
 
 	for _, d := range batch {
+		if d.cmdType == retryTimerType { // a @retry reaction (retry.go)
+			if err := c.fireRetry(ctx, tx, d.key, d.cmd); err != nil {
+				return 0, err
+			}
+			continue
+		}
 		if err := c.fireTimer(ctx, d.key, d.cmdType, d.cmd, d.meta); err != nil {
 			c.log.ErrorContext(ctx, "timer dispatch failed; parking", "key", d.key, "error", err)
 			if perr := c.parkTimer(ctx, d.key, d.cmdType, d.cmd, err); perr != nil {
