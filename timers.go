@@ -173,9 +173,12 @@ type dueTimer struct {
 //     statements before or after react; react and its Dispatch run with
 //     nothing open.
 //   - relay (relay.go drainBatch): the exception. It holds its claim
-//     transaction across bus.Publish, which is not a command dispatch,
-//     takes no append lock and writes nothing a dispatch could wait on, so
-//     it cannot close this cycle. Documented, not changed.
+//     transaction (relay advisory lock, FOR UPDATE on its outbox rows)
+//     across bus.Publish, which is not a command dispatch and takes no
+//     append lock. Under MemoryBus a consuming service's reaction does
+//     dispatch inline, but it is another service's: its append lock,
+//     outbox and timer rows are none the relay holds, so it cannot close
+//     this cycle. Documented, not changed.
 
 // fireDueTimers leases a batch of due timers, then — the claim committed —
 // dispatches each in its own unit of work and deletes the fired row if it
