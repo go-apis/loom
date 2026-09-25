@@ -39,6 +39,17 @@ jobs:
           --health-start-period 10s
 
     steps:
+      # The job's database only has to last the job, so it skips the disk
+      # flushes a crash-safe Postgres pays on every commit: the e2e suites
+      # create a database per test, and Postgres took ~8 of the mini's 18
+      # CPUs on 2026-09-25. All three settings apply on a reload.
+      - name: Test database without durability
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -q \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
