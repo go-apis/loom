@@ -886,6 +886,7 @@ The M1 extraction/topology tooling lives at tag `m1-extraction` and returns
 as the legacy migration on-ramp.
 
 See [DESIGN.md](DESIGN.md) for the SDL grammar and runtime semantics,
-[TODO.md](TODO.md) for what comes next, and
+[TODO.md](TODO.md) for what comes next, [CHANGELOG.md](CHANGELOG.md) for
+what changed in each release, and
 [go-apis/loom-example](https://github.com/go-apis/loom-example) for the
 example as a standalone repo.
