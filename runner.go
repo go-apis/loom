@@ -797,7 +797,12 @@ func (c *Client) alreadyProcessed(ctx context.Context, process, key string) (boo
 }
 
 func (c *Client) markProcessed(ctx context.Context, process, key string) error {
-	_, err := c.db.Exec(ctx, `
+	return c.markProcessedOn(ctx, c.db, process, key)
+}
+
+// markProcessedOn is markProcessed on a given connection or transaction.
+func (c *Client) markProcessedOn(ctx context.Context, q executor, process, key string) error {
+	_, err := q.Exec(ctx, `
 		INSERT INTO loom_dedup (service, process, event_key) VALUES ($1,$2,$3)
 		ON CONFLICT DO NOTHING`,
 		c.reg.Service, process, key)

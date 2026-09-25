@@ -21,8 +21,8 @@ import (
 // Max durable attempts have failed, and only then does the event park to
 // dead letters exactly as an undeclared process's would.
 //
-// Reusing loom_timers costs no new table or loop: the retry is claimed
-// with the same SKIP LOCKED batch as a scheduled command, survives a
+// Reusing loom_timers costs no new table or loop: the retry is leased
+// with the same SKIP LOCKED claim as a scheduled command, survives a
 // restart, and shows on /timers (and in /stats' timers_pending) while it
 // waits, so a reaction between its immediate attempts and its eventual
 // park is never invisible.
@@ -93,23 +93,26 @@ func (c *Client) retryPending(ctx context.Context, p *ReactorDef, evt *Event) (b
 	return err == nil, err
 }
 
-// fireRetry runs one durable attempt of a retry row claimed (FOR UPDATE)
-// in tx: react once; on success clear the row (and mark a foreign event
-// processed), on failure re-arm it with the next backoff, or — the Max-th
-// durable attempt failed — park the event and clear the row, atomically.
-func (c *Client) fireRetry(ctx context.Context, tx pgx.Tx, key string, raw []byte) (retErr error) {
+// fireRetry runs one durable attempt of a retry row the timer runner
+// leased (claimDueTimers) and committed: react once with no transaction
+// open, then record the outcome in a short transaction of its own — on
+// success clear the row (and mark a foreign event processed), on failure
+// re-arm it with the next backoff, or — the Max-th durable attempt failed
+// — park the event and clear the row, atomically. Every write is
+// conditional on the row still being the version the claim leased.
+func (c *Client) fireRetry(ctx context.Context, d dueTimer) (retErr error) {
 	var rec retryRecord
-	if err := json.Unmarshal(raw, &rec); err != nil {
-		return c.parkRetryRaw(ctx, tx, key, raw, "unreadable retry record: "+err.Error())
+	if err := json.Unmarshal(d.cmd, &rec); err != nil {
+		return c.parkRetryRaw(ctx, d, d.cmd, "unreadable retry record: "+err.Error())
 	}
 	runner := "process:" + rec.Process
 	p := c.process(rec.Process)
 	if p == nil {
-		return c.parkRetryRaw(ctx, tx, key, rec.Event, "retry for unknown process "+rec.Process)
+		return c.parkRetryRaw(ctx, d, rec.Event, "retry for unknown process "+rec.Process)
 	}
 	evt, err := c.openEnvelope(ctx, rec.Event)
 	if err != nil {
-		return c.parkRetryRaw(ctx, tx, key, rec.Event, err.Error())
+		return c.parkRetryRaw(ctx, d, rec.Event, err.Error())
 	}
 	ctx, end := c.tel.span(ctx, "loom.retry.fire",
 		attribute.String("loom.runner", runner), attribute.String("loom.event", evt.Type),
@@ -117,13 +120,22 @@ func (c *Client) fireRetry(ctx context.Context, tx pgx.Tx, key string, raw []byt
 	defer func() { end(retErr) }()
 
 	cause := c.react(ctx, p, evt)
+
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 	if cause == nil {
 		if evt.Service != c.reg.Service {
-			if err := c.markProcessed(ctx, p.Name, fmt.Sprintf("%s:%d", evt.Service, evt.GlobalSeq)); err != nil {
+			if err := c.markProcessedOn(ctx, tx, p.Name, fmt.Sprintf("%s:%d", evt.Service, evt.GlobalSeq)); err != nil {
 				return err
 			}
 		}
-		return deleteRetry(ctx, tx, c.reg.Service, key)
+		if err := c.deleteClaimed(ctx, tx, d); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	rec.Attempts++
 	rec.LastError = cause.Error()
@@ -132,7 +144,10 @@ func (c *Client) fireRetry(ctx context.Context, tx pgx.Tx, key string, raw []byt
 		if err := c.parkOn(ctx, tx, runner, evt, cause, processRetries+rec.Attempts); err != nil {
 			return err
 		}
-		return deleteRetry(ctx, tx, c.reg.Service, key)
+		if err := c.deleteClaimed(ctx, tx, d); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	c.log.WarnContext(ctx, "durable retry failed; re-arming", "runner", runner, "type", evt.Type,
 		"attempt", rec.Attempts, "max", p.Retry.Max, "error", cause)
@@ -140,28 +155,35 @@ func (c *Client) fireRetry(ctx context.Context, tx pgx.Tx, key string, raw []byt
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE loom_timers SET command=$3, fire_at=$4 WHERE service=$1 AND key=$2`,
-		c.reg.Service, key, next, time.Now().Add(p.Retry.backoff(rec.Attempts+1)))
-	return err
+	if _, err := tx.Exec(ctx, `
+		UPDATE loom_timers SET command=$5, fire_at=$6
+		WHERE service=$1 AND key=$2 AND fire_at=$3 AND command=$4`,
+		c.reg.Service, d.key, d.leasedAt, d.cmd, next, time.Now().Add(p.Retry.backoff(rec.Attempts+1))); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // parkRetryRaw parks a retry row that cannot be re-fired at all, so it is
 // loud in dead letters rather than failing the timer batch forever.
-func (c *Client) parkRetryRaw(ctx context.Context, tx pgx.Tx, key string, envelope []byte, cause string) error {
+func (c *Client) parkRetryRaw(ctx context.Context, d dueTimer, envelope []byte, cause string) error {
 	if !json.Valid(envelope) {
-		envelope, _ = json.Marshal(map[string]string{"retry_key": key})
+		envelope, _ = json.Marshal(map[string]string{"retry_key": d.key})
 	}
-	c.log.ErrorContext(ctx, "parking unfireable durable retry", "key", key, "error", cause)
+	c.log.ErrorContext(ctx, "parking unfireable durable retry", "key", d.key, "error", cause)
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
 		VALUES ($1,'retry',$2,$3,0)`,
 		c.reg.Service, envelope, cause); err != nil {
 		return err
 	}
-	return deleteRetry(ctx, tx, c.reg.Service, key)
-}
-
-func deleteRetry(ctx context.Context, tx pgx.Tx, service, key string) error {
-	_, err := tx.Exec(ctx, `DELETE FROM loom_timers WHERE service=$1 AND key=$2`, service, key)
-	return err
+	if err := c.deleteClaimed(ctx, tx, d); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
