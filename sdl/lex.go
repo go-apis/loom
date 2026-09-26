@@ -22,9 +22,22 @@ type token struct {
 	kind tokKind
 	text string
 	line int
+	file string // the source file's path; "" for a lone unnamed source
 }
 
-func lex(src string) ([]token, error) {
+// pos renders a token's position for an error: "path:line" when the
+// token came from a named file, "line N" when it did not.
+func pos(file string, line int) string {
+	if file == "" {
+		return fmt.Sprintf("line %d", line)
+	}
+	return fmt.Sprintf("%s:%d", file, line)
+}
+
+func lex(src string) ([]token, error) { return lexFile("", src) }
+
+// lexFile lexes one source file, stamping every token with its path.
+func lexFile(file, src string) ([]token, error) {
 	var toks []token
 	line := 1
 	i := 0
@@ -42,7 +55,7 @@ func lex(src string) ([]token, error) {
 				i++
 			}
 		case c == '-' && i+1 < n && src[i+1] == '>':
-			toks = append(toks, token{tPunct, "->", line})
+			toks = append(toks, token{tPunct, "->", line, file})
 			i += 2
 		case isDigit(c):
 			start := i
@@ -56,7 +69,7 @@ func lex(src string) ([]token, error) {
 			for i < n && isIdentPart(rune(src[i])) {
 				i++
 			}
-			toks = append(toks, token{tNumber, src[start:i], line})
+			toks = append(toks, token{tNumber, src[start:i], line, file})
 		case c == '"':
 			start := i
 			i++
@@ -64,24 +77,24 @@ func lex(src string) ([]token, error) {
 				i++
 			}
 			if i == n || src[i] == '\n' {
-				return nil, fmt.Errorf("line %d: unterminated string", line)
+				return nil, fmt.Errorf("%s: unterminated string", pos(file, line))
 			}
 			i++
-			toks = append(toks, token{tString, src[start+1 : i-1], line})
+			toks = append(toks, token{tString, src[start+1 : i-1], line, file})
 		case isIdentStart(rune(c)):
 			start := i
 			for i < n && isIdentPart(rune(src[i])) {
 				i++
 			}
-			toks = append(toks, token{tIdent, src[start:i], line})
+			toks = append(toks, token{tIdent, src[start:i], line, file})
 		case strings.ContainsRune("{}()[]:,.@!?", rune(c)):
-			toks = append(toks, token{tPunct, string(c), line})
+			toks = append(toks, token{tPunct, string(c), line, file})
 			i++
 		default:
-			return nil, fmt.Errorf("line %d: unexpected character %q", line, c)
+			return nil, fmt.Errorf("%s: unexpected character %q", pos(file, line), c)
 		}
 	}
-	toks = append(toks, token{tEOF, "", line})
+	toks = append(toks, token{tEOF, "", line, file})
 	return toks, nil
 }
 
