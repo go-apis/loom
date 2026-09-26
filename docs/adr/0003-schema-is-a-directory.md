@@ -52,10 +52,12 @@ If each feature adds a new file instead, the conflict goes away.
 - Splitting a single-file schema into a directory changes nothing
   downstream. The declarations are the same, and `Sort` makes the compiled
   schema, and so the generated code, identical.
-- A declaration must still be unique across all the files: two files that
-  declare the same aggregate are refused, as they were in one file. Letting
-  a feature add a member to an enum declared elsewhere is a separate
-  decision (goal `schema-is-many-files`, item 2).
+- Uniqueness across files is only as strict as it is within one file. Today
+  `Validate` does not refuse two aggregates with the same name. With one
+  file, that was unlikely to happen. With many files, two features can pick
+  the same name, and the generated Go then fails to compile. Refusing
+  duplicate enum blocks, and letting a feature add a member to an enum
+  declared elsewhere, is goal `schema-is-many-files` item 2.
 - Directive errors that are not raised at a token (for example, an unknown
   `@directive` on an aggregate) still name the declaration rather than a
   position. That is unchanged by this decision.
