@@ -47,6 +47,9 @@ func ParseFiles(files []File) (*schema.Schema, error) {
 	if err := p.schema(); err != nil {
 		return nil, err
 	}
+	if err := p.mergeEnums(); err != nil {
+		return nil, err
+	}
 	p.out.Sort()
 	if err := p.out.Validate(); err != nil {
 		return nil, err
@@ -55,11 +58,12 @@ func ParseFiles(files []File) (*schema.Schema, error) {
 }
 
 type parser struct {
-	toks   []token
-	pos    int
-	starts map[int]bool // token indices where a file begins
-	out    *schema.Schema
-	events map[string]*schema.Event
+	toks       []token
+	pos        int
+	starts     map[int]bool // token indices where a file begins
+	out        *schema.Schema
+	events     map[string]*schema.Event
+	enumBlocks []*enumBlock // every enum block, home or extension, in source order
 }
 
 func (p *parser) peek() token { return p.toks[p.pos] }
@@ -905,30 +909,103 @@ func (p *parser) typeDecl() error {
 	return nil
 }
 
-// enumDecl parses a closed value set:
+// enumBlock is one parsed `enum X { … }` or `enum X += { … }`, kept with
+// its positions until every file is read and the blocks can be merged.
+type enumBlock struct {
+	name   string
+	extend bool
+	at     token   // the "enum" keyword
+	values []token // one per value, for positions in errors
+}
+
+// enumDecl parses a closed value set, or an extension of one declared
+// elsewhere:
 //
 //	enum TinStatus { unknown pending_match matched mismatched }
+//	enum TinStatus += { disputed }
 func (p *parser) enumDecl() error {
 	t := p.next()
 	name, err := p.ident()
 	if err != nil {
 		return err
 	}
+	b := &enumBlock{name: name, at: t, extend: p.accept("+=")}
 	if err := p.expect("{"); err != nil {
 		return err
 	}
-	e := &schema.Enum{Name: name}
 	for !p.accept("}") {
-		v, err := p.ident()
-		if err != nil {
+		vt := p.peek()
+		if _, err := p.ident(); err != nil {
 			return err
 		}
-		e.Values = append(e.Values, v)
+		b.values = append(b.values, vt)
 	}
-	if len(e.Values) == 0 {
+	if len(b.values) == 0 {
+		if b.extend {
+			return p.errf(t, "enum %s += has no values", name)
+		}
 		return p.errf(t, "enum %s has no values", name)
 	}
-	p.out.Enums = append(p.out.Enums, e)
+	p.enumBlocks = append(p.enumBlocks, b)
+	return nil
+}
+
+// mergeEnums turns the parsed blocks into schema enums: each home block
+// takes the values of its extensions after its own, in source order. A
+// name clash between two homes, an extension without a home, and a value
+// declared in two blocks are refused with the positions of both sides.
+func (p *parser) mergeEnums() error {
+	homes := map[string]*enumBlock{}
+	for _, b := range p.enumBlocks {
+		if b.extend {
+			continue
+		}
+		if h, ok := homes[b.name]; ok {
+			return p.errf(b.at, "enum %s is already declared at %s; extend it with `enum %s += { … }`",
+				b.name, pos(h.at.file, h.at.line), b.name)
+		}
+		homes[b.name] = b
+	}
+	type where struct {
+		block *enumBlock
+		at    token
+	}
+	enums := map[string]*schema.Enum{}
+	seen := map[string]map[string]where{}
+	for _, b := range p.enumBlocks {
+		if b.extend && homes[b.name] == nil {
+			return p.errf(b.at, "enum %s += … extends an undeclared enum", b.name)
+		}
+	}
+	// homes first, then extensions, each in source order
+	ordered := make([]*enumBlock, 0, len(p.enumBlocks))
+	for _, ext := range []bool{false, true} {
+		for _, b := range p.enumBlocks {
+			if b.extend == ext {
+				ordered = append(ordered, b)
+			}
+		}
+	}
+	for _, b := range ordered {
+		e := enums[b.name]
+		if e == nil {
+			e = &schema.Enum{Name: b.name}
+			enums[b.name] = e
+			seen[b.name] = map[string]where{}
+			p.out.Enums = append(p.out.Enums, e)
+		}
+		for _, vt := range b.values {
+			// a repeat inside one block is left to Validate
+			if prev, ok := seen[b.name][vt.text]; ok && prev.block != b {
+				return p.errf(vt, "enum %s declares value %s twice: also at %s",
+					b.name, vt.text, pos(prev.at.file, prev.at.line))
+			}
+			if _, ok := seen[b.name][vt.text]; !ok {
+				seen[b.name][vt.text] = where{b, vt}
+			}
+			e.Values = append(e.Values, vt.text)
+		}
+	}
 	return nil
 }
 

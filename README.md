@@ -66,6 +66,20 @@ schema/
 
 A declaration must end in the file it starts in.
 
+A feature can add an enum member from its own file with `+=`; the home
+file's values come first, then each extension in path order:
+
+```
+// schema/orders.loom
+enum Priority { low normal }
+
+// schema/expedite/expedite.loom
+enum Priority += { high urgent }
+```
+
+A second plain `enum Priority { … }` is refused, so an accidental name
+clash stays an error.
+
 Stubs are generated once and never rewritten — your business logic lives in
 ordinary Go files implementing generated interfaces. Everything else
 regenerates on every run.
@@ -92,6 +106,12 @@ domain), the gateway serves real GraphQL enum types (invalid inputs die
 at coercion), the SDL/OpenAPI contracts carry the value sets, and
 `@table` columns stay `text`. Values must be legal GraphQL enum names —
 `1099-NEC` stays a plain string.
+
+An enum is declared once; any file may add members with
+`enum TinStatus += { disputed }`. Values keep declaration order (the home
+block's first, then each extension's in file-path order). An extension with
+no home, a second home block of the same name, a value declared twice
+across blocks, and an empty extension are refused with `path:line`.
 
 Stubs land flat in the service root by default; `layout: folders` in
 loom.yml gives each kind its own package instead —

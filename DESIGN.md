@@ -19,7 +19,7 @@ schema      := file+                    // joined in path order, parsed once
 file        := header? decl*            // header required on the first file by path; decls never span files
 header      := "service" IDENT          // later files: omit, or repeat the same name
 decl        := aggregate | record | entity | series | event | consume
-             | policy | process | projection | type | upcast
+             | policy | process | projection | type | upcast | enum
 aggregate   := "aggregate" IDENT directives? "{" (state | command | event | upload)* "}"
 record      := "record" IDENT "{" (state | command | event | upload)* "}"
 state       := "state" fields
@@ -36,6 +36,7 @@ projOn      := "on" eventRef ("key" "(" IDENT ")")?
 on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
 type        := "type" IDENT fields
+enum        := "enum" IDENT "+="? "{" IDENT+ "}"     // += extends an enum declared once elsewhere
 entity      := "entity" IDENT "@table"? fields
 series      := "series" IDENT "@time" "(" IDENT ")" "@dim" "(" identList ")"
                ("@key" "(" identList ")")? fields

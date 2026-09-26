@@ -57,6 +57,9 @@ func lexFile(file, src string) ([]token, error) {
 		case c == '-' && i+1 < n && src[i+1] == '>':
 			toks = append(toks, token{tPunct, "->", line, file})
 			i += 2
+		case c == '+' && i+1 < n && src[i+1] == '=':
+			toks = append(toks, token{tPunct, "+=", line, file})
+			i += 2
 		case isDigit(c):
 			start := i
 			for i < n && isDigit(src[i]) {

@@ -14,6 +14,12 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **Enums extend across files: `enum X += { … }`.** A feature can add a
+  member to an enum declared in another file. Values keep declaration order
+  (home first, then extensions in path order). An extension with no home,
+  a second home declaration, a value declared twice, and an empty extension
+  are refused with `path:line` positions. Schemas without `+=` parse as
+  before ([ADR 0003](docs/adr/0003-schema-is-a-directory.md)).
 - **A schema is a directory of files, so a new aggregate is a new file.**
   `schema:` in loom.yml may name a directory (every `*.loom` under it, at any
   depth), a single file, or a glob, and `loom check` takes directories. The
