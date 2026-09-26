@@ -5,8 +5,16 @@ covers what's implemented and the decisions embedded in the code.
 
 ## SDL grammar
 
+A schema is one or more `.loom` files: a directory (every `*.loom` under it,
+at any depth), a single file, or a glob. The files are joined in
+slash-separated path order and parsed once as one token stream, so a
+declaration in one file may refer to anything declared in another; errors
+name `path:line:` ([ADR 0003](docs/adr/0003-schema-is-a-directory.md)).
+
 ```
-schema      := "service" IDENT decl*
+schema      := file+                    // joined in path order, parsed once
+file        := header? decl*            // header required on the first file
+header      := "service" IDENT          // later files: omit, or repeat the same name
 decl        := aggregate | record | entity | series | event | consume
              | policy | process | projection | type | upcast
 aggregate   := "aggregate" IDENT directives? "{" (state | command | event | upload)* "}"

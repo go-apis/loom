@@ -34,10 +34,29 @@ process shipOnPayment {
 ## The loop
 
 ```sh
-loom init orders        # loom.yml + schema/orders.loom
+loom init orders        # loom.yml (schema: schema/) + schema/orders.loom
 $EDITOR schema/orders.loom
 loom generate           # models, folds, registry (regenerated) + stubs (yours)
 go build ./...          # compile errors are your to-do list
+```
+
+The schema is a directory. `schema: schema/` in loom.yml reads every
+`*.loom` file under `schema/`, at any depth, as one schema: the files are
+joined in path order and parsed once, so an aggregate in
+`schema/billing/invoice.loom` can emit an event declared in
+`schema/events.loom`, and an error names the file and line
+(`schema/billing/invoice.loom:12: …`). **A new aggregate is a new file** —
+two features adding aggregates never edit the same file, so they never
+conflict. The first file (by path) opens with `service orders`; later files
+may repeat the same header or leave it out. `schema:` may also name a single
+file or a glob, and `loom check schema/` checks a directory without
+generating.
+
+```
+schema/
+  orders.loom             # service orders; shared enums and types
+  billing/invoice.loom    # aggregate Invoice { … }
+  shipping/shipment.loom  # aggregate Shipment { … }
 ```
 
 Stubs are generated once and never rewritten — your business logic lives in

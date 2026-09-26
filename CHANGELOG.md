@@ -10,6 +10,23 @@ Notable changes to loom, newest first. The format follows
 the next MINOR by default, or the next PATCH for a PR labelled `patch`. This
 file starts at v0.54.0. For earlier releases, see the git history and tags.
 
+## [Unreleased]
+
+### Added
+
+- **A schema is a directory of files, so a new aggregate is a new file.**
+  `schema:` in loom.yml may name a directory (every `*.loom` under it, at any
+  depth), a single file, or a glob, and `loom check` takes directories. The
+  files are joined in path order and parsed once, so a file may refer to an
+  event, type, or enum declared in another. Errors name `path:line:`. The
+  first file opens with `service X`; later files may repeat the same name
+  or omit it, and a different name is refused. The old per-file merge (which
+  dropped enums and series from every file after the first, and could not
+  resolve cross-file references) is gone. Library: `sdl.ParseFiles`,
+  `sdl.ParseDir`, `sdl.ParseFS`, `sdl.ParsePaths`; `sdl.Parse` is unchanged.
+  `loom init` now writes `schema: schema/`
+  ([ADR 0003](docs/adr/0003-schema-is-a-directory.md)).
+
 ## [v0.54.0] — 2026-09-25
 
 ### Fixed
