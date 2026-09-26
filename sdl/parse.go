@@ -37,15 +37,11 @@ func ParseFiles(files []File) (*schema.Schema, error) {
 		if err != nil {
 			return nil, err
 		}
-		last := i == len(files)-1
-		if i == 0 && len(ft) == 1 && !last {
+		if i == 0 && len(ft) == 1 && len(files) > 1 {
 			return nil, fmt.Errorf("%s: expected \"service\", got end of file", pos(f.Path, ft[0].line))
 		}
 		starts[len(toks)] = true
-		if !last {
-			ft = ft[:len(ft)-1] // only the last file's EOF ends the stream
-		}
-		toks = append(toks, ft...)
+		toks = append(toks, ft...) // each file keeps its EOF: no declaration reads past it
 	}
 	p := &parser{toks: toks, starts: starts, out: &schema.Schema{Loom: schema.Version}, events: map[string]*schema.Event{}}
 	if err := p.schema(); err != nil {
@@ -91,6 +87,9 @@ func (p *parser) accept(text string) bool {
 
 func (p *parser) expect(text string) error {
 	t := p.next()
+	if t.kind == tEOF {
+		return p.errf(t, "expected %q, got end of file", text)
+	}
 	if t.kind == tString || t.text != text {
 		return p.errf(t, "expected %q, got %q", text, t.text)
 	}
@@ -99,6 +98,9 @@ func (p *parser) expect(text string) error {
 
 func (p *parser) ident() (string, error) {
 	t := p.next()
+	if t.kind == tEOF {
+		return "", p.errf(t, "expected identifier, got end of file")
+	}
 	if t.kind != tIdent {
 		return "", p.errf(t, "expected identifier, got %q", t.text)
 	}
@@ -115,8 +117,15 @@ func (p *parser) schema() error {
 	}
 	p.out.Service = name
 
-	for p.peek().kind != tEOF {
+	for {
 		t := p.peek()
+		if t.kind == tEOF {
+			if p.pos == len(p.toks)-1 {
+				return nil
+			}
+			p.pos++ // between files
+			continue
+		}
 		var err error
 		if p.starts[p.pos] && t.kind == tIdent && t.text == "service" {
 			if err := p.laterService(); err != nil {
@@ -124,7 +133,6 @@ func (p *parser) schema() error {
 			}
 			continue
 		}
-		start := p.pos
 		switch t.text {
 		case "aggregate":
 			err = p.aggregate()
@@ -156,24 +164,7 @@ func (p *parser) schema() error {
 		if err != nil {
 			return err
 		}
-		if err := p.withinOneFile(start); err != nil {
-			return err
-		}
 	}
-	return nil
-}
-
-// withinOneFile refuses a declaration, begun at token index start and
-// just parsed, that ran on into the next file: each file stays readable
-// on its own, so a file boundary may only fall between declarations.
-func (p *parser) withinOneFile(start int) error {
-	for s := range p.starts {
-		if start < s && s < p.pos {
-			t := p.toks[start]
-			return p.errf(t, "%s %s runs past the end of its file", t.text, p.toks[start+1].text)
-		}
-	}
-	return nil
 }
 
 // laterService reads the optional header of a file after the first: it may

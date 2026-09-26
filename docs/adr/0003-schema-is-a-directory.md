@@ -49,9 +49,10 @@ If each feature adds a new file instead, the conflict goes away.
   breaks as soon as another file sorts ahead of it. The recommended layout
   opens every file with the same `service X`.
 - **A declaration ends in the file it starts in.** The streams are joined,
-  but a file boundary may only fall between top-level declarations; an
-  `aggregate` opened in one file and closed in the next is refused at the
-  `path:line` where it begins. Each file stays readable on its own.
+  but each file keeps its own end-of-file token, which the top level steps
+  over and a declaration cannot: an `aggregate` opened in one file and
+  closed in the next is refused as "got end of file" at the first file's
+  last `path:line`. Each file stays readable on its own.
 
 ## Consequences
 
