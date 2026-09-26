@@ -53,6 +53,19 @@ If each feature adds a new file instead, the conflict goes away.
   over and a declaration cannot: an `aggregate` opened in one file and
   closed in the next is refused as "got end of file" at the first file's
   last `path:line`. Each file stays readable on its own.
+- **Enums extend with `+=`.** `enum X { … }` declares an enum once;
+  `enum X += { … }` in any file adds values to it. After all files are
+  parsed, each home enum takes its extensions' values after its own, in
+  path order (so the result is deterministic). Refused, with `path:line`:
+  an extension whose enum has no home; a second home declaration (naming
+  both positions); a value declared twice across blocks (naming the value
+  and both positions); an empty extension. `Validate`'s checks still run
+  on the merged enum.
+  We chose an explicit `+=` over silently merging same-name blocks because
+  two features picking the same enum name by accident is a mistake, not an
+  extension: silent merging would join two unrelated value sets and pass.
+  With `+=` the author says they mean to extend, and a plain clash stays
+  an error.
 
 ## Consequences
 
@@ -64,9 +77,8 @@ If each feature adds a new file instead, the conflict goes away.
 - Uniqueness across files is only as strict as it is within one file. Today
   `Validate` does not refuse two aggregates with the same name. With one
   file, that was unlikely to happen. With many files, two features can pick
-  the same name, and the generated Go then fails to compile. Refusing
-  duplicate enum blocks, and letting a feature add a member to an enum
-  declared elsewhere, is goal `schema-is-many-files` item 2.
+  the same name, and the generated Go then fails to compile. Duplicate
+  enum blocks are now refused (see above); other declarations are not yet.
 - Directive errors that are not raised at a token (for example, an unknown
   `@directive` on an aggregate) still name the declaration rather than a
   position. That is unchanged by this decision.
