@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,7 +55,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: loom init <service>")
 	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>]")
-	fmt.Fprintln(os.Stderr, "       loom check <schema.loom ...>")
+	fmt.Fprintln(os.Stderr, "       loom check <schema.loom|schema dir ...>")
 	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json]")
 	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls]")
 	fmt.Fprintln(os.Stderr, "       loom rewrap --db <dsn> (--from-local <hex>|--from-kms <key>) (--to-local <hex>|--to-kms <key>)")
@@ -157,19 +158,25 @@ func runEmit(args []string, defaultOut string, emit func(*schema.Schema) ([]byte
 }
 
 // runCheck parses and validates schemas without generating anything — for
-// designing schemas before their services exist.
+// designing schemas before their services exist. Each argument is one
+// schema: a .loom file, or a directory of them.
 func runCheck(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("check wants schema files")
+		return fmt.Errorf("check wants schema files or directories")
 	}
 	for _, path := range args {
-		src, err := os.ReadFile(path)
+		info, err := os.Stat(path)
 		if err != nil {
 			return err
 		}
-		s, err := sdl.Parse(string(src))
+		var s *schema.Schema
+		if info.IsDir() {
+			s, err = sdl.ParseDir(path)
+		} else {
+			s, err = sdl.ParsePaths([]string{path})
+		}
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			return err
 		}
 		fmt.Printf("%s: ok — service %s: %d aggregates, %d events, %d policies, %d processes, %d projections\n",
 			path, s.Service, len(s.Aggregates), len(s.Events), len(s.Policies), len(s.Processes), len(s.Projections))
@@ -177,8 +184,9 @@ func runCheck(args []string) error {
 	return nil
 }
 
-// config is loom.yml. Everything except the schema glob has a default.
+// config is loom.yml. Everything except schema has a default.
 type config struct {
+	// Schema is a directory of .loom files, a single file, or a glob.
 	Schema    string `yaml:"schema"`
 	Module    string `yaml:"module,omitempty"`
 	Package   string `yaml:"package,omitempty"`
@@ -204,7 +212,7 @@ func runInit(args []string) error {
 	if err := os.MkdirAll("schema", 0o755); err != nil {
 		return err
 	}
-	cfgYaml := fmt.Sprintf("schema: schema/%s.loom\n", service)
+	cfgYaml := "schema: schema/\n" // every *.loom under schema/; a new aggregate is a new file
 	if err := os.WriteFile("loom.yml", []byte(cfgYaml), 0o644); err != nil {
 		return err
 	}
@@ -280,45 +288,26 @@ func runGenerate(args []string) error {
 	return nil
 }
 
-func loadSchemas(dir, glob string) (*schema.Schema, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, glob))
+// loadSchemas reads loom.yml's schema: a directory (every *.loom under it,
+// at any depth), a single file, or a glob. However many files it names,
+// they are parsed as one schema, in path order.
+func loadSchemas(dir, spec string) (*schema.Schema, error) {
+	p := filepath.Join(dir, spec)
+	if info, err := os.Stat(p); err == nil {
+		if info.IsDir() {
+			return sdl.ParseDir(p)
+		}
+		return sdl.ParsePaths([]string{p})
+	}
+	paths, err := filepath.Glob(p)
 	if err != nil {
 		return nil, err
 	}
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("no schema files match %s", glob)
+		return nil, fmt.Errorf("no schema files match %s", spec)
 	}
-	var merged *schema.Schema
-	for _, p := range paths {
-		src, err := os.ReadFile(p)
-		if err != nil {
-			return nil, err
-		}
-		s, err := sdl.Parse(string(src))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", p, err)
-		}
-		if merged == nil {
-			merged = s
-			continue
-		}
-		if s.Service != merged.Service {
-			return nil, fmt.Errorf("%s declares service %s; expected %s", p, s.Service, merged.Service)
-		}
-		merged.Aggregates = append(merged.Aggregates, s.Aggregates...)
-		merged.Records = append(merged.Records, s.Records...)
-		merged.Entities = append(merged.Entities, s.Entities...)
-		merged.Events = append(merged.Events, s.Events...)
-		merged.Policies = append(merged.Policies, s.Policies...)
-		merged.Processes = append(merged.Processes, s.Processes...)
-		merged.Projections = append(merged.Projections, s.Projections...)
-		merged.Types = append(merged.Types, s.Types...)
-	}
-	merged.Sort()
-	if err := merged.Validate(); err != nil {
-		return nil, err
-	}
-	return merged, nil
+	sort.Slice(paths, func(i, j int) bool { return filepath.ToSlash(paths[i]) < filepath.ToSlash(paths[j]) })
+	return sdl.ParsePaths(paths)
 }
 
 func modulePath(dir string) (string, error) {

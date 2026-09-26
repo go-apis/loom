@@ -9,12 +9,41 @@ import (
 )
 
 // Parse reads .loom source into the compiled schema and validates it.
+// It is ParseFiles over one unnamed file, so its errors say "line N:".
 func Parse(src string) (*schema.Schema, error) {
-	toks, err := lex(src)
-	if err != nil {
-		return nil, err
+	return ParseFiles([]File{{Src: src}})
+}
+
+// File is one .loom source: Path names it in errors ("path:line: …").
+type File struct {
+	Path string
+	Src  string
+}
+
+// ParseFiles reads several .loom sources as one schema. Each file is lexed
+// on its own, so every token keeps its file and line; the token streams are
+// then joined in the order given and parsed once, so a declaration in one
+// file may refer to anything declared in another. The first file must open
+// with "service X"; a later file may repeat the same header or omit it.
+// Sort and Validate run once, over the whole schema.
+func ParseFiles(files []File) (*schema.Schema, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no schema files")
 	}
-	p := &parser{toks: toks, out: &schema.Schema{Loom: schema.Version}, events: map[string]*schema.Event{}}
+	var toks []token
+	starts := map[int]bool{}
+	for i, f := range files {
+		ft, err := lexFile(f.Path, f.Src)
+		if err != nil {
+			return nil, err
+		}
+		if i == 0 && len(ft) == 1 && len(files) > 1 {
+			return nil, fmt.Errorf("%s: expected \"service\", got end of file", pos(f.Path, ft[0].line))
+		}
+		starts[len(toks)] = true
+		toks = append(toks, ft...) // each file keeps its EOF: no declaration reads past it
+	}
+	p := &parser{toks: toks, starts: starts, out: &schema.Schema{Loom: schema.Version}, events: map[string]*schema.Event{}}
 	if err := p.schema(); err != nil {
 		return nil, err
 	}
@@ -28,6 +57,7 @@ func Parse(src string) (*schema.Schema, error) {
 type parser struct {
 	toks   []token
 	pos    int
+	starts map[int]bool // token indices where a file begins
 	out    *schema.Schema
 	events map[string]*schema.Event
 }
@@ -44,7 +74,7 @@ func (p *parser) peekAt(n int) token {
 func (p *parser) next() token { t := p.toks[p.pos]; p.pos++; return t }
 
 func (p *parser) errf(t token, format string, args ...any) error {
-	return fmt.Errorf("line %d: %s", t.line, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%s: %s", pos(t.file, t.line), fmt.Sprintf(format, args...))
 }
 
 func (p *parser) accept(text string) bool {
@@ -57,6 +87,9 @@ func (p *parser) accept(text string) bool {
 
 func (p *parser) expect(text string) error {
 	t := p.next()
+	if t.kind == tEOF {
+		return p.errf(t, "expected %q, got end of file", text)
+	}
 	if t.kind == tString || t.text != text {
 		return p.errf(t, "expected %q, got %q", text, t.text)
 	}
@@ -65,6 +98,9 @@ func (p *parser) expect(text string) error {
 
 func (p *parser) ident() (string, error) {
 	t := p.next()
+	if t.kind == tEOF {
+		return "", p.errf(t, "expected identifier, got end of file")
+	}
 	if t.kind != tIdent {
 		return "", p.errf(t, "expected identifier, got %q", t.text)
 	}
@@ -81,9 +117,22 @@ func (p *parser) schema() error {
 	}
 	p.out.Service = name
 
-	for p.peek().kind != tEOF {
+	for {
 		t := p.peek()
+		if t.kind == tEOF {
+			if p.pos == len(p.toks)-1 {
+				return nil
+			}
+			p.pos++ // between files
+			continue
+		}
 		var err error
+		if p.starts[p.pos] && t.kind == tIdent && t.text == "service" {
+			if err := p.laterService(); err != nil {
+				return err
+			}
+			continue
+		}
 		switch t.text {
 		case "aggregate":
 			err = p.aggregate()
@@ -115,6 +164,20 @@ func (p *parser) schema() error {
 		if err != nil {
 			return err
 		}
+	}
+}
+
+// laterService reads the optional header of a file after the first: it may
+// repeat the schema's service name, and may not name another.
+func (p *parser) laterService() error {
+	p.next()
+	t := p.peek()
+	name, err := p.ident()
+	if err != nil {
+		return err
+	}
+	if name != p.out.Service {
+		return p.errf(t, "service %s, but the schema is service %s", name, p.out.Service)
 	}
 	return nil
 }
