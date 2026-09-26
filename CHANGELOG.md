@@ -19,8 +19,10 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   depth), a single file, or a glob, and `loom check` takes directories. The
   files are joined in path order and parsed once, so a file may refer to an
   event, type, or enum declared in another. Errors name `path:line:`. The
-  first file opens with `service X`; later files may repeat the same name
-  or omit it, and a different name is refused. The old per-file merge (which
+  first file by path opens with `service X`; later files may repeat the
+  same name or omit it, and a different name is refused. Since "first" is
+  by path, the README's layout opens every file with the header. A
+  declaration that runs past the end of its file is refused. The old per-file merge (which
   dropped enums and series from every file after the first, and could not
   resolve cross-file references) is gone. Library: `sdl.ParseFiles`,
   `sdl.ParseDir`, `sdl.ParseFS`, `sdl.ParsePaths`; `sdl.Parse` is unchanged.

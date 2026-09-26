@@ -44,6 +44,14 @@ If each feature adds a new file instead, the conflict goes away.
   readable on its own, or leave the header out. A later file that names a
   different service is refused at its `path:line`. `service` is only a header
   at the top of a file. Anywhere else it is an unexpected token.
+  "First" is by path, not by intent: `billing/invoice.loom` sorts before
+  `orders.loom`, so a layout that puts the header only in a "home" file
+  breaks as soon as another file sorts ahead of it. The recommended layout
+  opens every file with the same `service X`.
+- **A declaration ends in the file it starts in.** The streams are joined,
+  but a file boundary may only fall between top-level declarations; an
+  `aggregate` opened in one file and closed in the next is refused at the
+  `path:line` where it begins. Each file stays readable on its own.
 
 ## Consequences
 

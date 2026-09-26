@@ -133,6 +133,18 @@ func TestParseFilesErrorNamesFileAndLine(t *testing.T) {
 	}
 }
 
+// A file boundary may only fall between declarations: an aggregate opened
+// in a.loom and closed in b.loom is refused where it begins.
+func TestParseFilesDeclarationStaysInItsFile(t *testing.T) {
+	_, err := sdl.ParseFiles([]sdl.File{
+		{Path: "a.loom", Src: "service orders\n\naggregate Order {\n  state {\n"},
+		{Path: "b.loom", Src: "    status: string\n  }\n}\n"},
+	})
+	if err == nil || err.Error() != "a.loom:3: aggregate Order runs past the end of its file" {
+		t.Fatalf("want a refusal at a.loom:3:, got %v", err)
+	}
+}
+
 func TestParseFilesServiceHeader(t *testing.T) {
 	_, err := sdl.ParseFiles([]sdl.File{
 		{Path: "a.loom", Src: "service orders\n"},

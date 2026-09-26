@@ -124,6 +124,7 @@ func (p *parser) schema() error {
 			}
 			continue
 		}
+		start := p.pos
 		switch t.text {
 		case "aggregate":
 			err = p.aggregate()
@@ -154,6 +155,22 @@ func (p *parser) schema() error {
 		}
 		if err != nil {
 			return err
+		}
+		if err := p.withinOneFile(start); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// withinOneFile refuses a declaration, begun at token index start and
+// just parsed, that ran on into the next file: each file stays readable
+// on its own, so a file boundary may only fall between declarations.
+func (p *parser) withinOneFile(start int) error {
+	for s := range p.starts {
+		if start < s && s < p.pos {
+			t := p.toks[start]
+			return p.errf(t, "%s %s runs past the end of its file", t.text, p.toks[start+1].text)
 		}
 	}
 	return nil

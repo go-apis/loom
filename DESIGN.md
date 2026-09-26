@@ -10,10 +10,13 @@ at any depth), a single file, or a glob. The files are joined in
 slash-separated path order and parsed once as one token stream, so a
 declaration in one file may refer to anything declared in another; errors
 name `path:line:` ([ADR 0003](docs/adr/0003-schema-is-a-directory.md)).
+"First" is by path (`billing/invoice.loom` sorts before `orders.loom`), so
+the recommended layout opens every file with the same `service X`; a
+declaration must end in the file it starts in.
 
 ```
 schema      := file+                    // joined in path order, parsed once
-file        := header? decl*            // header required on the first file
+file        := header? decl*            // header required on the first file by path; decls never span files
 header      := "service" IDENT          // later files: omit, or repeat the same name
 decl        := aggregate | record | entity | series | event | consume
              | policy | process | projection | type | upcast

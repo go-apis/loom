@@ -44,20 +44,27 @@ The schema is a directory. `schema: schema/` in loom.yml reads every
 `*.loom` file under `schema/`, at any depth, as one schema: the files are
 joined in path order and parsed once, so an aggregate in
 `schema/billing/invoice.loom` can emit an event declared in
-`schema/events.loom`, and an error names the file and line
+`schema/orders.loom`, and an error names the file and line
 (`schema/billing/invoice.loom:12: …`). **A new aggregate is a new file** —
 two features adding aggregates never edit the same file, so they never
-conflict. The first file (by path) opens with `service orders`; later files
-may repeat the same header or leave it out. `schema:` may also name a single
-file or a glob, and `loom check schema/` checks a directory without
-generating.
+conflict. `schema:` may also name a single file or a glob, and
+`loom check schema/` checks a directory without generating.
+
+Open every file with the service header. The first file *by path* must
+start with `service orders` — and that is not necessarily the file you
+think of as the home file: `billing/invoice.loom` sorts before
+`orders.loom`. Later files may repeat the same header (a different name is
+refused) or leave it out, but repeating it in every file means no rename
+or new file can ever leave the first file headerless:
 
 ```
 schema/
-  orders.loom             # service orders; shared enums and types
-  billing/invoice.loom    # aggregate Invoice { … }
-  shipping/shipment.loom  # aggregate Shipment { … }
+  billing/invoice.loom    # service orders; aggregate Invoice { … }
+  orders.loom             # service orders; shared enums, types and events
+  shipping/shipment.loom  # service orders; aggregate Shipment { … }
 ```
+
+A declaration must end in the file it starts in.
 
 Stubs are generated once and never rewritten — your business logic lives in
 ordinary Go files implementing generated interfaces. Everything else
