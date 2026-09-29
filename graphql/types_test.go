@@ -134,12 +134,14 @@ type sampleCmd struct {
 func (sampleCmd) LoomCommand() string { return "Sample" }
 
 type sampleScaling struct {
-	Accounts []sampleAccount `json:"accounts"`
-	Tiers    []string        `json:"tiers"`
+	Accounts      []sampleAccount `json:"accounts"`
+	Tiers         []string        `json:"tiers"`
+	SpareAccounts []sampleAccount `json:"spare_accounts"`
+	TierNames     []string        `json:"tier_names"`
 }
 
 type sampleAccount struct {
-	Id string `json:"id"`
+	AccountId string `json:"account_id"`
 }
 
 // A nested input's NonNull follows the schema's required list, as a
@@ -149,9 +151,11 @@ type sampleAccount struct {
 // client omitting the list was refused with "got invalid value".
 func TestNestedInputFollowsSchemaRequired(t *testing.T) {
 	b := &builder{
-		types:        map[string]*typeEntry{},
-		inputs:       map[string]gql.Input{},
-		typeRequired: map[string]map[string]bool{"sampleScaling": {"tiers": true}},
+		types:  map[string]*typeEntry{},
+		inputs: map[string]gql.Input{},
+		typeRequired: map[string]map[string]bool{
+			"sampleScaling": {"tiers": true, "tier_names": true},
+		},
 	}
 	in, conv, err := b.nestedInput(reflect.TypeOf(sampleScaling{}))
 	if err != nil {
@@ -162,23 +166,35 @@ func TestNestedInputFollowsSchemaRequired(t *testing.T) {
 		t.Fatalf("not an input object: %T", in)
 	}
 	fields := obj.Fields()
-	tiers, ok := fields["tiers"].Type.(*gql.NonNull)
-	if !ok {
-		t.Fatalf("required list tiers is %v, want NON_NULL", fields["tiers"].Type)
+	// GraphQL names are camel; the required list is keyed snake
+	for _, name := range []string{"tiers", "tierNames"} {
+		nn, ok := fields[name].Type.(*gql.NonNull)
+		if !ok {
+			t.Fatalf("required list %s is %v, want NON_NULL", name, fields[name].Type)
+		}
+		if _, isList := nn.OfType.(*gql.List); !isList {
+			t.Errorf("%s wraps %v, want a list", name, nn.OfType)
+		}
 	}
-	if _, isList := tiers.OfType.(*gql.List); !isList {
-		t.Errorf("tiers wraps %v, want a list", tiers.OfType)
-	}
-	if _, isList := fields["accounts"].Type.(*gql.List); !isList {
-		t.Errorf("optional list accounts is %v, want a nullable list", fields["accounts"].Type)
+	for _, name := range []string{"accounts", "spareAccounts"} {
+		if _, isList := fields[name].Type.(*gql.List); !isList {
+			t.Errorf("optional list %s is %v, want a nullable list", name, fields[name].Type)
+		}
 	}
 
-	// omitted or null, the optional list converts to a nil slice
+	// omitted or null, the optional lists convert to nil slices
 	for name, arg := range map[string]map[string]any{
-		"omitted": {"tiers": []any{"gold"}},
-		"null":    {"tiers": []any{"gold"}, "accounts": nil},
+		"omitted": {"tiers": []any{"gold"}, "tierNames": []any{"silver"}},
+		"null": {
+			"tiers": []any{"gold"}, "tierNames": []any{"silver"},
+			"accounts": nil, "spareAccounts": nil,
+		},
 	} {
-		raw, err := json.Marshal(conv(arg))
+		out := conv(arg).(map[string]any)
+		if _, camel := out["tierNames"]; camel {
+			t.Errorf("%s: converted map kept camel key tierNames: %#v", name, out)
+		}
+		raw, err := json.Marshal(out)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,18 +202,33 @@ func TestNestedInputFollowsSchemaRequired(t *testing.T) {
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if got.Accounts != nil {
-			t.Errorf("%s: accounts = %#v, want nil", name, got.Accounts)
+		if got.Accounts != nil || got.SpareAccounts != nil {
+			t.Errorf("%s: accounts = %#v, spare = %#v, want nil", name, got.Accounts, got.SpareAccounts)
 		}
 		if len(got.Tiers) != 1 || got.Tiers[0] != "gold" {
 			t.Errorf("%s: tiers = %#v, want [gold]", name, got.Tiers)
 		}
+		if len(got.TierNames) != 1 || got.TierNames[0] != "silver" {
+			t.Errorf("%s: tier_names = %#v, want [silver]", name, got.TierNames)
+		}
 	}
 
-	// a present list still converts, keyed snake
-	out := conv(map[string]any{"tiers": []any{}, "accounts": []any{map[string]any{"id": "a"}}}).(map[string]any)
-	if accts, _ := out["accounts"].([]any); len(accts) != 1 {
-		t.Errorf("accounts = %#v, want one account", out["accounts"])
+	// present lists convert camel -> snake at every level
+	out := conv(map[string]any{
+		"tiers":         []any{},
+		"tierNames":     []any{},
+		"spareAccounts": []any{map[string]any{"accountId": "a"}},
+	})
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got sampleScaling
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.SpareAccounts) != 1 || got.SpareAccounts[0].AccountId != "a" {
+		t.Errorf("spare_accounts = %#v from %s, want one account a", got.SpareAccounts, raw)
 	}
 }
 

@@ -290,9 +290,22 @@ aggregate A {
 		t.Fatalf("no input ScalingInput in:\n%s", sdlOut)
 	}
 	block := sdlOut[start : start+strings.Index(sdlOut[start:], "}")]
-	for _, want := range []string{"accounts: [AccountInput!]\n", "tiers: [String!]!\n"} {
-		if !strings.Contains(block, want) {
-			t.Errorf("ScalingInput missing %q in:\n%s", want, block)
+	// The optional list is nullable (no `!` after the list) and the
+	// required list is NON_NULL. Elements are non-null in both, as for
+	// every loom list: the schema has no nullable-element form.
+	fieldLine := func(name string) string {
+		for _, l := range strings.Split(block, "\n") {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, name+":") {
+				return l
+			}
 		}
+		t.Fatalf("ScalingInput has no %s in:\n%s", name, block)
+		return ""
+	}
+	if got := fieldLine("accounts"); !strings.HasPrefix(got, "accounts: [AccountInput") || strings.HasSuffix(got, "]!") {
+		t.Errorf("optional list: got %q, want accounts: [AccountInput…] with no `!` on the list", got)
+	}
+	if got := fieldLine("tiers"); got != "tiers: [String!]!" {
+		t.Errorf("required list: got %q, want tiers: [String!]!", got)
 	}
 }
