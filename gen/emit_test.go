@@ -234,3 +234,65 @@ process q {
 		t.Fatalf("generated code has %q %d times, want once", want, n)
 	}
 }
+
+// TestTypeDefsCarryRequired proves a schema type's required list reaches
+// the registry as a loom.TypeDef, so the gateway serves a nested input's
+// optional list nullable — the SDL already says so, and the runtime must
+// agree with it.
+func TestTypeDefsCarryRequired(t *testing.T) {
+	s, err := sdl.Parse(`
+service s
+type Account { id: string! }
+type Scaling {
+  accounts: [Account]?
+  tiers: [string]!
+}
+aggregate A {
+  state { x: string }
+  command C { scaling: Scaling? } -> E
+  event E { x: string }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	res, err := gen.Generate(s, gen.Config{Dir: dir, Package: "s", Module: "example.com/s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	for _, w := range res.Written {
+		raw, err := os.ReadFile(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.Write(raw)
+	}
+	flat := strings.Join(strings.Fields(all.String()), "")
+	for _, want := range []string{
+		`Types:[]*loom.TypeDef{`,
+		`{Name:"Account",Required:[]string{"id"}},`,
+		`{Name:"Scaling",Required:[]string{"tiers"}},`,
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("generated registry missing %q", want)
+		}
+	}
+
+	raw, err := gen.GraphQL(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdlOut := string(raw)
+	start := strings.Index(sdlOut, "input ScalingInput {")
+	if start < 0 {
+		t.Fatalf("no input ScalingInput in:\n%s", sdlOut)
+	}
+	block := sdlOut[start : start+strings.Index(sdlOut[start:], "}")]
+	for _, want := range []string{"accounts: [AccountInput!]\n", "tiers: [String!]!\n"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("ScalingInput missing %q in:\n%s", want, block)
+		}
+	}
+}

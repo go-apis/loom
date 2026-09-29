@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	gql "github.com/graphql-go/graphql"
@@ -130,3 +132,88 @@ type sampleCmd struct {
 }
 
 func (sampleCmd) LoomCommand() string { return "Sample" }
+
+type sampleScaling struct {
+	Accounts []sampleAccount `json:"accounts"`
+	Tiers    []string        `json:"tiers"`
+}
+
+type sampleAccount struct {
+	Id string `json:"id"`
+}
+
+// A nested input's NonNull follows the schema's required list, as a
+// command's top level does: runsheet's `type NodeScaling { accounts:
+// [NodeScalingAccount]? }` was served as `[NodeScalingAccountInput!]!`,
+// because the generated `[]T` looks required to pointer-ness, and a
+// client omitting the list was refused with "got invalid value".
+func TestNestedInputFollowsSchemaRequired(t *testing.T) {
+	b := &builder{
+		types:        map[string]*typeEntry{},
+		inputs:       map[string]gql.Input{},
+		typeRequired: map[string]map[string]bool{"sampleScaling": {"tiers": true}},
+	}
+	in, conv, err := b.nestedInput(reflect.TypeOf(sampleScaling{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := in.(*gql.InputObject)
+	if !ok {
+		t.Fatalf("not an input object: %T", in)
+	}
+	fields := obj.Fields()
+	tiers, ok := fields["tiers"].Type.(*gql.NonNull)
+	if !ok {
+		t.Fatalf("required list tiers is %v, want NON_NULL", fields["tiers"].Type)
+	}
+	if _, isList := tiers.OfType.(*gql.List); !isList {
+		t.Errorf("tiers wraps %v, want a list", tiers.OfType)
+	}
+	if _, isList := fields["accounts"].Type.(*gql.List); !isList {
+		t.Errorf("optional list accounts is %v, want a nullable list", fields["accounts"].Type)
+	}
+
+	// omitted or null, the optional list converts to a nil slice
+	for name, arg := range map[string]map[string]any{
+		"omitted": {"tiers": []any{"gold"}},
+		"null":    {"tiers": []any{"gold"}, "accounts": nil},
+	} {
+		raw, err := json.Marshal(conv(arg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got sampleScaling
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Accounts != nil {
+			t.Errorf("%s: accounts = %#v, want nil", name, got.Accounts)
+		}
+		if len(got.Tiers) != 1 || got.Tiers[0] != "gold" {
+			t.Errorf("%s: tiers = %#v, want [gold]", name, got.Tiers)
+		}
+	}
+
+	// a present list still converts, keyed snake
+	out := conv(map[string]any{"tiers": []any{}, "accounts": []any{map[string]any{"id": "a"}}}).(map[string]any)
+	if accts, _ := out["accounts"].([]any); len(accts) != 1 {
+		t.Errorf("accounts = %#v, want one account", out["accounts"])
+	}
+}
+
+// A struct the registry names no required list for (hand-written, or a
+// registry generated before Types) keeps pointer-based nullability.
+func TestNestedInputWithoutTypeDefKeepsPointerRule(t *testing.T) {
+	b := &builder{types: map[string]*typeEntry{}, inputs: map[string]gql.Input{}}
+	in, _, err := b.nestedInput(reflect.TypeOf(sampleNested{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := in.(*gql.InputObject).Fields()
+	if _, nonNull := fields["line1"].Type.(*gql.NonNull); !nonNull {
+		t.Error("value field line1 should be NonNull without a TypeDef")
+	}
+	if _, nonNull := fields["line2"].Type.(*gql.NonNull); nonNull {
+		t.Error("pointer field line2 should stay nullable without a TypeDef")
+	}
+}
