@@ -14,7 +14,16 @@ import (
 // rewrites this file.
 type Order struct{}
 
+// LastPlaceOrder captures the most recent PlaceOrder the handler saw, so
+// tests can inspect the Go value the gateway produced (a nil Fulfilment.Gifts
+// slice proves the optional list arrived absent rather than as []).
+// Variable so tests can hook it.
+var LastPlaceOrder func(*loomgen.PlaceOrder)
+
 func (h *Order) PlaceOrder(ctx context.Context, state *loomgen.Order, cmd *loomgen.PlaceOrder) ([]loom.DomainEvent, error) {
+	if LastPlaceOrder != nil {
+		LastPlaceOrder(cmd)
+	}
 	if state.Status != "" {
 		return nil, fmt.Errorf("order already exists (status %s)", state.Status)
 	}

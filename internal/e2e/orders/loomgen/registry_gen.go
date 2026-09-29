@@ -279,6 +279,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{Name: "Priority", Values: []string{"standard", "rush"}},
 		},
 		Types: []*loom.TypeDef{
+			{Name: "Fulfilment", Required: []string{"windows"}},
+			{Name: "FulfilmentWindow", Required: []string{"starts_at"}},
+			{Name: "GiftNote", Required: []string{"text"}},
 			{Name: "OrderItem", Required: []string{"price_cents", "quantity", "sku"}},
 		},
 		Joins: []*loom.JoinDef{
