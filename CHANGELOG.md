@@ -48,9 +48,11 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   list reaches the command as a nil slice. Regenerate to pick this up: a
   registry without `Types` keeps the old pointer-based rule
   ([ADR 0004](docs/adr/0004-nested-input-nullability-follows-the-schema.md)).
-  Covered end to end against the live gateway: the e2e orders schema's
-  `Fulfilment` type exercises a required and an optional nested list
-  through `PlaceOrder`.
+- e2e proof of the fix above: `TestGraphQLNestedOptionalList` drives the
+  e2e orders schema's `Fulfilment` type (`windows: [FulfilmentWindow]!`,
+  `gifts: [GiftNote]?`) through `PlaceOrder` on the live gateway. It checks
+  introspection, the emitted SDL, and that an omitted or null `gifts`
+  arrives as a nil slice.
 
 ## [v0.54.0] — 2026-09-25
 

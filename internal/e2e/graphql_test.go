@@ -459,10 +459,30 @@ func TestGraphQLNestedOptionalList(t *testing.T) {
 		if !slices.Contains(strings.Split(block, "\n"), line) {
 			t.Errorf("input FulfilmentInput: want line %q in:\n%s", line, block)
 		}
+	}
+	// field by field, the published block and the served input agree
+	published := sdlFields(block)
+	if len(published) != len(served) {
+		t.Errorf("input FulfilmentInput: generated SDL has fields %v, gateway serves %v", published, served)
+	}
+	for field, want := range published {
 		if served[field] != want {
-			t.Errorf("%s: gateway serves %s, generated SDL declares %s", field, served[field], want)
+			t.Errorf("%s: gateway serves %q, generated SDL declares %q", field, served[field], want)
 		}
 	}
+}
+
+// sdlFields reads the `name: Type` lines of an SDL block into a map.
+func sdlFields(block string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(block, "\n")[1:] {
+		name, typ, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || strings.HasPrefix(name, "#") {
+			continue
+		}
+		out[name] = strings.TrimSpace(typ)
+	}
+	return out
 }
 
 // sdlTypeRef renders an introspected type reference ({kind name ofType})
