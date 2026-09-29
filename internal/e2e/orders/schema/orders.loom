@@ -20,6 +20,7 @@ aggregate Order @snapshot(5) {
     items: [OrderItem]!
     currency: string!
     priority: Priority
+    fulfilment: Fulfilment?
   } -> OrderPlaced
 
   // @role gates the mutation at the gateway: the caller needs one of
@@ -156,4 +157,20 @@ type OrderItem {
   sku: string!
   quantity: int!
   price_cents: int!
+}
+
+// proves the fix end to end: windows is required, gifts is optional —
+// a client omitting gifts (or sending it null) must be accepted, and
+// the required list must still come out NonNull
+type Fulfilment {
+  windows: [FulfilmentWindow]!
+  gifts: [GiftNote]?
+}
+
+type FulfilmentWindow {
+  starts_at: timestamp!
+}
+
+type GiftNote {
+  text: string!
 }

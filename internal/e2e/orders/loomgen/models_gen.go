@@ -48,6 +48,19 @@ func (v Priority) Valid() bool {
 	return false
 }
 
+type Fulfilment struct {
+	Gifts   []GiftNote         `json:"gifts"`
+	Windows []FulfilmentWindow `json:"windows"`
+}
+
+type FulfilmentWindow struct {
+	StartsAt time.Time `json:"starts_at"`
+}
+
+type GiftNote struct {
+	Text string `json:"text"`
+}
+
 type OrderItem struct {
 	PriceCents int64  `json:"price_cents"`
 	Quantity   int64  `json:"quantity"`
@@ -115,6 +128,7 @@ type PlaceOrder struct {
 
 	Currency   string      `json:"currency"`
 	CustomerId uuid.UUID   `json:"customer_id"`
+	Fulfilment *Fulfilment `json:"fulfilment"`
 	Items      []OrderItem `json:"items"`
 	Priority   Priority    `json:"priority"`
 }

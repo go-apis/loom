@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/go-apis/loom"
+	"github.com/go-apis/loom/gen"
 	loomgql "github.com/go-apis/loom/graphql"
 	"github.com/go-apis/loom/internal/e2e/billing"
 	"github.com/go-apis/loom/internal/e2e/orders"
 	ordersgen "github.com/go-apis/loom/internal/e2e/orders/loomgen"
+	"github.com/go-apis/loom/schema"
+	"github.com/go-apis/loom/sdl"
 )
 
 // TestGraphQLGateway drives both services through one composed graph:
@@ -314,6 +318,212 @@ func TestGraphQLGateway(t *testing.T) {
 func toJSON(v any) string {
 	raw, _ := json.Marshal(v)
 	return string(raw)
+}
+
+// TestGraphQLNestedOptionalList proves the ADR 0004 fix end to end against
+// the live gateway: Fulfilment's required list (windows) comes out NonNull
+// and its optional list (gifts) stays nullable, both in introspection and
+// in the SDL gen.GraphQL emits, and a placeOrder omitting gifts — or
+// sending it null — is accepted, arriving in Go as a nil slice.
+func TestGraphQLNestedOptionalList(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := testDB(t, ctx)
+	ordersCli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ordersCli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen *ordersgen.PlaceOrder
+	orders.LastPlaceOrder = func(cmd *ordersgen.PlaceOrder) { seen = cmd }
+	t.Cleanup(func() { orders.LastPlaceOrder = nil })
+
+	gateway, err := loomgql.New(loomgql.Config{Services: []*loom.Client{ordersCli}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(gateway)
+	defer srv.Close()
+
+	gql := func(query string, vars map[string]any) map[string]any {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
+		resp, err := http.Post(srv.URL, "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out struct {
+			Data   map[string]any `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Errors) > 0 {
+			t.Fatalf("graphql errors: %+v", out.Errors)
+		}
+		return out.Data
+	}
+
+	// introspection: the required list is NON_NULL, the optional list
+	// stays a nullable LIST
+	data := gql(`{ __type(name: "FulfilmentInput") {
+		inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+	} }`, nil)
+	fields, _ := data["__type"].(map[string]any)["inputFields"].([]any)
+	kinds := map[string]string{}
+	served := map[string]string{}
+	for _, f := range fields {
+		row := f.(map[string]any)
+		typ := row["type"].(map[string]any)
+		kinds[row["name"].(string)] = typ["kind"].(string)
+		served[row["name"].(string)] = sdlTypeRef(typ)
+	}
+	if kinds["windows"] != "NON_NULL" {
+		t.Fatalf("windows (required list) should be NON_NULL, got %v", kinds)
+	}
+	if kinds["gifts"] != "LIST" {
+		t.Fatalf("gifts (optional list) should be a nullable LIST, got %v", kinds)
+	}
+
+	mutation := `mutation($in: PlaceOrderInput!) { placeOrder(input: $in) { status } }`
+	baseInput := func(fulfilment any) map[string]any {
+		in := map[string]any{
+			"aggregateId": uuid.NewString(), "namespace": "default",
+			"customerId": uuid.NewString(), "currency": "USD",
+			"items": []any{map[string]any{"sku": "widget", "quantity": 1, "priceCents": 100}},
+		}
+		if fulfilment != nil {
+			in["fulfilment"] = fulfilment
+		}
+		return in
+	}
+
+	// (b) fulfilment carries windows and omits gifts entirely
+	data = gql(mutation, map[string]any{"in": baseInput(map[string]any{
+		"windows": []any{map[string]any{"startsAt": "2026-01-01T10:00:00Z"}},
+	})})
+	if data["placeOrder"].(map[string]any)["status"] != "ok" {
+		t.Fatalf("placeOrder omitting gifts: %+v", data)
+	}
+	if seen == nil || seen.Fulfilment == nil {
+		t.Fatal("handler did not see a Fulfilment")
+	}
+	if len(seen.Fulfilment.Windows) != 1 {
+		t.Fatalf("Fulfilment.Windows: got %d elements, want 1", len(seen.Fulfilment.Windows))
+	}
+	if seen.Fulfilment.Gifts != nil {
+		t.Fatalf("Fulfilment.Gifts: want nil (omitted), got %#v", seen.Fulfilment.Gifts)
+	}
+
+	// (c) fulfilment sends gifts explicitly as null
+	seen = nil
+	data = gql(mutation, map[string]any{"in": baseInput(map[string]any{
+		"windows": []any{map[string]any{"startsAt": "2026-01-01T10:00:00Z"}},
+		"gifts":   nil,
+	})})
+	if data["placeOrder"].(map[string]any)["status"] != "ok" {
+		t.Fatalf("placeOrder with gifts: null: %+v", data)
+	}
+	if seen == nil || seen.Fulfilment == nil {
+		t.Fatal("handler did not see a Fulfilment")
+	}
+	if len(seen.Fulfilment.Windows) != 1 {
+		t.Fatalf("Fulfilment.Windows: got %d elements, want 1", len(seen.Fulfilment.Windows))
+	}
+	if seen.Fulfilment.Gifts != nil {
+		t.Fatalf("Fulfilment.Gifts: want nil (explicit null), got %#v", seen.Fulfilment.Gifts)
+	}
+
+	// the generated SDL agrees with what the runtime just proved, line for
+	// line inside `input FulfilmentInput`: list-level nullability follows
+	// the schema (windows `!`, gifts none) and elements are NonNull in both
+	// the generator and the gateway, as they are for every loom list
+	raw, err := gen.GraphQL(mustParseOrdersSchema(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := sdlBlock(t, string(raw), "input FulfilmentInput")
+	for field, want := range map[string]string{
+		"windows": "[FulfilmentWindowInput!]!",
+		"gifts":   "[GiftNoteInput!]",
+	} {
+		line := "  " + field + ": " + want
+		if !slices.Contains(strings.Split(block, "\n"), line) {
+			t.Errorf("input FulfilmentInput: want line %q in:\n%s", line, block)
+		}
+	}
+	// field by field, the published block and the served input agree
+	published := sdlFields(block)
+	if len(published) != len(served) {
+		t.Errorf("input FulfilmentInput: generated SDL has fields %v, gateway serves %v", published, served)
+	}
+	for field, want := range published {
+		if served[field] != want {
+			t.Errorf("%s: gateway serves %q, generated SDL declares %q", field, served[field], want)
+		}
+	}
+}
+
+// sdlFields reads the `name: Type` lines of an SDL block into a map.
+func sdlFields(block string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(block, "\n")[1:] {
+		name, typ, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || strings.HasPrefix(name, "#") {
+			continue
+		}
+		out[name] = strings.TrimSpace(typ)
+	}
+	return out
+}
+
+// sdlTypeRef renders an introspected type reference ({kind name ofType})
+// in SDL notation, so the served type compares directly to the emitted SDL.
+func sdlTypeRef(typ map[string]any) string {
+	switch typ["kind"] {
+	case "NON_NULL":
+		return sdlTypeRef(typ["ofType"].(map[string]any)) + "!"
+	case "LIST":
+		return "[" + sdlTypeRef(typ["ofType"].(map[string]any)) + "]"
+	default:
+		name, _ := typ["name"].(string)
+		return name
+	}
+}
+
+// sdlBlock returns the body of the SDL definition whose header is head
+// (e.g. "input FulfilmentInput"), from its opening line to its closing brace.
+func sdlBlock(t *testing.T, sdlOut, head string) string {
+	t.Helper()
+	start := strings.Index(sdlOut, head+" {\n")
+	if start < 0 {
+		t.Fatalf("generated SDL has no %q:\n%s", head, sdlOut)
+	}
+	end := strings.Index(sdlOut[start:], "\n}")
+	if end < 0 {
+		t.Fatalf("generated SDL: %q is not closed", head)
+	}
+	return sdlOut[start : start+end+2]
+}
+
+// mustParseOrdersSchema parses the e2e orders schema straight off disk, the
+// same directory loomgen/registry_gen.go was generated from, so the SDL check
+// and the live gateway check stay in lockstep.
+func mustParseOrdersSchema(t *testing.T) *schema.Schema {
+	t.Helper()
+	s, err := sdl.ParseDir("orders/schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 // TestGraphQLPlayground: a browser GET serves the embedded IDE; curl GET
