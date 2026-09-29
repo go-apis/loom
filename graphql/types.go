@@ -395,6 +395,10 @@ func (b *builder) nestedInput(t reflect.Type) (gql.Input, converter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// A registry generated with Types says which fields the schema
+	// requires; without an entry (a hand-written struct, or a registry
+	// generated before Types existed) Go pointer-ness decides, as before.
+	required, fromSchema := b.typeRequired[t.Name()]
 	convs := map[string]fieldConv{}
 	cfg := gql.InputObjectConfigFieldMap{}
 	for _, f := range fields {
@@ -402,7 +406,16 @@ func (b *builder) nestedInput(t reflect.Type) (gql.Input, converter, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		if !f.nullable {
+		if fromSchema {
+			// NonNull follows the SCHEMA's required list, matching the
+			// emitted SDL — Go value-ness can't tell `[T]?` from `[T]`.
+			// Enum fields stay nullable either way: their zero value
+			// means "unset", and the generated Validate() rejects an
+			// empty required enum at dispatch.
+			if _, isEnum := in.(*gql.Enum); required[f.snake] && !isEnum {
+				in = gql.NewNonNull(in)
+			}
+		} else if !f.nullable {
 			in = gql.NewNonNull(in)
 		}
 		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in}

@@ -771,6 +771,21 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("\t\t},\n")
 	}
 
+	// Types is written even when empty: every registry generated from
+	// here on states its schema types, so the gateway's nested inputs
+	// follow the schema's required lists (ADR 0004).
+	types := append([]*schema.NamedType(nil), g.s.Types...)
+	sort.Slice(types, func(i, j int) bool { return types[i].Name < types[j].Name })
+	b.WriteString("\t\tTypes: []*loom.TypeDef{\n")
+	for _, t := range types {
+		if req := requiredFields(t.Payload); len(req) > 0 {
+			fmt.Fprintf(&b, "\t\t\t{Name: %q, Required: %s},\n", t.Name, stringSlice(req))
+		} else {
+			fmt.Fprintf(&b, "\t\t\t{Name: %q},\n", t.Name)
+		}
+	}
+	b.WriteString("\t\t},\n")
+
 	joins := false
 	for _, e := range g.s.Entities {
 		joins = joins || len(e.Joins) > 0

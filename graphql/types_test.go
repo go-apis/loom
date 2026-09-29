@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	gql "github.com/graphql-go/graphql"
@@ -130,3 +132,119 @@ type sampleCmd struct {
 }
 
 func (sampleCmd) LoomCommand() string { return "Sample" }
+
+type sampleScaling struct {
+	Accounts      []sampleAccount `json:"accounts"`
+	Tiers         []string        `json:"tiers"`
+	SpareAccounts []sampleAccount `json:"spare_accounts"`
+	TierNames     []string        `json:"tier_names"`
+}
+
+type sampleAccount struct {
+	AccountId string `json:"account_id"`
+}
+
+// A nested input's NonNull follows the schema's required list, as a
+// command's top level does: runsheet's `type NodeScaling { accounts:
+// [NodeScalingAccount]? }` was served as `[NodeScalingAccountInput!]!`,
+// because the generated `[]T` looks required to pointer-ness, and a
+// client omitting the list was refused with "got invalid value".
+func TestNestedInputFollowsSchemaRequired(t *testing.T) {
+	b := &builder{
+		types:  map[string]*typeEntry{},
+		inputs: map[string]gql.Input{},
+		typeRequired: map[string]map[string]bool{
+			"sampleScaling": {"tiers": true, "tier_names": true},
+		},
+	}
+	in, conv, err := b.nestedInput(reflect.TypeOf(sampleScaling{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := in.(*gql.InputObject)
+	if !ok {
+		t.Fatalf("not an input object: %T", in)
+	}
+	fields := obj.Fields()
+	// GraphQL names are camel; the required list is keyed snake
+	for _, name := range []string{"tiers", "tierNames"} {
+		nn, ok := fields[name].Type.(*gql.NonNull)
+		if !ok {
+			t.Fatalf("required list %s is %v, want NON_NULL", name, fields[name].Type)
+		}
+		if _, isList := nn.OfType.(*gql.List); !isList {
+			t.Errorf("%s wraps %v, want a list", name, nn.OfType)
+		}
+	}
+	for _, name := range []string{"accounts", "spareAccounts"} {
+		if _, isList := fields[name].Type.(*gql.List); !isList {
+			t.Errorf("optional list %s is %v, want a nullable list", name, fields[name].Type)
+		}
+	}
+
+	// omitted or null, the optional lists convert to nil slices
+	for name, arg := range map[string]map[string]any{
+		"omitted": {"tiers": []any{"gold"}, "tierNames": []any{"silver"}},
+		"null": {
+			"tiers": []any{"gold"}, "tierNames": []any{"silver"},
+			"accounts": nil, "spareAccounts": nil,
+		},
+	} {
+		out := conv(arg).(map[string]any)
+		if _, camel := out["tierNames"]; camel {
+			t.Errorf("%s: converted map kept camel key tierNames: %#v", name, out)
+		}
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got sampleScaling
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Accounts != nil || got.SpareAccounts != nil {
+			t.Errorf("%s: accounts = %#v, spare = %#v, want nil", name, got.Accounts, got.SpareAccounts)
+		}
+		if len(got.Tiers) != 1 || got.Tiers[0] != "gold" {
+			t.Errorf("%s: tiers = %#v, want [gold]", name, got.Tiers)
+		}
+		if len(got.TierNames) != 1 || got.TierNames[0] != "silver" {
+			t.Errorf("%s: tier_names = %#v, want [silver]", name, got.TierNames)
+		}
+	}
+
+	// present lists convert camel -> snake at every level
+	out := conv(map[string]any{
+		"tiers":         []any{},
+		"tierNames":     []any{},
+		"spareAccounts": []any{map[string]any{"accountId": "a"}},
+	})
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got sampleScaling
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.SpareAccounts) != 1 || got.SpareAccounts[0].AccountId != "a" {
+		t.Errorf("spare_accounts = %#v from %s, want one account a", got.SpareAccounts, raw)
+	}
+}
+
+// A struct the registry names no required list for (hand-written, or a
+// registry generated before Types) keeps pointer-based nullability.
+func TestNestedInputWithoutTypeDefKeepsPointerRule(t *testing.T) {
+	b := &builder{types: map[string]*typeEntry{}, inputs: map[string]gql.Input{}}
+	in, _, err := b.nestedInput(reflect.TypeOf(sampleNested{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := in.(*gql.InputObject).Fields()
+	if _, nonNull := fields["line1"].Type.(*gql.NonNull); !nonNull {
+		t.Error("value field line1 should be NonNull without a TypeDef")
+	}
+	if _, nonNull := fields["line2"].Type.(*gql.NonNull); nonNull {
+		t.Error("pointer field line2 should stay nullable without a TypeDef")
+	}
+}

@@ -143,6 +143,7 @@ type Registry struct {
 	Tables      []*TableDef
 	Joins       []*JoinDef
 	Enums       []*EnumDef
+	Types       []*TypeDef
 }
 
 // EnumDef mirrors a schema `enum`: the closed value set behind a
@@ -151,6 +152,17 @@ type Registry struct {
 type EnumDef struct {
 	Name   string
 	Values []string
+}
+
+// TypeDef mirrors a schema `type`: a named struct reused inside commands,
+// events and state. The gateway serves it as a nested input.
+type TypeDef struct {
+	Name string
+	// Required names the schema-required fields (snake case) — the
+	// gateway serves exactly these as NonNull fields of the nested
+	// input, as CommandDef.Required does for a command's top level. Go
+	// value-ness can't say it: `[T]?` and `[T]` are both a plain slice.
+	Required []string
 }
 
 // JoinDef is a schema-declared gateway edge between entities (`join` in

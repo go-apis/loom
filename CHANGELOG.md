@@ -35,6 +35,20 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   `loom init` now writes `schema: schema/`
   ([ADR 0003](docs/adr/0003-schema-is-a-directory.md)).
 
+### Fixed
+
+- **A nested type's optional list is nullable in GraphQL, as the schema
+  says.** A schema `type` used inside a command, such as runsheet's
+  `type NodeScaling { accounts: [NodeScalingAccount]? }`, was served as
+  `accounts: [NodeScalingAccountInput!]!`. A client that omitted the list
+  was refused with `got invalid value`. The generator now writes each
+  type's required list to `Registry.Types` (`loom.TypeDef`), and the
+  gateway makes a nested input field NonNull only when the schema requires
+  it, as it already did for top-level command fields. An omitted optional
+  list reaches the command as a nil slice. Regenerate to pick this up: a
+  registry without `Types` keeps the old pointer-based rule
+  ([ADR 0004](docs/adr/0004-nested-input-nullability-follows-the-schema.md)).
+
 ## [v0.54.0] — 2026-09-25
 
 ### Fixed

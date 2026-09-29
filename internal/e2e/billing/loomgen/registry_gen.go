@@ -185,6 +185,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 			},
 		},
+		Types: []*loom.TypeDef{},
 		Joins: []*loom.JoinDef{
 			{OnEntity: "InvoiceSummary", Field: "spend", Service: "orders", Entity: "CustomerSpend", List: false, Via: "customer_id"},
 		},

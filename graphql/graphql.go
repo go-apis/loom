@@ -258,6 +258,10 @@ type builder struct {
 	queries gql.Fields
 	muts    gql.Fields
 	subs    gql.Fields
+
+	// typeRequired is each schema type's required field set (snake
+	// case), keyed by type name — the Go type name nestedInput sees.
+	typeRequired map[string]map[string]bool
 }
 
 // registerEnums turns the registry's EnumDefs into shared GraphQL enum
@@ -284,11 +288,27 @@ func (b *builder) registerEnums(reg *loom.Registry) error {
 	return nil
 }
 
+// registerTypes records each schema type's required list, so a nested
+// input's NonNull follows the schema as a command's top level does.
+func (b *builder) registerTypes(reg *loom.Registry) {
+	if b.typeRequired == nil {
+		b.typeRequired = map[string]map[string]bool{}
+	}
+	for _, t := range reg.Types {
+		set := map[string]bool{}
+		for _, r := range t.Required {
+			set[r] = true
+		}
+		b.typeRequired[t.Name] = set
+	}
+}
+
 func (b *builder) service(cli *loom.Client) error {
 	reg := cli.Registry()
 	if err := b.registerEnums(reg); err != nil {
 		return err
 	}
+	b.registerTypes(reg)
 
 	for _, agg := range reg.Aggregates {
 		obj, err := b.objectFor(agg.Name, agg.NewState())

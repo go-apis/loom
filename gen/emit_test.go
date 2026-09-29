@@ -234,3 +234,78 @@ process q {
 		t.Fatalf("generated code has %q %d times, want once", want, n)
 	}
 }
+
+// TestTypeDefsCarryRequired proves a schema type's required list reaches
+// the registry as a loom.TypeDef, so the gateway serves a nested input's
+// optional list nullable — the SDL already says so, and the runtime must
+// agree with it.
+func TestTypeDefsCarryRequired(t *testing.T) {
+	s, err := sdl.Parse(`
+service s
+type Account { id: string! }
+type Scaling {
+  accounts: [Account]?
+  tiers: [string]!
+}
+aggregate A {
+  state { x: string }
+  command C { scaling: Scaling? } -> E
+  event E { x: string }
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	res, err := gen.Generate(s, gen.Config{Dir: dir, Package: "s", Module: "example.com/s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	for _, w := range res.Written {
+		raw, err := os.ReadFile(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.Write(raw)
+	}
+	flat := strings.Join(strings.Fields(all.String()), "")
+	for _, want := range []string{
+		`Types:[]*loom.TypeDef{`,
+		`{Name:"Account",Required:[]string{"id"}},`,
+		`{Name:"Scaling",Required:[]string{"tiers"}},`,
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("generated registry missing %q", want)
+		}
+	}
+
+	raw, err := gen.GraphQL(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdlOut := string(raw)
+	start := strings.Index(sdlOut, "input ScalingInput {")
+	if start < 0 {
+		t.Fatalf("no input ScalingInput in:\n%s", sdlOut)
+	}
+	block := sdlOut[start : start+strings.Index(sdlOut[start:], "}")]
+	// The optional list is nullable (no `!` after the list) and the
+	// required list is NON_NULL. Elements are non-null in both, as for
+	// every loom list: the schema has no nullable-element form.
+	fieldLine := func(name string) string {
+		for _, l := range strings.Split(block, "\n") {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, name+":") {
+				return l
+			}
+		}
+		t.Fatalf("ScalingInput has no %s in:\n%s", name, block)
+		return ""
+	}
+	if got := fieldLine("accounts"); !strings.HasPrefix(got, "accounts: [AccountInput") || strings.HasSuffix(got, "]!") {
+		t.Errorf("optional list: got %q, want accounts: [AccountInput…] with no `!` on the list", got)
+	}
+	if got := fieldLine("tiers"); got != "tiers: [String!]!" {
+		t.Errorf("required list: got %q, want tiers: [String!]!", got)
+	}
+}

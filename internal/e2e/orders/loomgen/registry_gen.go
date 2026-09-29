@@ -278,6 +278,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 			{Name: "OrderStatus", Values: []string{"placed", "shipped", "cancelled"}},
 			{Name: "Priority", Values: []string{"standard", "rush"}},
 		},
+		Types: []*loom.TypeDef{
+			{Name: "OrderItem", Required: []string{"price_cents", "quantity", "sku"}},
+		},
 		Joins: []*loom.JoinDef{
 			{OnEntity: "CustomerSpend", Field: "orders", Service: "", Entity: "OrderSummary", List: true, Via: "customer_id"},
 			{OnEntity: "CustomerSpend", Field: "invoices", Service: "billing", Entity: "InvoiceSummary", List: true, Via: "customer_id"},

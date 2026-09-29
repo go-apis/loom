@@ -453,6 +453,13 @@ console, redrive) never face the internet. GraphQL numbers: schema
 `int` is int64 and emits/serves the `Long` scalar everywhere — money in
 cents must not squeeze through a 32-bit Int (decided 2026-07-17).
 
+Input nullability follows the schema, not Go: a GraphQL input field is
+NonNull exactly when the schema marks it required, at a command's top
+level (`CommandDef.Required`) and inside a nested type
+(`Registry.Types`) alike, so the served schema matches the emitted SDL;
+enums stay nullable
+([ADR 0004](docs/adr/0004-nested-input-nullability-follows-the-schema.md)).
+
 ## Uploads: large files without bytes in the domain
 
 Files never enter the log or cross the bus — events carry a `FileRef`
