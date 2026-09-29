@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -323,7 +323,7 @@ func toJSON(v any) string {
 // TestGraphQLNestedOptionalList proves the ADR 0004 fix end to end against
 // the live gateway: Fulfilment's required list (windows) comes out NonNull
 // and its optional list (gifts) stays nullable, both in introspection and
-// in the SDL gen.Generate emits, and a placeOrder omitting gifts — or
+// in the SDL gen.GraphQL emits, and a placeOrder omitting gifts — or
 // sending it null — is accepted, arriving in Go as a nil slice.
 func TestGraphQLNestedOptionalList(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -375,13 +375,16 @@ func TestGraphQLNestedOptionalList(t *testing.T) {
 	// introspection: the required list is NON_NULL, the optional list
 	// stays a nullable LIST
 	data := gql(`{ __type(name: "FulfilmentInput") {
-		inputFields { name type { kind ofType { kind name } } }
+		inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
 	} }`, nil)
 	fields, _ := data["__type"].(map[string]any)["inputFields"].([]any)
 	kinds := map[string]string{}
+	served := map[string]string{}
 	for _, f := range fields {
 		row := f.(map[string]any)
-		kinds[row["name"].(string)] = row["type"].(map[string]any)["kind"].(string)
+		typ := row["type"].(map[string]any)
+		kinds[row["name"].(string)] = typ["kind"].(string)
+		served[row["name"].(string)] = sdlTypeRef(typ)
 	}
 	if kinds["windows"] != "NON_NULL" {
 		t.Fatalf("windows (required list) should be NON_NULL, got %v", kinds)
@@ -439,32 +442,64 @@ func TestGraphQLNestedOptionalList(t *testing.T) {
 		t.Fatalf("Fulfilment.Gifts: want nil (explicit null), got %#v", seen.Fulfilment.Gifts)
 	}
 
-	// the generated SDL agrees with what the runtime just proved
+	// the generated SDL agrees with what the runtime just proved, line for
+	// line inside `input FulfilmentInput`: list-level nullability follows
+	// the schema (windows `!`, gifts none) and elements are NonNull in both
+	// the generator and the gateway, as they are for every loom list
 	raw, err := gen.GraphQL(mustParseOrdersSchema(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sdlOut := string(raw)
-	for _, want := range []string{
-		"windows: [FulfilmentWindowInput!]!",
-		"gifts: [GiftNoteInput!]\n",
+	block := sdlBlock(t, string(raw), "input FulfilmentInput")
+	for field, want := range map[string]string{
+		"windows": "[FulfilmentWindowInput!]!",
+		"gifts":   "[GiftNoteInput!]",
 	} {
-		if !strings.Contains(sdlOut, want) {
-			t.Errorf("generated SDL missing %q in:\n%s", want, sdlOut)
+		line := "  " + field + ": " + want
+		if !slices.Contains(strings.Split(block, "\n"), line) {
+			t.Errorf("input FulfilmentInput: want line %q in:\n%s", line, block)
+		}
+		if served[field] != want {
+			t.Errorf("%s: gateway serves %s, generated SDL declares %s", field, served[field], want)
 		}
 	}
 }
 
+// sdlTypeRef renders an introspected type reference ({kind name ofType})
+// in SDL notation, so the served type compares directly to the emitted SDL.
+func sdlTypeRef(typ map[string]any) string {
+	switch typ["kind"] {
+	case "NON_NULL":
+		return sdlTypeRef(typ["ofType"].(map[string]any)) + "!"
+	case "LIST":
+		return "[" + sdlTypeRef(typ["ofType"].(map[string]any)) + "]"
+	default:
+		name, _ := typ["name"].(string)
+		return name
+	}
+}
+
+// sdlBlock returns the body of the SDL definition whose header is head
+// (e.g. "input FulfilmentInput"), from its opening line to its closing brace.
+func sdlBlock(t *testing.T, sdlOut, head string) string {
+	t.Helper()
+	start := strings.Index(sdlOut, head+" {\n")
+	if start < 0 {
+		t.Fatalf("generated SDL has no %q:\n%s", head, sdlOut)
+	}
+	end := strings.Index(sdlOut[start:], "\n}")
+	if end < 0 {
+		t.Fatalf("generated SDL: %q is not closed", head)
+	}
+	return sdlOut[start : start+end+2]
+}
+
 // mustParseOrdersSchema parses the e2e orders schema straight off disk, the
-// same file loomgen/registry_gen.go was generated from, so the SDL check
+// same directory loomgen/registry_gen.go was generated from, so the SDL check
 // and the live gateway check stay in lockstep.
 func mustParseOrdersSchema(t *testing.T) *schema.Schema {
 	t.Helper()
-	src, err := os.ReadFile("orders/schema/orders.loom")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := sdl.Parse(string(src))
+	s, err := sdl.ParseDir("orders/schema")
 	if err != nil {
 		t.Fatal(err)
 	}
