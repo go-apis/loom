@@ -235,6 +235,59 @@ func runInit(args []string) error {
 		return err
 	}
 	fmt.Printf("initialised %s: loom.yml + %s\n", service, schemaPath)
+	return pinGenerator("go.mod", os.Stdout)
+}
+
+const loomTool = "github.com/go-apis/loom/cmd/loom"
+
+// pinGenerator makes sure the go.mod at path carries a tool directive for the
+// generator, so the version a loom bump moves is the generator's version too.
+// A missing go.mod is not an error; a go.mod below go 1.24 is left alone.
+func pinGenerator(path string, out io.Writer) error {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var inTool bool
+	var goVer string
+	for _, line := range strings.Split(string(raw), "\n") {
+		f := strings.Fields(strings.SplitN(line, "//", 2)[0])
+		switch {
+		case len(f) == 0:
+		case inTool:
+			if f[0] == ")" {
+				inTool = false
+			} else if f[0] == loomTool {
+				fmt.Fprintf(out, "go.mod: tool %s already pinned\n", loomTool)
+				return nil
+			}
+		case f[0] == "tool" && len(f) == 2 && f[1] == "(":
+			inTool = true
+		case f[0] == "tool" && len(f) == 2 && f[1] == loomTool:
+			fmt.Fprintf(out, "go.mod: tool %s already pinned\n", loomTool)
+			return nil
+		case f[0] == "go" && len(f) == 2:
+			goVer = f[1]
+		}
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(goVer, "%d.%d", &major, &minor); err != nil || major < 1 || (major == 1 && minor < 24) {
+		fmt.Fprintf(out, "go.mod: not pinning %s: tool directives need go 1.24 or newer (go.mod says %q); raise the go line, then add: tool %s\n", loomTool, goVer, loomTool)
+		return nil
+	}
+	text := string(raw)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	text += "\ntool " + loomTool + "\n"
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "go.mod: added tool %s\n", loomTool)
+	fmt.Fprintf(out, "run `go get -tool %s@<version>` or `go mod tidy` so go.mod has a require line for it\n", loomTool)
 	return nil
 }
 
