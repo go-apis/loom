@@ -5,6 +5,7 @@
 package gen
 
 import (
+	"bytes"
 	"fmt"
 	"go/format"
 	"os"
@@ -47,7 +48,9 @@ type Result struct {
 	Skipped []string // stub files that already existed
 }
 
-func Generate(s *schema.Schema, cfg Config) (*Result, error) {
+// prepare validates the schema, fills the config defaults and returns the
+// generator both Generate and Render/Check work from.
+func prepare(s *schema.Schema, cfg Config) (*generator, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
@@ -60,14 +63,13 @@ func Generate(s *schema.Schema, cfg Config) (*Result, error) {
 	if cfg.Module == "" {
 		return nil, fmt.Errorf("gen: Config.Module is required (the service module path)")
 	}
-	g := &generator{s: s, cfg: cfg, genPkg: filepath.Base(cfg.GenDir)}
+	return &generator{s: s, cfg: cfg, genPkg: filepath.Base(cfg.GenDir)}, nil
+}
 
-	res := &Result{}
-	genDir := filepath.Join(cfg.Dir, cfg.GenDir)
-	if err := os.MkdirAll(genDir, 0o755); err != nil {
-		return nil, err
-	}
-
+// render returns the regenerated loomgen files (path -> final bytes, gofmt
+// applied). Stubs are not included: they belong to the user.
+func (g *generator) render() map[string][]byte {
+	genDir := filepath.Join(g.cfg.Dir, g.cfg.GenDir)
 	files := map[string]string{
 		filepath.Join(genDir, "models_gen.go"):   g.models(),
 		filepath.Join(genDir, "registry_gen.go"): g.registry(),
@@ -75,11 +77,70 @@ func Generate(s *schema.Schema, cfg Config) (*Result, error) {
 	if sql := g.tablesSQL(); sql != "" {
 		files[filepath.Join(genDir, "tables_gen.sql")] = sql
 	}
+	out := make(map[string][]byte, len(files))
 	for path, content := range files {
-		out := []byte(content)
 		if strings.HasSuffix(path, ".go") {
-			out = gofmt(path, content)
+			out[path] = gofmt(path, content)
+		} else {
+			out[path] = []byte(content)
 		}
+	}
+	return out
+}
+
+// Render returns the regenerated loomgen files (path -> final bytes) without
+// touching disk. Stubs are never included.
+func Render(s *schema.Schema, cfg Config) (map[string][]byte, error) {
+	g, err := prepare(s, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return g.render(), nil
+}
+
+// Check renders the regenerated files in memory and compares them to disk
+// byte for byte. It writes nothing. stale files differ from disk (or are a
+// tables_gen.sql the schema no longer generates); missing files are absent.
+// Stubs are the user's and are never compared. Both lists are sorted.
+func Check(s *schema.Schema, cfg Config) (stale, missing []string, err error) {
+	g, err := prepare(s, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	files := g.render()
+	for path, want := range files {
+		got, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			missing = append(missing, path)
+		} else if err != nil {
+			return nil, nil, err
+		} else if !bytes.Equal(got, want) {
+			stale = append(stale, path)
+		}
+	}
+	sqlPath := filepath.Join(g.cfg.Dir, g.cfg.GenDir, "tables_gen.sql")
+	if _, ok := files[sqlPath]; !ok {
+		if _, err := os.Stat(sqlPath); err == nil {
+			stale = append(stale, sqlPath)
+		}
+	}
+	sort.Strings(stale)
+	sort.Strings(missing)
+	return stale, missing, nil
+}
+
+func Generate(s *schema.Schema, cfg Config) (*Result, error) {
+	g, err := prepare(s, cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg = g.cfg
+
+	res := &Result{}
+	if err := os.MkdirAll(filepath.Join(cfg.Dir, cfg.GenDir), 0o755); err != nil {
+		return nil, err
+	}
+	for path, out := range g.render() {
 		if err := os.WriteFile(path, out, 0o644); err != nil {
 			return nil, err
 		}
