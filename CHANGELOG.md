@@ -14,6 +14,13 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`loom generate --check`.** Renders every loomgen file in memory, writes
+  nothing, and exits non-zero naming each file that differs from disk or is
+  missing. Stubs are never compared. Run `go tool loom generate --check` in
+  CI ([ADR 0005](docs/adr/0005-generator-is-pinned-and-checked.md)).
+- **`loom init` pins the generator.** If the current directory has a go.mod
+  (go 1.24 or newer), init adds `tool github.com/go-apis/loom/cmd/loom`,
+  idempotently, so a loom bump's require line moves the generator.
 - **Enums extend across files: `enum X += { … }`.** A feature can add a
   member to an enum declared in another file. Values keep declaration order
   (home first, then extensions in path order). An extension with no home,

@@ -277,3 +277,65 @@ func TestGenerateCheckIgnoresStubs(t *testing.T) {
 		t.Fatal("--check recreated a stub")
 	}
 }
+
+func initIn(t *testing.T, gomod string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if gomod != "" {
+		if err := os.WriteFile("go.mod", []byte(gomod), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runInit([]string{"svc"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile("go.mod")
+	return dir, string(b)
+}
+
+func TestInitPinsGeneratorOnce(t *testing.T) {
+	_, got := initIn(t, "module example.com/svc\n\ngo 1.24\n")
+	if n := strings.Count(got, "tool "+loomTool); n != 1 {
+		t.Fatalf("want one tool line, got %d:\n%s", n, got)
+	}
+	if err := pinGenerator("go.mod", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := os.ReadFile("go.mod")
+	if string(again) != got {
+		t.Fatalf("second application changed go.mod:\n%s", again)
+	}
+}
+
+func TestInitKeepsExistingToolDirective(t *testing.T) {
+	for name, gomod := range map[string]string{
+		"single": "module x\n\ngo 1.24\n\ntool github.com/go-apis/loom/cmd/loom\n",
+		"block":  "module x\n\ngo 1.24\n\ntool (\n\texample.com/other/cmd\n\tgithub.com/go-apis/loom/cmd/loom\n)\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, got := initIn(t, gomod)
+			if got != gomod {
+				t.Fatalf("go.mod changed:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestInitLeavesOldGoModAlone(t *testing.T) {
+	gomod := "module x\n\ngo 1.22\n"
+	_, got := initIn(t, gomod)
+	if got != gomod {
+		t.Fatalf("go.mod changed:\n%s", got)
+	}
+}
+
+func TestInitWithoutGoMod(t *testing.T) {
+	initIn(t, "")
+	if _, err := os.Stat("go.mod"); err == nil {
+		t.Fatal("init created a go.mod")
+	}
+	if _, err := os.Stat("loom.yml"); err != nil {
+		t.Fatal(err)
+	}
+}

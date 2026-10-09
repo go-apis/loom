@@ -37,6 +37,7 @@ process shipOnPayment {
 loom init orders        # loom.yml (schema: schema/) + schema/orders.loom
 $EDITOR schema/orders.loom
 loom generate           # models, folds, registry (regenerated) + stubs (yours)
+loom generate --check   # write nothing; exit non-zero naming stale or missing loomgen files
 go build ./...          # compile errors are your to-do list
 ```
 
@@ -125,6 +126,33 @@ myservice/
   processes/
   registry.go      # wires &aggregates.X{}, &processes.Y{}, …
 ```
+
+## Keeping loomgen current
+
+A loom bump can change what `loom generate` emits, so the generated files
+can go stale without a compile error. Put this in CI, in each directory
+with a loom.yml:
+
+```sh
+go tool loom generate --check
+```
+
+It renders every loomgen file in memory, writes nothing, and exits non-zero
+naming each file whose bytes differ from disk or that is missing. Stubs
+(the files that are yours) are never compared. To fix a failure, regenerate
+and commit:
+
+```sh
+go tool loom generate
+```
+
+`loom init` adds `tool github.com/go-apis/loom/cmd/loom` to the go.mod in
+the current directory (go 1.24 or newer; run `go get -tool
+github.com/go-apis/loom/cmd/loom@<version>` or `go mod tidy` so it has a
+require line). The generator is then pinned by the same line a loom bump
+moves, so the bump moves the generator's version with it. For an existing
+service, add the directive yourself. See
+[ADR 0005](docs/adr/0005-generator-is-pinned-and-checked.md).
 
 ## Execution semantics (there are exactly three)
 
