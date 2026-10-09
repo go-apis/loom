@@ -2,6 +2,7 @@
 //
 //	loom init <service>   scaffold loom.yml + schema/<service>.loom
 //	loom generate         regenerate models/registry + missing stubs
+//	loom generate --check write nothing; list stale/missing generated files, exit 1 if any
 //	loom rewrap           re-wrap sealed data keys under a new KeyWrapper
 package main
 
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,7 +36,7 @@ func main() {
 	case "init":
 		err = runInit(os.Args[2:])
 	case "generate":
-		err = runGenerate(os.Args[2:])
+		err = runGenerate(os.Args[2:], os.Stdout)
 	case "check":
 		err = runCheck(os.Args[2:])
 	case "openapi":
@@ -54,7 +56,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: loom init <service>")
-	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>]")
+	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom check <schema.loom|schema dir ...>")
 	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json]")
 	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls]")
@@ -236,9 +238,10 @@ func runInit(args []string) error {
 	return nil
 }
 
-func runGenerate(args []string) error {
+func runGenerate(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	dir := fs.String("dir", ".", "service directory (where loom.yml lives)")
+	check := fs.Bool("check", false, "write nothing; name generated files that are stale or missing and fail if any")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -269,21 +272,38 @@ func runGenerate(args []string) error {
 	if cfg.Layout != "" && cfg.Layout != "flat" && cfg.Layout != "folders" {
 		return fmt.Errorf("loom.yml: layout must be flat or folders, got %q", cfg.Layout)
 	}
-	res, err := gen.Generate(s, gen.Config{
+	gcfg := gen.Config{
 		Dir:     *dir,
 		Package: cfg.Package,
 		GenDir:  cfg.Generated,
 		Module:  cfg.Module,
 		Layout:  cfg.Layout,
-	})
+	}
+	if *check {
+		stale, missing, err := gen.Check(s, gcfg)
+		if err != nil {
+			return err
+		}
+		for _, f := range stale {
+			fmt.Fprintln(out, "stale  ", rel(*dir, f))
+		}
+		for _, f := range missing {
+			fmt.Fprintln(out, "missing", rel(*dir, f))
+		}
+		if n := len(stale) + len(missing); n > 0 {
+			return fmt.Errorf("%d generated file(s) out of date; run loom generate", n)
+		}
+		return nil
+	}
+	res, err := gen.Generate(s, gcfg)
 	if err != nil {
 		return err
 	}
 	for _, f := range res.Written {
-		fmt.Println("wrote", rel(*dir, f))
+		fmt.Fprintln(out, "wrote", rel(*dir, f))
 	}
 	for _, f := range res.Skipped {
-		fmt.Println("kept ", rel(*dir, f), "(stub exists)")
+		fmt.Fprintln(out, "kept ", rel(*dir, f), "(stub exists)")
 	}
 	return nil
 }

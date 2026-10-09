@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -122,5 +126,154 @@ aggregate Shipment {
 	_, err = loadSchemas(dir, "schema/")
 	if err == nil || !strings.Contains(err.Error(), filepath.Join("schema", "billing", "invoice.loom")+":") {
 		t.Fatalf("want a refusal naming billing/invoice.loom, got %v", err)
+	}
+}
+
+const checkSchema = `service orders
+
+event OrderPlaced {
+  status: string!
+}
+
+aggregate Order {
+  state {
+    status: string
+  }
+  command PlaceOrder {
+    status: string!
+  } -> OrderPlaced
+  command CancelOrder {
+    reason: string
+  } -> OrderPlaced
+}
+`
+
+// checkFixture generates a service in a temp dir and returns helpers.
+func checkFixture(t *testing.T) (dir string, write func(string, string), read func(string) string, check func() (string, error)) {
+	t.Helper()
+	dir = t.TempDir()
+	write = func(rel, src string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read = func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	check = func() (string, error) {
+		var out bytes.Buffer
+		err := runGenerate([]string{"--dir", dir, "--check"}, &out)
+		return out.String(), err
+	}
+	write("go.mod", "module example.com/orders\n\ngo 1.22\n")
+	write("loom.yml", "schema: schema\n")
+	write("schema/orders.loom", checkSchema)
+	if err := runGenerate([]string{"--dir", dir}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func snapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		m[p] = string(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestGenerateCheckClean(t *testing.T) {
+	dir, _, _, check := checkFixture(t)
+	before := snapshot(t, dir)
+	out, err := check()
+	if err != nil || out != "" {
+		t.Fatalf("clean tree: err %v, out %q", err, out)
+	}
+	if !reflect.DeepEqual(before, snapshot(t, dir)) {
+		t.Fatal("--check changed files")
+	}
+}
+
+func TestGenerateCheckStaleRegistry(t *testing.T) {
+	dir, write, read, check := checkFixture(t)
+	// a policy adds a reactions interface to the registry only
+	write("schema/orders.loom", checkSchema+"\npolicy autoCancel {\n  on OrderPlaced -> CancelOrder\n}\n")
+	before := snapshot(t, dir)
+	out, err := check()
+	if err == nil || strings.TrimSpace(out) != "stale   loomgen/registry_gen.go" {
+		t.Fatalf("schema edit: err %v, out %q", err, out)
+	}
+	if !reflect.DeepEqual(before, snapshot(t, dir)) {
+		t.Fatal("--check changed files")
+	}
+
+	// hand edit, on a fresh tree
+	write("schema/orders.loom", checkSchema)
+	edited := read("loomgen/registry_gen.go") + "// hand edit\n"
+	write("loomgen/registry_gen.go", edited)
+	out, err = check()
+	if err == nil || strings.TrimSpace(out) != "stale   loomgen/registry_gen.go" {
+		t.Fatalf("hand edit: err %v, out %q", err, out)
+	}
+	if read("loomgen/registry_gen.go") != edited {
+		t.Fatal("--check rewrote the hand-edited file")
+	}
+}
+
+func TestGenerateCheckMissing(t *testing.T) {
+	dir, _, _, check := checkFixture(t)
+	p := filepath.Join(dir, "loomgen/models_gen.go")
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	out, err := check()
+	if err == nil || strings.TrimSpace(out) != "missing loomgen/models_gen.go" {
+		t.Fatalf("err %v, out %q", err, out)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("--check recreated the file")
+	}
+}
+
+func TestGenerateCheckIgnoresStubs(t *testing.T) {
+	dir, write, read, check := checkFixture(t)
+	var stubs []string
+	for p := range snapshot(t, dir) {
+		r, _ := filepath.Rel(dir, p)
+		if strings.HasSuffix(r, ".go") && !strings.HasPrefix(r, "loomgen") {
+			stubs = append(stubs, r)
+		}
+	}
+	if len(stubs) < 2 {
+		t.Fatalf("want at least 2 stubs, got %v", stubs)
+	}
+	sort.Strings(stubs)
+	write(stubs[0], read(stubs[0])+"\n// mine\n")
+	if err := os.Remove(filepath.Join(dir, stubs[1])); err != nil {
+		t.Fatal(err)
+	}
+	out, err := check()
+	if err != nil || out != "" {
+		t.Fatalf("err %v, out %q", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, stubs[1])); !os.IsNotExist(err) {
+		t.Fatal("--check recreated a stub")
 	}
 }
