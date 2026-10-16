@@ -1,0 +1,19 @@
+# The suite the node runs and attests in place of go-apis/loom's PR
+# workflow (.github/workflows/ci.yml), per runsheet ADR 032 (attested
+# validation replaces duplicate CI) and ADR 013 (validation runs from
+# this declared config).
+#
+# ci.yml has one job, `test` ("go test"): it starts a postgres:16
+# service (declared for the sandbox in .mesh/services.yml, in the same
+# shape the job's own `services:` block already used), waits for it on
+# the DSN internal/e2e's tests default to, then runs the command below.
+# The job carries no path filter, so this suite does not either.
+#
+# .github/workflows/tag-on-merge.yml (release tagging on a merged pull
+# request, needs contents:write) is not a validation step and stays on
+# GitHub — it is not represented here and is not faked by a suite.
+suites:
+  - name: test
+    kind: integration   # needs Postgres, not a plain unit run
+    command: go test ./... -count=1
+    jobs: [go test]     # the CI check name (ci.yml job `test`'s own `name:`) this suite stands in for

@@ -1,0 +1,38 @@
+# The service a sandboxed session needs to run go-apis/loom's tests,
+# in the shape ci.yml's own `services:` block already used (mesh-specs
+# ADR 007, "Services" — a GitHub Actions services: map plus Mesh's
+# `required`).
+#
+# internal/e2e's testDB helper defaults to
+# postgres://postgres:mysecret@localhost:5432/postgres and skips
+# silently when it cannot reach it, so these credentials and the port
+# must match that default exactly or the e2e suite silently skips.
+services:
+  postgres:
+    image: postgres:16
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecret
+      # initdb's last step syncs the cluster to disk; a database that
+      # lasts one session has no use for it
+      POSTGRES_INITDB_ARGS: --no-sync
+      # the image's data volume is owned by the pod's user (keep-id), which
+      # postgres's own user cannot chmod: initdb refuses and the sidecar dies
+      # (as in runsheet/runsheet's .mesh/services.yml). The container's own
+      # filesystem it can.
+      PGDATA: /tmp/pgdata
+      POSTGRES_DB: postgres
+    ports: ["5432:5432"]
+    options: >-
+      --health-cmd "pg_isready -U postgres -d postgres"
+      --health-interval 10s --health-timeout 5s --health-retries 10
+      --health-start-period 10s
+    required: true
+    # ci.yml turns fsync, synchronous_commit and full_page_writes off
+    # after the container starts (ALTER SYSTEM + pg_reload_conf), which
+    # is not a server argument or `command:` this schema carries as a
+    # literal list — and it does not need to be: ADR 007 already tunes
+    # a known database named `postgres` this same way by default
+    # (`-c fsync=off -c synchronous_commit=off -c full_page_writes=off`,
+    # data directory on tmpfs) unless the declaration sets `tuning:
+    # false` or its own `command`, neither of which this file does.
