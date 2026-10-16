@@ -13,6 +13,14 @@ services:
     env:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: mysecret
+      # initdb's last step syncs the cluster to disk; a database that
+      # lasts one session has no use for it
+      POSTGRES_INITDB_ARGS: --no-sync
+      # the image's data volume is owned by the pod's user (keep-id), which
+      # postgres's own user cannot chmod: initdb refuses and the sidecar dies
+      # (as in runsheet/runsheet's .mesh/services.yml). The container's own
+      # filesystem it can.
+      PGDATA: /tmp/pgdata
       POSTGRES_DB: postgres
     ports: ["5432:5432"]
     options: >-
