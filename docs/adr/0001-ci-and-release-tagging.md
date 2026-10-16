@@ -2,7 +2,7 @@
 title: "ADR 0001 — CI gates every PR; every merge to main makes a tag"
 status: accepted
 date: 2026-09-24
-summary: CI runs go test ./... against Postgres on every PR and blocks red merges; every merge to main is tagged automatically, next MINOR by default, next PATCH when the PR is labelled `patch`.
+summary: CI runs go test ./... against Postgres on push to main (pull requests are judged by the node's attestation) and blocks red merges; every merge to main is tagged automatically, next MINOR by default, next PATCH when the PR is labelled `patch`.
 ---
 
 # ADR 0001 — CI gates every PR; every merge to main makes a tag
@@ -74,3 +74,21 @@ continues from them rather than restarting.
 - Tags are never cut by hand for merged work. A mistaken bump is fixed by
   merging the next PR with the right label, not by moving or deleting a tag
   consumers may already have fetched.
+
+## Amendment 2026-10-13 — pull requests are judged by the node
+
+Goal `loom-pull-requests-are-judged-by-the-node`. Pull requests to `main` are
+now judged by the node's signed attestation of the suites declared in
+`.runsheet/validate.yml` (runsheet ADR 032; ADR 054 as amended 2026-10-13),
+first exercised by item 1 of that goal, PR #63, which merged on that
+attestation. `ci.yml`'s `pull_request` trigger is removed; it now runs only
+on `push` to `main`, as the Decision's push run already did.
+`tag-on-merge.yml` stays on GitHub until releases ship from a node — it is a
+release step on a merged PR, out of this goal's scope.
+
+A consequence for branch protection: the Decision's "the `go test` check is
+required on `main`, so a red run blocks the merge" no longer holds, because
+`go test` no longer runs on a pull request to produce that check. The
+required-check rule must be replaced by a requirement on the node's
+attestation instead. That is a GitHub repository setting, which no PR can
+change — a person has to make that change by hand.
