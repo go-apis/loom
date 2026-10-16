@@ -74,3 +74,26 @@ continues from them rather than restarting.
 - Tags are never cut by hand for merged work. A mistaken bump is fixed by
   merging the next PR with the right label, not by moving or deleting a tag
   consumers may already have fetched.
+
+## Amendment (2026-10-13) — Pull requests are judged by the node's attestation
+
+Pull requests are now judged by the node's signed attestation of `.runsheet/validate.yml`
+(goal `loom-pull-requests-are-judged-by-the-node`, item 1, PR #63: "Declare loom's PR
+validation: .runsheet/validate.yml and .mesh/services.yml"), per runsheet ADR 032
+(attested validation replaces duplicate CI) and ADR 054 (the node's attestation is the
+verdict, amended 2026-10-13). As of this amendment:
+
+- The `pull_request:` trigger is removed from `.github/workflows/ci.yml`. CI runs on
+  `push: branches: [main]` only, where the deploy and release tagging can follow.
+- `.runsheet/validate.yml` declares the same `test` suite that ci.yml's job ran (integration
+  kind, `go test ./... -count=1`, postgres:16 service with ci.yml's exact credentials),
+  so the node can run and attest it in place of the Actions run.
+- `.github/workflows/tag-on-merge.yml` (tag creation on merge, `contents: write` credential)
+  stays on GitHub, as it needs a credential the sandbox does not have. A future goal will
+  move release tagging to the node when the sandbox credential policy allows.
+- When item 1 merges on the node's attestation (RecordWorkItemCheck with check_source
+  `attestation`), the removal of this trigger takes effect: pull requests now merge on
+  the node's signed attestation, and the GitHub workflow that checked them is gone.
+
+This amendment records the decision made at item 1's evaluation, deferred to item 2 to
+align the shared ADR with both the node's signature and the pull request's merger.
