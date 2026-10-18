@@ -12,6 +12,15 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A process, policy or `@fold` projection named after an aggregate
+  compiles.** `aggregate FleetStall` beside `process fleetStall` used to
+  generate two `Impl` fields called `FleetStall`. The reactor's field now
+  takes its kind (`FleetStallProcess`, `…Policy`, `…Projection`); its
+  interface, stub type and runner name are unchanged. Name reactors for what
+  they do, not for their aggregate ([ADR 0006](docs/adr/0006-a-reactor-named-after-an-aggregate.md)).
+
 ### Added
 
 - **`loom generate --check`.** Renders every loomgen file in memory, writes

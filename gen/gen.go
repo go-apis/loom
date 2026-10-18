@@ -700,11 +700,11 @@ func loomErrNilEvent(eventType string) error {
 		fmt.Fprintf(&b, "\t%s %sHandlers\n", r.Name, r.Name)
 	}
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
-		fmt.Fprintf(&b, "\t%s %sReactions\n", exported(r.Name), exported(r.Name))
+		fmt.Fprintf(&b, "\t%s %sReactions\n", g.implField(r.Name), exported(r.Name))
 	}
 	for _, p := range g.s.Projections {
 		if p.Fold {
-			fmt.Fprintf(&b, "\t%s %sFolds\n", exported(p.Name), exported(p.Name))
+			fmt.Fprintf(&b, "\t%s %sFolds\n", g.implField(p.Name), exported(p.Name))
 		}
 	}
 	if len(g.upcastHops()) > 0 {
@@ -896,7 +896,7 @@ func loomErrNilEvent(eventType string) error {
 		if p.Fold {
 			fmt.Fprintf(&b, "\t\t\t\tFold: func(state loom.EntityState, evt *loom.Event) error {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
 			for _, sub := range p.Subscriptions {
-				fmt.Fprintf(&b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn impl.%s.On%s(state.(*%s), evt, data)\n", sub.Event, exported(p.Name), sub.Event, p.Entity)
+				fmt.Fprintf(&b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn impl.%s.On%s(state.(*%s), evt, data)\n", sub.Event, g.implField(p.Name), sub.Event, p.Entity)
 			}
 			fmt.Fprintf(&b, "\t\t\t\t\t}\n\t\t\t\t\treturn fmt.Errorf(\"projection %s: unroutable event %%s\", evt.Type)\n\t\t\t\t},\n", p.Name)
 		}
@@ -1086,7 +1086,7 @@ func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*sc
 		fmt.Fprintf(b, "\t\t\t\tReact: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
 		for _, sub := range r.Subscriptions {
 			fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n", sub.Event)
-			fmt.Fprintf(b, "\t\t\t\t\t\tcmds, err := impl.%s.On%s(ctx, evt, data)\n", exported(r.Name), sub.Event)
+			fmt.Fprintf(b, "\t\t\t\t\t\tcmds, err := impl.%s.On%s(ctx, evt, data)\n", g.implField(r.Name), sub.Event)
 			fmt.Fprintf(b, "\t\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t\treturn nil, err\n\t\t\t\t\t\t}\n")
 			fmt.Fprintf(b, "\t\t\t\t\t\treturn cmds, checkDispatches(%q, %q, %s, cmds)\n", r.Name, sub.Event, stringSlice(sub.Dispatches))
 		}
@@ -1243,14 +1243,14 @@ func (g *generator) stubs() map[string]string {
 		fmt.Fprintf(&b, "\t\t%s: %s,\n", r.Name, g.qualify(kindRecords, r.Name))
 	}
 	for _, r := range g.s.Policies {
-		fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(r.Name), g.qualify(kindPolicies, exported(r.Name)))
+		fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(r.Name), g.qualify(kindPolicies, exported(r.Name)))
 	}
 	for _, r := range g.s.Processes {
-		fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(r.Name), g.qualify(kindProcesses, exported(r.Name)))
+		fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(r.Name), g.qualify(kindProcesses, exported(r.Name)))
 	}
 	for _, p := range g.s.Projections {
 		if p.Fold {
-			fmt.Fprintf(&b, "\t\t%s: %s,\n", exported(p.Name), g.qualify(kindProjections, exported(p.Name)))
+			fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(p.Name), g.qualify(kindProjections, exported(p.Name)))
 		}
 	}
 	if len(g.upcastHops()) > 0 {
@@ -1306,6 +1306,41 @@ func toSnake(name string) string {
 
 // exported converts snake_case / lowerCamel schema names to Go exported
 // identifiers.
+// implField is the Impl field a policy, process or @fold projection is
+// wired through: its exported name, unless an aggregate or a record of
+// the schema already holds that field — `aggregate FleetStall` beside
+// `process fleetStall` — when it is the name with its kind appended
+// (FleetStallProcess, FleetStallPolicy, FleetStallProjection), so the
+// two compile side by side. Only the Impl field and the generated calls
+// through it move: the reactor's Reactions or Folds interface, its stub
+// type and its runner name keep the declared name, so a reactor already
+// running is not renamed. A schema that avoids the collision never meets
+// this (ADR 0006).
+func (g *generator) implField(name string) string {
+	field := exported(name)
+	taken := false
+	for _, a := range g.s.Aggregates {
+		taken = taken || a.Name == field
+	}
+	for _, r := range g.s.Records {
+		taken = taken || r.Name == field
+	}
+	if !taken {
+		return field
+	}
+	for _, r := range g.s.Policies {
+		if r.Name == name {
+			return field + "Policy"
+		}
+	}
+	for _, r := range g.s.Processes {
+		if r.Name == name {
+			return field + "Process"
+		}
+	}
+	return field + "Projection"
+}
+
 func exported(name string) string {
 	parts := strings.Split(name, "_")
 	var b strings.Builder
