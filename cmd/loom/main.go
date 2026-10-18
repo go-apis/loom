@@ -3,6 +3,8 @@
 //	loom init <service>   scaffold loom.yml + schema/<service>.loom
 //	loom generate         regenerate models/registry + missing stubs
 //	loom generate --check write nothing; list stale/missing generated files, exit 1 if any
+//	loom skill            write the Claude Code skill for this loom version into the repo
+//	loom skill --check    exit 1 when the repo's loom skill is missing or from another version
 //	loom rewrap           re-wrap sealed data keys under a new KeyWrapper
 package main
 
@@ -14,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -25,6 +28,7 @@ import (
 	"github.com/go-apis/loom/gkms"
 	"github.com/go-apis/loom/schema"
 	"github.com/go-apis/loom/sdl"
+	"github.com/go-apis/loom/skill"
 )
 
 func main() {
@@ -39,6 +43,8 @@ func main() {
 		err = runGenerate(os.Args[2:], os.Stdout)
 	case "check":
 		err = runCheck(os.Args[2:])
+	case "skill":
+		err = runSkill(os.Args[2:], os.Stdout)
 	case "openapi":
 		err = runEmit(os.Args[2:], "openapi.json", gen.OpenAPI)
 	case "graphql":
@@ -58,6 +64,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: loom init <service>")
 	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom check <schema.loom|schema dir ...>")
+	fmt.Fprintln(os.Stderr, "       loom skill [--root <repo root>] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json]")
 	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls]")
 	fmt.Fprintln(os.Stderr, "       loom rewrap --db <dsn> (--from-local <hex>|--from-kms <key>) (--to-local <hex>|--to-kms <key>)")
@@ -235,8 +242,107 @@ func runInit(args []string) error {
 		return err
 	}
 	fmt.Printf("initialised %s: loom.yml + %s\n", service, schemaPath)
-	return pinGenerator("go.mod", os.Stdout)
+	if err := pinGenerator("go.mod", os.Stdout); err != nil {
+		return err
+	}
+	// and the agent skill, unless the repository already carries one
+	root := repoRoot(".")
+	if _, err := os.Stat(filepath.Join(root, skill.Path)); os.IsNotExist(err) {
+		return writeSkill(root, os.Stdout)
+	}
+	return nil
 }
+
+// runSkill writes the Claude Code skill for this loom version at the
+// repository root's .claude/skills/loom/SKILL.md (ADR 0007), or with
+// --check exits non-zero when that file is missing or differs from what
+// this version writes.
+func runSkill(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("skill", flag.ExitOnError)
+	rootFlag := fs.String("root", "", "repository root (default: the enclosing git repository, else the current directory)")
+	check := fs.Bool("check", false, "write nothing; exit 1 when the skill is missing or stale")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	root := *rootFlag
+	if root == "" {
+		root = repoRoot(".")
+	}
+	if !*check {
+		return writeSkill(root, out)
+	}
+	path := filepath.Join(root, skill.Path)
+	have, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%s is missing: run `go tool loom skill`", skill.Path)
+	}
+	if err != nil {
+		return err
+	}
+	if string(have) != string(skill.Render(loomVersion())) {
+		return fmt.Errorf("%s is not the skill loom %s writes: run `go tool loom skill`", skill.Path, loomVersion())
+	}
+	fmt.Fprintf(out, "%s: current (loom %s)\n", skill.Path, loomVersion())
+	return nil
+}
+
+func writeSkill(root string, out io.Writer) error {
+	path := filepath.Join(root, skill.Path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, skill.Render(loomVersion()), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "wrote %s (loom %s)\n", path, loomVersion())
+	return nil
+}
+
+// repoRoot is the nearest directory at or above dir holding .git (a
+// directory, or a worktree's file), else dir itself.
+func repoRoot(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	for d := abs; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return abs
+		}
+	}
+}
+
+// loomVersion is the version of loom this binary was built from: the
+// main module's when loom is run from its own tree, else the
+// github.com/go-apis/loom dependency's — what `go tool loom` runs at the
+// version the consumer's go.mod pins.
+func loomVersion() string {
+	if versionOverride != "" {
+		return versionOverride
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "(devel)"
+	}
+	if bi.Main.Path == "github.com/go-apis/loom" {
+		return bi.Main.Version
+	}
+	for _, d := range bi.Deps {
+		if d.Path == "github.com/go-apis/loom" {
+			if d.Replace != nil {
+				return "(devel)"
+			}
+			return d.Version
+		}
+	}
+	return "(devel)"
+}
+
+// versionOverride is the tests' way to pin loomVersion.
+var versionOverride string
 
 const loomTool = "github.com/go-apis/loom/cmd/loom"
 

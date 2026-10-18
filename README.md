@@ -154,6 +154,18 @@ moves, so the bump moves the generator's version with it. For an existing
 service, add the directive yourself. See
 [ADR 0005](docs/adr/0005-generator-is-pinned-and-checked.md).
 
+### The agent skill
+
+```sh
+go tool loom skill          # writes .claude/skills/loom/SKILL.md at the repository root
+go tool loom skill --check  # in CI, beside generate --check
+```
+
+Agents working in a loom service read this skill before they touch a
+schema: the loop, the pinned generator, naming, effects. It is stamped
+with the loom version that wrote it, so a bump rewrites it; `loom init`
+writes it for a new service ([ADR 0007](docs/adr/0007-loom-writes-its-agent-skill.md)).
+
 ### Naming a reactor
 
 Name a process or policy for what it does — `shipOnPayment`,
