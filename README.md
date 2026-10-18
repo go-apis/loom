@@ -154,6 +154,15 @@ moves, so the bump moves the generator's version with it. For an existing
 service, add the directive yourself. See
 [ADR 0005](docs/adr/0005-generator-is-pinned-and-checked.md).
 
+### Naming a reactor
+
+Name a process or policy for what it does — `shipOnPayment`,
+`productManifests` — not for the aggregate it serves. If a reactor does
+export to an aggregate's or record's name, its `Impl` field takes its
+kind (`FleetStallProcess`, `…Policy`, `…Projection`) so the package
+compiles; its interface, stub and runner keep the declared name
+([ADR 0006](docs/adr/0006-a-reactor-named-after-an-aggregate.md)).
+
 ## Execution semantics (there are exactly three)
 
 | declaration | runs | guarantees |
