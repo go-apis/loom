@@ -339,3 +339,91 @@ func TestInitWithoutGoMod(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// loom skill writes .claude/skills/loom/SKILL.md at the repository root —
+// found by walking up to .git from a service directory below it — stamped
+// with the loom version; --check passes on that file and fails, naming
+// the command to run, when it is missing, hand-edited, or from another
+// version (ADR 0007).
+func TestSkillWritesAndChecks(t *testing.T) {
+	versionOverride = "v9.9.9"
+	t.Cleanup(func() { versionOverride = "" })
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(root, "platform")
+	if err := os.MkdirAll(svc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(svc)
+
+	if err := runSkill([]string{"--check"}, io.Discard); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("check with no skill: %v", err)
+	}
+	if err := runSkill(nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".claude", "skills", "loom", "SKILL.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the skill is not at the repository root: %v", err)
+	}
+	for _, want := range []string{"name: loom", "description: ", `loom-version: "v9.9.9"`, "go tool loom generate", "Never hand-edit `loomgen/`", "Never name a reactor after an aggregate", "loom.Once"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("the skill has no %q", want)
+		}
+	}
+	if strings.Contains(string(raw), "{{LOOM_VERSION}}") {
+		t.Fatal("the version placeholder was left in")
+	}
+	if err := runSkill([]string{"--check"}, io.Discard); err != nil {
+		t.Fatalf("check on the written skill: %v", err)
+	}
+	// hand-edited, then another version: both stale
+	if err := os.WriteFile(path, append(raw, []byte("\nmy note\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSkill([]string{"--check"}, io.Discard); err == nil || !strings.Contains(err.Error(), "go tool loom skill") {
+		t.Fatalf("check on an edited skill: %v", err)
+	}
+	if err := runSkill(nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	versionOverride = "v9.9.10"
+	if err := runSkill([]string{"--check"}, io.Discard); err == nil || !strings.Contains(err.Error(), "v9.9.10") {
+		t.Fatalf("check after a bump: %v", err)
+	}
+	// --root wins over the walk
+	other := t.TempDir()
+	if err := runSkill([]string{"--root", other}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(other, ".claude", "skills", "loom", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// loom init writes the skill too, and leaves one the repository already
+// carries alone.
+func TestInitWritesTheSkillOnce(t *testing.T) {
+	versionOverride = "v9.9.9"
+	t.Cleanup(func() { versionOverride = "" })
+	dir, _ := initIn(t, "module example.com/svc\n\ngo 1.24\n")
+	path := filepath.Join(dir, ".claude", "skills", "loom", "SKILL.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("init wrote no skill: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("ours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "loom.yml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runInit([]string{"svc"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "ours\n" {
+		t.Fatalf("init overwrote the repository's skill: %q", b)
+	}
+}

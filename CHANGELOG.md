@@ -12,6 +12,14 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Added
+
+- **`loom skill` writes a Claude Code skill for loom into the repository.**
+  `.claude/skills/loom/SKILL.md` at the repository root, stamped with the
+  loom version: the loop, the pinned generator, the naming and effect rules,
+  reading after a dispatch. `loom init` writes it too; `loom skill --check`
+  fails when it is missing or stale ([ADR 0007](docs/adr/0007-loom-writes-its-agent-skill.md)).
+
 ### Fixed
 
 - **A process, policy or `@fold` projection named after an aggregate
