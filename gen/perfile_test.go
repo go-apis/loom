@@ -175,7 +175,15 @@ func TestGenerateWritesOneFilePerAggregate(t *testing.T) {
 		}
 	}
 
-	// and it compiles: a module beside the generated code, loom replaced by this tree
+	// and it compiles
+	vetGenerated(t, dir, "example.com/shop")
+}
+
+// vetGenerated runs go vet over a generated service in dir: a module
+// beside the generated code, loom replaced by this tree. Skipped with
+// -short.
+func vetGenerated(t *testing.T, dir, module string) {
+	t.Helper()
 	if testing.Short() {
 		return
 	}
@@ -183,7 +191,7 @@ func TestGenerateWritesOneFilePerAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gomod := "module example.com/shop\n\ngo 1.24\n\nrequire github.com/go-apis/loom v0.0.0\n\nreplace github.com/go-apis/loom => " + root + "\n"
+	gomod := "module " + module + "\n\ngo 1.24\n\nrequire github.com/go-apis/loom v0.0.0\n\nreplace github.com/go-apis/loom => " + root + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -295,4 +303,117 @@ aggregate Registry {
 	if !bytes.Contains(files[filepath.Join("/svc", "loomgen", "registry_gen.go")], []byte("func NewRegistry(")) {
 		t.Fatal("registry_gen.go lost NewRegistry")
 	}
+}
+
+// Two features, each adding an aggregate in its own .loom file.
+const (
+	addedAccount = `
+service shop
+
+aggregate Account {
+  state {
+    owner: string
+    tier: Tier
+  }
+  command OpenAccount { owner: string! tier: Tier } -> AccountOpened
+  command CloseAccount -> AccountClosed
+  event AccountOpened { owner: string! tier: Tier }
+  event AccountClosed { at: string }
+}
+`
+	addedBasket = `
+service shop
+
+aggregate Basket {
+  state {
+    address: Address
+    lines: int
+  }
+  command FillBasket { lines: int! address: Address } -> BasketFilled
+  event BasketFilled { lines: int! address: Address }
+}
+`
+)
+
+// TestTwoAggregatesAddedTouchDisjointFiles: two branches that each add an
+// aggregate change no generated file the base already has, and add
+// disjoint files — so they cannot conflict in loomgen. Merged, they
+// build (ADR 0008).
+func TestTwoAggregatesAddedTouchDisjointFiles(t *testing.T) {
+	cfg := gen.Config{Dir: "/svc", Package: "shop", Module: "example.com/shop"}
+	parse := func(extra ...string) *schema.Schema {
+		t.Helper()
+		files := []sdl.File{{Path: "shop.loom", Src: perFileSchema}}
+		for i, src := range extra {
+			files = append(files, sdl.File{Path: string(rune('a'+i)) + ".loom", Src: src})
+		}
+		s, err := sdl.ParseFiles(files)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	render := func(s *schema.Schema) map[string][]byte {
+		t.Helper()
+		files, err := gen.Render(s, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+	base := render(parse())
+	withA := render(parse(addedAccount))
+	withB := render(parse(addedBasket))
+
+	added := func(name string, files map[string][]byte) []string {
+		t.Helper()
+		var out []string
+		for path := range files {
+			if _, ok := base[path]; !ok {
+				out = append(out, filepath.Base(path))
+			}
+		}
+		sort.Strings(out)
+		for path, want := range base {
+			got, ok := files[path]
+			if !ok {
+				t.Errorf("base+%s dropped %s", name, filepath.Base(path))
+			} else if !bytes.Equal(got, want) {
+				t.Errorf("base+%s changed %s:\n%s", name, filepath.Base(path), got)
+			}
+		}
+		return out
+	}
+	addsA, addsB := added("Account", withA), added("Basket", withB)
+	if strings.Join(addsA, " ") != "account_gen.go" || strings.Join(addsB, " ") != "basket_gen.go" {
+		t.Fatalf("Account adds %v, Basket adds %v; want each its own file only", addsA, addsB)
+	}
+	for _, a := range addsA {
+		for _, b := range addsB {
+			if a == b {
+				t.Fatalf("both add %s", a)
+			}
+		}
+	}
+
+	// base+A+B: the union, each added file as its branch rendered it, and it builds
+	both := render(parse(addedAccount, addedBasket))
+	if len(both) != len(base)+len(addsA)+len(addsB) {
+		t.Fatalf("base+A+B renders %d files, want %d", len(both), len(base)+len(addsA)+len(addsB))
+	}
+	for path, want := range withA {
+		if !bytes.Equal(both[path], want) {
+			t.Errorf("base+A+B differs from base+A in %s", filepath.Base(path))
+		}
+	}
+	for path, want := range withB {
+		if !bytes.Equal(both[path], want) {
+			t.Errorf("base+A+B differs from base+B in %s", filepath.Base(path))
+		}
+	}
+	dir := t.TempDir()
+	if _, err := gen.Generate(parse(addedAccount, addedBasket), gen.Config{Dir: dir, Package: "shop", Module: "example.com/shop"}); err != nil {
+		t.Fatal(err)
+	}
+	vetGenerated(t, dir, "example.com/shop")
 }

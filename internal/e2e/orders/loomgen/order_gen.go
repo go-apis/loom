@@ -205,3 +205,23 @@ func aggregateDefOrder(h OrderHandlers) *loom.AggregateDef {
 		},
 	}
 }
+
+// Order binds h as the Order aggregate's handlers. NewRegistry panics
+// if it is never called.
+func (impl *Impl) Order(h OrderHandlers) { impl.bind("Order", h) }
+
+func init() {
+	loomRegister(loomOwner{kind: "aggregate", name: "Order", register: func(impl Impl, h any, r *loom.Registry) {
+		r.Aggregates = append(r.Aggregates, aggregateDefOrder(h.(OrderHandlers)))
+		r.Events = append(r.Events,
+			&loom.EventDef{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
+			&loom.EventDef{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},
+			&loom.EventDef{Name: "OrderCancelled", SchemaVersion: 2, Publish: false, Service: "", Aliases: nil, Upcasts: map[int]loom.UpcastFunc{1: impl.Upcasts.OrderCancelledFromV1}, New: func() any { return &OrderCancelled{} }},
+			&loom.EventDef{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &OrderPlaced{} }},
+			&loom.EventDef{Name: "OrderShipped", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderShipped{} }},
+		)
+		r.Uploads = append(r.Uploads,
+			&loom.UploadDef{Name: "Contract", Owner: "Order", OnStarted: "RequestContract", StartedField: "contract", OnUploaded: "AttachContract", UploadedField: "contract"},
+		)
+	}})
+}

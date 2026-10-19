@@ -64,3 +64,16 @@ func recordDefLedgerEntry(h LedgerEntryHandlers) *loom.RecordDef {
 		},
 	}
 }
+
+// LedgerEntry binds h as the LedgerEntry record's handlers. NewRegistry panics
+// if it is never called.
+func (impl *Impl) LedgerEntry(h LedgerEntryHandlers) { impl.bind("LedgerEntry", h) }
+
+func init() {
+	loomRegister(loomOwner{kind: "record", name: "LedgerEntry", register: func(impl Impl, h any, r *loom.Registry) {
+		r.Records = append(r.Records, recordDefLedgerEntry(h.(LedgerEntryHandlers)))
+		r.Events = append(r.Events,
+			&loom.EventDef{Name: "LedgerEntryPosted", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &LedgerEntryPosted{} }},
+		)
+	}})
+}

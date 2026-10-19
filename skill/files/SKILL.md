@@ -33,7 +33,12 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
 3. Implement what the compiler asks for: new commands get stubs in
    `aggregates/` (or the flat package), new reactions in `processes/`,
    `policies/`, `projections/`. Stubs are yours and written once; loom
-   never rewrites them.
+   never rewrites them. That includes `registry.go`. For a new aggregate
+   or record, add its binding call there yourself, `impl.Order(&Order{})`.
+   For a new reactor, add its field to the `Impl` literal.
+   Each aggregate and record has its own `loomgen/<snake name>_gen.go`.
+   The shared `models_gen.go` and `registry_gen.go` never name one, so a
+   new aggregate adds one generated file and changes none.
 4. Check before you push:
 
    ```sh
@@ -156,14 +161,24 @@ projections, timers and batches are end-to-end territory.
 - A missing method on `…Handlers` or `…Reactions`: a new command or
   subscription; implement the stub the compiler names.
 - `generate --check` lists files: regenerate with `go tool loom generate`
-  and commit them.
+  and commit them. An orphan (a renamed or removed aggregate's
+  `_gen.go`) is listed as stale, and `generate` removes it.
+- `unknown field Order in struct literal of type loomgen.Impl`: the
+  `registry.go` predates per-aggregate registration (loom ADR 0008). Move
+  each aggregate and record out of the literal into a binding call,
+  `impl.Order(&Order{})`, and keep the reactor fields.
+- A panic at boot, `loomgen: aggregate X has no handlers — call
+  impl.X(...)`: `registry.go` never binds X. Add the call it names.
 
 ## When a rebase or merge conflicts in loomgen
 
 The generated files are the generator's output, never a merge of two
-people's lines: two branches that each added an aggregate, an event or a
-table both rewrote `registry_gen.go`, `models_gen.go` and
-`tables_gen.sql`, and no line-by-line resolution of those is right.
+people's lines. Two branches that each add an aggregate write disjoint
+`<name>_gen.go` files and should not conflict. Two that change shared
+declarations can conflict: an enum, a type, an event several aggregates
+emit, a reactor, a projection or a `@table`. They rewrite
+`registry_gen.go`, `models_gen.go` or `tables_gen.sql`, and no
+line-by-line resolution of those is right.
 
 1. Resolve only the **sources** — the `.loom` schema files and
    `loom.yml`. A conflict there is real: keep both sides' declarations

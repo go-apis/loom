@@ -85,3 +85,42 @@ func aggregateDefPayee(h PayeeHandlers) *loom.AggregateDef {
 		},
 	}
 }
+
+// Payee binds h as the Payee aggregate's handlers. NewRegistry panics
+// if it is never called.
+func (impl *Impl) Payee(h PayeeHandlers) { impl.bind("Payee", h) }
+
+func init() {
+	loomRegister(loomOwner{kind: "aggregate", name: "Payee", register: func(impl Impl, h any, r *loom.Registry) {
+		r.Aggregates = append(r.Aggregates, aggregateDefPayee(h.(PayeeHandlers)))
+		r.Events = append(r.Events,
+			&loom.EventDef{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"bank_token", "tin"}, New: func() any { return &PayeeRegistered{} }},
+		)
+		r.Tables = append(r.Tables,
+			&loom.TableDef{
+				Entity: "Payee",
+				Name:   "loom_t_billing_payee",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_t_billing_payee (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	id         uuid NOT NULL,
+	"name" text,
+	"tin_last4" text,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, id)
+);`,
+				Columns: []loom.TableColumn{
+					{Name: "name", Type: "text"},
+					{Name: "tin_last4", Type: "text"},
+				},
+				Values: func(state loom.EntityState) []any {
+					e := state.(*Payee)
+					return []any{
+						e.Name,
+						e.TinLast4,
+					}
+				},
+			},
+		)
+	}})
+}

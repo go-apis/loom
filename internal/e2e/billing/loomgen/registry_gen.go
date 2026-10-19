@@ -5,6 +5,7 @@ package loomgen
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/go-apis/loom"
 	"github.com/google/uuid"
@@ -32,30 +33,22 @@ type RaiseOnOrderReactions interface {
 }
 
 type Impl struct {
-	Invoice       InvoiceHandlers
-	Payee         PayeeHandlers
-	LedgerEntry   LedgerEntryHandlers
 	PostLedger    PostLedgerReactions
 	CaptureOnPaid CaptureOnPaidReactions
 	RaiseOnOrder  RaiseOnOrderReactions
+
+	// handlers holds what the aggregates' and records' binding methods set,
+	// by name.
+	handlers map[string]any
 }
 
 func NewRegistry(impl Impl) *loom.Registry {
-	return &loom.Registry{
-		Service: "billing",
-		Aggregates: []*loom.AggregateDef{
-			aggregateDefInvoice(impl.Invoice),
-			aggregateDefPayee(impl.Payee),
-		},
-		Records: []*loom.RecordDef{
-			recordDefLedgerEntry(impl.LedgerEntry),
-		},
+	r := &loom.Registry{
+		Service:    "billing",
+		Aggregates: []*loom.AggregateDef{},
+		Records:    []*loom.RecordDef{},
 		Events: []*loom.EventDef{
-			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &InvoicePaid{} }},
-			{Name: "InvoiceRaised", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &InvoiceRaised{} }},
-			{Name: "LedgerEntryPosted", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &LedgerEntryPosted{} }},
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "orders", Aliases: nil, New: func() any { return &OrderPlaced{} }},
-			{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"bank_token", "tin"}, New: func() any { return &PayeeRegistered{} }},
 		},
 		Policies: []*loom.ReactorDef{
 			{
@@ -120,32 +113,6 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Joins: []*loom.JoinDef{
 			{OnEntity: "InvoiceSummary", Field: "spend", Service: "orders", Entity: "CustomerSpend", List: false, Via: "customer_id"},
 		},
-		Tables: []*loom.TableDef{
-			{
-				Entity: "Payee",
-				Name:   "loom_t_billing_payee",
-				DDL: `CREATE TABLE IF NOT EXISTS loom_t_billing_payee (
-	service    text NOT NULL,
-	namespace  text NOT NULL,
-	id         uuid NOT NULL,
-	"name" text,
-	"tin_last4" text,
-	updated_at timestamptz NOT NULL DEFAULT now(),
-	PRIMARY KEY (service, namespace, id)
-);`,
-				Columns: []loom.TableColumn{
-					{Name: "name", Type: "text"},
-					{Name: "tin_last4", Type: "text"},
-				},
-				Values: func(state loom.EntityState) []any {
-					e := state.(*Payee)
-					return []any{
-						e.Name,
-						e.TinLast4,
-					}
-				},
-			},
-		},
 		Projections: []*loom.ProjectionDef{
 			{
 				Name:     "invoiceSummary",
@@ -164,6 +131,49 @@ func NewRegistry(impl Impl) *loom.Registry {
 			},
 		},
 	}
+	loomRegisterOwners(impl, r)
+	return r
+}
+
+// loomOwner is one aggregate's or record's part of the registry. Each
+// <name>_gen.go adds its own to loomOwners in init, so this file never
+// lists them.
+type loomOwner struct {
+	kind     string // "aggregate" or "record"
+	name     string
+	register func(impl Impl, h any, r *loom.Registry)
+}
+
+var loomOwners []loomOwner
+
+func loomRegister(o loomOwner) { loomOwners = append(loomOwners, o) }
+
+func (impl *Impl) bind(name string, h any) {
+	if impl.handlers == nil {
+		impl.handlers = map[string]any{}
+	}
+	impl.handlers[name] = h
+}
+
+// loomRegisterOwners adds every aggregate, then every record, in name
+// order — never init order — so the registry is the same on every boot.
+// An owner whose handlers were never bound panics with its name.
+func loomRegisterOwners(impl Impl, r *loom.Registry) {
+	owners := append([]loomOwner(nil), loomOwners...)
+	sort.Slice(owners, func(i, j int) bool {
+		if owners[i].kind != owners[j].kind {
+			return owners[i].kind == "aggregate"
+		}
+		return owners[i].name < owners[j].name
+	})
+	for _, o := range owners {
+		h := impl.handlers[o.name]
+		if h == nil {
+			panic(fmt.Sprintf("loomgen: %s %s has no handlers — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.name))
+		}
+		o.register(impl, h, r)
+	}
+	sort.Slice(r.Events, func(i, j int) bool { return r.Events[i].Name < r.Events[j].Name })
 }
 
 func asAny[T any](in []T) []any {

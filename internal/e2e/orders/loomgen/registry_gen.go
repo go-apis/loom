@@ -5,6 +5,7 @@ package loomgen
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/go-apis/loom"
 	"github.com/google/uuid"
@@ -43,24 +44,25 @@ type EventUpcasts interface {
 }
 
 type Impl struct {
-	Order              OrderHandlers
 	DropAutoCancel     DropAutoCancelReactions
 	ScheduleAutoCancel ScheduleAutoCancelReactions
 	ShipOnPayment      ShipOnPaymentReactions
 	CustomerSpend      CustomerSpendFolds
 	Upcasts            EventUpcasts
+
+	// handlers holds what the aggregates' and records' binding methods set,
+	// by name.
+	handlers map[string]any
 }
 
 func NewRegistry(impl Impl) *loom.Registry {
 	if impl.Upcasts == nil {
 		panic("loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)")
 	}
-	return &loom.Registry{
-		Service: "orders",
-		Aggregates: []*loom.AggregateDef{
-			aggregateDefOrder(impl.Order),
-		},
-		Records: []*loom.RecordDef{},
+	r := &loom.Registry{
+		Service:    "orders",
+		Aggregates: []*loom.AggregateDef{},
+		Records:    []*loom.RecordDef{},
 		Series: []*loom.SeriesDef{
 			{
 				Name:  "ReqSample",
@@ -146,12 +148,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 			},
 		},
 		Events: []*loom.EventDef{
-			{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
-			{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},
-			{Name: "OrderCancelled", SchemaVersion: 2, Publish: false, Service: "", Aliases: nil, Upcasts: map[int]loom.UpcastFunc{1: impl.Upcasts.OrderCancelledFromV1}, New: func() any { return &OrderCancelled{} }},
-			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &OrderPlaced{} }},
-			{Name: "OrderShipped", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderShipped{} }},
 		},
 		Policies: []*loom.ReactorDef{
 			{
@@ -210,9 +207,6 @@ func NewRegistry(impl Impl) *loom.Registry {
 					return nil, fmt.Errorf("unroutable event %s", evt.Type)
 				},
 			},
-		},
-		Uploads: []*loom.UploadDef{
-			{Name: "Contract", Owner: "Order", OnStarted: "RequestContract", StartedField: "contract", OnUploaded: "AttachContract", UploadedField: "contract"},
 		},
 		Enums: []*loom.EnumDef{
 			{Name: "OrderStatus", Values: []string{"placed", "shipped", "cancelled"}},
@@ -297,6 +291,49 @@ func NewRegistry(impl Impl) *loom.Registry {
 			},
 		},
 	}
+	loomRegisterOwners(impl, r)
+	return r
+}
+
+// loomOwner is one aggregate's or record's part of the registry. Each
+// <name>_gen.go adds its own to loomOwners in init, so this file never
+// lists them.
+type loomOwner struct {
+	kind     string // "aggregate" or "record"
+	name     string
+	register func(impl Impl, h any, r *loom.Registry)
+}
+
+var loomOwners []loomOwner
+
+func loomRegister(o loomOwner) { loomOwners = append(loomOwners, o) }
+
+func (impl *Impl) bind(name string, h any) {
+	if impl.handlers == nil {
+		impl.handlers = map[string]any{}
+	}
+	impl.handlers[name] = h
+}
+
+// loomRegisterOwners adds every aggregate, then every record, in name
+// order — never init order — so the registry is the same on every boot.
+// An owner whose handlers were never bound panics with its name.
+func loomRegisterOwners(impl Impl, r *loom.Registry) {
+	owners := append([]loomOwner(nil), loomOwners...)
+	sort.Slice(owners, func(i, j int) bool {
+		if owners[i].kind != owners[j].kind {
+			return owners[i].kind == "aggregate"
+		}
+		return owners[i].name < owners[j].name
+	})
+	for _, o := range owners {
+		h := impl.handlers[o.name]
+		if h == nil {
+			panic(fmt.Sprintf("loomgen: %s %s has no handlers — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.name))
+		}
+		o.register(impl, h, r)
+	}
+	sort.Slice(r.Events, func(i, j int) bool { return r.Events[i].Name < r.Events[j].Name })
 }
 
 func asAny[T any](in []T) []any {
