@@ -61,8 +61,9 @@ process plain {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the Impl fields and the reactor wiring are shared, in registry_gen.go;
-	// each aggregate's Handlers interface is in its own file (ADR 0008)
+	// the reactors' Impl fields and wiring are shared, in registry_gen.go;
+	// each aggregate's Handlers interface and its binding method on Impl
+	// are in its own file (ADR 0008)
 	read := func(name string) string {
 		t.Helper()
 		raw, err := os.ReadFile(filepath.Join(dir, "loomgen", name))
@@ -72,19 +73,21 @@ process plain {
 		return strings.Join(strings.Fields(string(raw)), " ")
 	}
 	registry := read("registry_gen.go")
-	for file, iface := range map[string]string{
-		"fleet_stall_gen.go":    "type FleetStallHandlers interface",
-		"org_membership_gen.go": "type OrgMembershipHandlers interface",
-		"snapshot_gen.go":       "type SnapshotHandlers interface",
+	for file, decls := range map[string][]string{
+		"fleet_stall_gen.go":    {"type FleetStallHandlers interface", "func (impl *Impl) FleetStall(h FleetStallHandlers)"},
+		"org_membership_gen.go": {"type OrgMembershipHandlers interface", "func (impl *Impl) OrgMembership(h OrgMembershipHandlers)"},
+		"snapshot_gen.go":       {"type SnapshotHandlers interface", "func (impl *Impl) Snapshot(h SnapshotHandlers)"},
 	} {
-		if !strings.Contains(read(file), iface) {
-			t.Fatalf("%s has no %q", file, iface)
+		for _, d := range decls {
+			if !strings.Contains(read(file), d) {
+				t.Fatalf("%s has no %q", file, d)
+			}
 		}
 	}
 	for _, want := range []string{
-		"FleetStall FleetStallHandlers", "FleetStallProcess FleetStallReactions",
-		"OrgMembership OrgMembershipHandlers", "OrgMembershipPolicy OrgMembershipReactions",
-		"Snapshot SnapshotHandlers", "SnapshotProjection SnapshotFolds",
+		"FleetStallProcess FleetStallReactions",
+		"OrgMembershipPolicy OrgMembershipReactions",
+		"SnapshotProjection SnapshotFolds",
 		"Plain PlainReactions",
 		"impl.FleetStallProcess.OnOpened(", "impl.OrgMembershipPolicy.OnJoined(", "impl.SnapshotProjection.OnTaken(", "impl.Plain.OnTaken(",
 		"type FleetStallReactions interface", "type OrgMembershipReactions interface", "type SnapshotFolds interface",
@@ -93,7 +96,7 @@ process plain {
 			t.Fatalf("registry_gen.go has no %q", want)
 		}
 	}
-	for _, unwanted := range []string{"impl.FleetStall.OnOpened(", "impl.OrgMembership.OnJoined(", "PlainProcess"} {
+	for _, unwanted := range []string{"impl.FleetStall.OnOpened(", "impl.OrgMembership.OnJoined(", "PlainProcess", "FleetStall FleetStallHandlers"} {
 		if strings.Contains(registry, unwanted) {
 			t.Fatalf("registry_gen.go has %q", unwanted)
 		}
@@ -102,7 +105,7 @@ process plain {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"FleetStallProcess: &processes.FleetStall{}", "OrgMembershipPolicy: &policies.OrgMembership{}", "SnapshotProjection: &projections.Snapshot{}", "FleetStall: &aggregates.FleetStall{}"} {
+	for _, want := range []string{"FleetStallProcess: &processes.FleetStall{}", "OrgMembershipPolicy: &policies.OrgMembership{}", "SnapshotProjection: &projections.Snapshot{}", "impl.FleetStall(&aggregates.FleetStall{})"} {
 		if !strings.Contains(strings.Join(strings.Fields(string(reg)), " "), strings.Join(strings.Fields(want), " ")) {
 			t.Fatalf("registry.go has no %q:\n%s", want, reg)
 		}

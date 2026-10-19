@@ -115,3 +115,17 @@ func aggregateDefInvoice(h InvoiceHandlers) *loom.AggregateDef {
 		},
 	}
 }
+
+// Invoice binds h as the Invoice aggregate's handlers. NewRegistry panics
+// if it is never called.
+func (impl *Impl) Invoice(h InvoiceHandlers) { impl.bind("Invoice", h) }
+
+func init() {
+	loomRegister(loomOwner{kind: "aggregate", name: "Invoice", register: func(impl Impl, h any, r *loom.Registry) {
+		r.Aggregates = append(r.Aggregates, aggregateDefInvoice(h.(InvoiceHandlers)))
+		r.Events = append(r.Events,
+			&loom.EventDef{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &InvoicePaid{} }},
+			&loom.EventDef{Name: "InvoiceRaised", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &InvoiceRaised{} }},
+		)
+	}})
+}

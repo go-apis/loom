@@ -286,6 +286,33 @@ var (
 	return b.String()
 }
 
+// eventDefEntry renders an event's registry entry, the *loom.EventDef
+// literal without its type: "{Name: ...}".
+func (g *generator) eventDefEntry(e *schema.Event) string {
+	version := e.Version
+	if version == 0 {
+		version = 1
+	}
+	pii := ""
+	if fields := e.Payload.PIIFields(); len(fields) > 0 {
+		pii = fmt.Sprintf(" PII: %s,", stringSlice(fields))
+	}
+	ups := ""
+	if len(e.Upcasts) > 0 {
+		var hops []string
+		for _, from := range e.Upcasts {
+			hops = append(hops, fmt.Sprintf("%d: impl.Upcasts.%s", from, upcastMethod(e, from)))
+		}
+		ups = fmt.Sprintf(" Upcasts: map[int]loom.UpcastFunc{%s},", strings.Join(hops, ", "))
+	}
+	ret := ""
+	if e.Retired {
+		ret = " Retired: true,"
+	}
+	return fmt.Sprintf("{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q,%s Aliases: %s,%s%s New: func() any { return &%s{} }}",
+		e.Name, version, e.Publish, e.Service, ret, stringSlice(e.Aliases), pii, ups, e.Name)
+}
+
 func (g *generator) eventDef(b *strings.Builder, e *schema.Event) {
 	g.structDef(b, e.Name, e.Payload)
 	fmt.Fprintf(b, "func (*%s) LoomEvent() string { return %q }\n\n", e.Name, e.Name)
@@ -458,8 +485,51 @@ var (
 		fmt.Fprintf(&b, "\t\t\t\t\tevts, err := h.%s(ctx, state.(*%s), cmd.(*%s))\n", c.Name, o.name, c.Name)
 		b.WriteString("\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t},\n\t\t\t},\n")
 	}
-	b.WriteString("\t\t},\n\t}\n}\n")
+	b.WriteString("\t\t},\n\t}\n}\n\n")
+	g.ownerRegistration(&b, o)
 	return b.String()
+}
+
+// ownerRegistration renders the owner's binding method on Impl and the
+// init that adds it to loomOwners: its def, the events only it emits, its
+// uploads and its @table. NewRegistry reads loomOwners, so the shared
+// registry_gen.go never names an aggregate or record (ADR 0008).
+func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
+	kind, field := "aggregate", "Aggregates"
+	if o.rec != nil {
+		kind, field = "record", "Records"
+	}
+	fmt.Fprintf(b, "// %s binds h as the %s %s's handlers. NewRegistry panics\n// if it is never called.\nfunc (impl *Impl) %s(h %sHandlers) { impl.bind(%q, h) }\n\n", o.name, o.name, kind, o.name, o.name, o.name)
+	b.WriteString("func init() {\n")
+	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name)
+	fmt.Fprintf(b, "\t\tr.%s = append(r.%s, %s(h.(%sHandlers)))\n", field, field, o.defFunc(), o.name)
+	owned := g.eventOwners()
+	var events []string
+	for _, e := range g.s.Events {
+		if owned[e.Name] == o.name {
+			events = append(events, g.eventDefEntry(e))
+		}
+	}
+	if len(events) > 0 {
+		b.WriteString("\t\tr.Events = append(r.Events,\n")
+		for _, e := range events {
+			fmt.Fprintf(b, "\t\t\t&loom.EventDef%s,\n", e)
+		}
+		b.WriteString("\t\t)\n")
+	}
+	if o.agg != nil {
+		if uploads := g.ownerUploads(o.name, o.agg.Commands, o.agg.Uploads); uploads != "" {
+			b.WriteString("\t\tr.Uploads = append(r.Uploads,\n" + uploads + "\t\t)\n")
+		}
+		if o.agg.Table {
+			b.WriteString("\t\tr.Tables = append(r.Tables,\n")
+			g.tableDef(b, "&loom.TableDef{", o.name, o.agg.State)
+			b.WriteString("\t\t)\n")
+		}
+	} else if uploads := g.ownerUploads(o.name, o.rec.Commands, o.rec.Uploads); uploads != "" {
+		b.WriteString("\t\tr.Uploads = append(r.Uploads,\n" + uploads + "\t\t)\n")
+	}
+	b.WriteString("\t}})\n}\n")
 }
 
 // aggregateEvents is the union of the aggregate's command emit contracts —
@@ -860,6 +930,7 @@ func (g *generator) registry() string {
 	b.WriteString(`import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/go-apis/loom"
 	"github.com/google/uuid"
@@ -905,14 +976,10 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("}\n\n")
 	}
 
-	// Impl: one field per thing the developer implements
+	// Impl: one field per reactor and @fold projection the developer
+	// implements; aggregates and records bind through methods their own
+	// files declare (impl.Order(h)), so adding one never edits this file
 	b.WriteString("type Impl struct {\n")
-	for _, a := range g.s.Aggregates {
-		fmt.Fprintf(&b, "\t%s %sHandlers\n", a.Name, a.Name)
-	}
-	for _, r := range g.s.Records {
-		fmt.Fprintf(&b, "\t%s %sHandlers\n", r.Name, r.Name)
-	}
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		fmt.Fprintf(&b, "\t%s %sReactions\n", g.implField(r.Name), exported(r.Name))
 	}
@@ -924,7 +991,7 @@ func loomErrNilEvent(eventType string) error {
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\tUpcasts EventUpcasts\n")
 	}
-	b.WriteString("}\n\n")
+	b.WriteString("\n\t// handlers holds what the aggregates' and records' binding methods set,\n\t// by name.\n\thandlers map[string]any\n}\n\n")
 
 	fmt.Fprintf(&b, "func NewRegistry(impl Impl) *loom.Registry {\n")
 	if len(g.upcastHops()) > 0 {
@@ -932,63 +999,27 @@ func loomErrNilEvent(eventType string) error {
 		// fail at boot with a pointed message instead of a nil-deref later
 		b.WriteString("\tif impl.Upcasts == nil {\n\t\tpanic(\"loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)\")\n\t}\n")
 	}
-	fmt.Fprintf(&b, "\treturn &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
+	fmt.Fprintf(&b, "\tr := &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
 
-	// each aggregate and record builds its own definition, in its own file
-	owners := g.owners()
-	b.WriteString("\t\tAggregates: []*loom.AggregateDef{\n")
-	for _, o := range owners {
-		if o.agg != nil {
-			fmt.Fprintf(&b, "\t\t\t%s(impl.%s),\n", o.defFunc(), o.name)
-		}
-	}
-	b.WriteString("\t\t},\n")
-
-	b.WriteString("\t\tRecords: []*loom.RecordDef{\n")
-	for _, o := range owners {
-		if o.rec != nil {
-			fmt.Fprintf(&b, "\t\t\t%s(impl.%s),\n", o.defFunc(), o.name)
-		}
-	}
-	b.WriteString("\t\t},\n")
+	// each aggregate and record adds its def, its events, uploads and
+	// @table from its own file, through loomRegisterOwners below
+	b.WriteString("\t\tAggregates: []*loom.AggregateDef{},\n\t\tRecords: []*loom.RecordDef{},\n")
 
 	g.seriesDefs(&b)
 
+	// the shared events only: one emitted by a single aggregate or record
+	// is added by that owner's file
+	owned := g.eventOwners()
 	b.WriteString("\t\tEvents: []*loom.EventDef{\n")
 	for _, e := range g.s.Events {
-		version := e.Version
-		if version == 0 {
-			version = 1
+		if owned[e.Name] == "" {
+			fmt.Fprintf(&b, "\t\t\t%s,\n", g.eventDefEntry(e))
 		}
-		pii := ""
-		if fields := e.Payload.PIIFields(); len(fields) > 0 {
-			pii = fmt.Sprintf(" PII: %s,", stringSlice(fields))
-		}
-		ups := ""
-		if len(e.Upcasts) > 0 {
-			var hops []string
-			for _, from := range e.Upcasts {
-				hops = append(hops, fmt.Sprintf("%d: impl.Upcasts.%s", from, upcastMethod(e, from)))
-			}
-			ups = fmt.Sprintf(" Upcasts: map[int]loom.UpcastFunc{%s},", strings.Join(hops, ", "))
-		}
-		ret := ""
-		if e.Retired {
-			ret = " Retired: true,"
-		}
-		fmt.Fprintf(&b, "\t\t\t{Name: %q, SchemaVersion: %d, Publish: %v, Service: %q,%s Aliases: %s,%s%s New: func() any { return &%s{} }},\n",
-			e.Name, version, e.Publish, e.Service, ret, stringSlice(e.Aliases), pii, ups, e.Name)
 	}
 	b.WriteString("\t\t},\n")
 
 	g.reactorDefs(&b, "Policies", g.s.Policies)
 	g.reactorDefs(&b, "Processes", g.s.Processes)
-
-	if uploads := g.uploadDefs(); len(uploads) > 0 {
-		b.WriteString("\t\tUploads: []*loom.UploadDef{\n")
-		b.WriteString(uploads)
-		b.WriteString("\t\t},\n")
-	}
 
 	if len(g.s.Enums) > 0 {
 		b.WriteString("\t\tEnums: []*loom.EnumDef{\n")
@@ -1068,9 +1099,50 @@ func loomErrNilEvent(eventType string) error {
 		}
 		b.WriteString("\t\t\t},\n")
 	}
-	b.WriteString("\t\t},\n\t}\n}\n\n")
+	b.WriteString("\t\t},\n\t}\n\tloomRegisterOwners(impl, r)\n\treturn r\n}\n\n")
 
-	b.WriteString(`func asAny[T any](in []T) []any {
+	b.WriteString(`// loomOwner is one aggregate's or record's part of the registry. Each
+// <name>_gen.go adds its own to loomOwners in init, so this file never
+// lists them.
+type loomOwner struct {
+	kind     string // "aggregate" or "record"
+	name     string
+	register func(impl Impl, h any, r *loom.Registry)
+}
+
+var loomOwners []loomOwner
+
+func loomRegister(o loomOwner) { loomOwners = append(loomOwners, o) }
+
+func (impl *Impl) bind(name string, h any) {
+	if impl.handlers == nil {
+		impl.handlers = map[string]any{}
+	}
+	impl.handlers[name] = h
+}
+
+// loomRegisterOwners adds every aggregate, then every record, in name
+// order — never init order — so the registry is the same on every boot.
+// An owner whose handlers were never bound panics with its name.
+func loomRegisterOwners(impl Impl, r *loom.Registry) {
+	owners := append([]loomOwner(nil), loomOwners...)
+	sort.Slice(owners, func(i, j int) bool {
+		if owners[i].kind != owners[j].kind {
+			return owners[i].kind == "aggregate"
+		}
+		return owners[i].name < owners[j].name
+	})
+	for _, o := range owners {
+		h := impl.handlers[o.name]
+		if h == nil {
+			panic(fmt.Sprintf("loomgen: %s %s has no handlers — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.name))
+		}
+		o.register(impl, h, r)
+	}
+	sort.Slice(r.Events, func(i, j int) bool { return r.Events[i].Name < r.Events[j].Name })
+}
+
+func asAny[T any](in []T) []any {
 	out := make([]any, len(in))
 	for i, v := range in {
 		out[i] = v
@@ -1104,29 +1176,41 @@ func checkDispatches(reactor, event string, allowed []string, cmds []loom.Comman
 // state structs satisfy loom.EntityState (same Fold shape), so both kinds
 // share the extractor signature.
 func (g *generator) tableDefs(b *strings.Builder) {
-	tables := g.tablePayloads()
+	var tables []*schema.Entity
+	for _, e := range g.s.Entities {
+		if e.Table {
+			tables = append(tables, e)
+		}
+	}
 	if len(tables) == 0 {
 		return
 	}
+	// a @table aggregate's entry is added by its own file
 	b.WriteString("\t\tTables: []*loom.TableDef{\n")
 	for _, t := range tables {
-		fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tEntity: %q,\n\t\t\t\tName: %q,\n\t\t\t\tDDL: `%s`,\n", t.Name, g.tableName(t.Name), g.tableDDL(t.Name, t.State))
-		b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
-		for _, col := range g.tableColumns(t.State) {
-			fmt.Fprintf(b, "\t\t\t\t\t{Name: %q, Type: %q},\n", col.Name, col.Type)
-		}
-		b.WriteString("\t\t\t\t},\n")
-		fmt.Fprintf(b, "\t\t\t\tValues: func(state loom.EntityState) []any {\n\t\t\t\t\te := state.(*%s)\n\t\t\t\t\treturn []any{\n", t.Name)
-		for _, col := range g.tableColumns(t.State) {
-			if col.Type == "jsonb" {
-				fmt.Fprintf(b, "\t\t\t\t\t\tloom.JSONValue(e.%s),\n", exported(col.Name))
-			} else {
-				fmt.Fprintf(b, "\t\t\t\t\t\te.%s,\n", exported(col.Name))
-			}
-		}
-		b.WriteString("\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t},\n")
+		g.tableDef(b, "{", t.Name, t.State)
 	}
 	b.WriteString("\t\t},\n")
+}
+
+// tableDef renders one TableDef entry; open is how it begins: "{" in a
+// slice literal, "&loom.TableDef{" in an append.
+func (g *generator) tableDef(b *strings.Builder, open, name string, state *schema.Payload) {
+	fmt.Fprintf(b, "\t\t\t%s\n\t\t\t\tEntity: %q,\n\t\t\t\tName: %q,\n\t\t\t\tDDL: `%s`,\n", open, name, g.tableName(name), g.tableDDL(name, state))
+	b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
+	for _, col := range g.tableColumns(state) {
+		fmt.Fprintf(b, "\t\t\t\t\t{Name: %q, Type: %q},\n", col.Name, col.Type)
+	}
+	b.WriteString("\t\t\t\t},\n")
+	fmt.Fprintf(b, "\t\t\t\tValues: func(state loom.EntityState) []any {\n\t\t\t\t\te := state.(*%s)\n\t\t\t\t\treturn []any{\n", name)
+	for _, col := range g.tableColumns(state) {
+		if col.Type == "jsonb" {
+			fmt.Fprintf(b, "\t\t\t\t\t\tloom.JSONValue(e.%s),\n", exported(col.Name))
+		} else {
+			fmt.Fprintf(b, "\t\t\t\t\t\te.%s,\n", exported(col.Name))
+		}
+	}
+	b.WriteString("\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t},\n")
 }
 
 // seriesDefs renders the registry entries for series: the DDL and column
@@ -1190,32 +1274,24 @@ func (g *generator) upcastHops() []upcastHop {
 	return out
 }
 
-// uploadDefs renders the registry entries for every `upload` block; the
-// file-field json names come from the shape Validate enforced.
-func (g *generator) uploadDefs() string {
+// ownerUploads renders the registry entries for one owner's `upload`
+// blocks; the file-field json names come from the shape Validate enforced.
+func (g *generator) ownerUploads(owner string, commands []*schema.Command, uploads []*schema.Upload) string {
 	var b strings.Builder
-	emit := func(owner string, commands []*schema.Command, uploads []*schema.Upload) {
-		fileField := func(name string) string {
-			for _, c := range commands {
-				if c.Name == name {
-					return c.FileField()
-				}
+	fileField := func(name string) string {
+		for _, c := range commands {
+			if c.Name == name {
+				return c.FileField()
 			}
-			return ""
 		}
-		for _, u := range uploads {
-			fmt.Fprintf(&b, "\t\t\t{Name: %q, Owner: %q,", u.Name, owner)
-			if u.OnStarted != "" {
-				fmt.Fprintf(&b, " OnStarted: %q, StartedField: %q,", u.OnStarted, fileField(u.OnStarted))
-			}
-			fmt.Fprintf(&b, " OnUploaded: %q, UploadedField: %q},\n", u.OnUploaded, fileField(u.OnUploaded))
+		return ""
+	}
+	for _, u := range uploads {
+		fmt.Fprintf(&b, "\t\t\t&loom.UploadDef{Name: %q, Owner: %q,", u.Name, owner)
+		if u.OnStarted != "" {
+			fmt.Fprintf(&b, " OnStarted: %q, StartedField: %q,", u.OnStarted, fileField(u.OnStarted))
 		}
-	}
-	for _, a := range g.s.Aggregates {
-		emit(a.Name, a.Commands, a.Uploads)
-	}
-	for _, r := range g.s.Records {
-		emit(r.Name, r.Commands, r.Uploads)
+		fmt.Fprintf(&b, " OnUploaded: %q, UploadedField: %q},\n", u.OnUploaded, fileField(u.OnUploaded))
 	}
 	return b.String()
 }
@@ -1401,13 +1477,7 @@ func (g *generator) stubs() map[string]string {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "\t%q\n)\n\n", genImport)
-	fmt.Fprintf(&b, "// NewRegistry wires implementations into the generated registry. Yours\n// to edit.\nfunc NewRegistry() *loom.Registry {\n\treturn %s.NewRegistry(%s.Impl{\n", g.genPkg, g.genPkg)
-	for _, a := range g.s.Aggregates {
-		fmt.Fprintf(&b, "\t\t%s: %s,\n", a.Name, g.qualify(kindAggregates, a.Name))
-	}
-	for _, r := range g.s.Records {
-		fmt.Fprintf(&b, "\t\t%s: %s,\n", r.Name, g.qualify(kindRecords, r.Name))
-	}
+	fmt.Fprintf(&b, "// NewRegistry wires implementations into the generated registry. Yours\n// to edit.\nfunc NewRegistry() *loom.Registry {\n\timpl := %s.Impl{\n", g.genPkg)
 	for _, r := range g.s.Policies {
 		fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(r.Name), g.qualify(kindPolicies, exported(r.Name)))
 	}
@@ -1422,7 +1492,15 @@ func (g *generator) stubs() map[string]string {
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\t\tUpcasts: &Upcasts{},\n")
 	}
-	b.WriteString("\t})\n}\n")
+	b.WriteString("\t}\n")
+	// aggregates and records bind through their methods on Impl (ADR 0008)
+	for _, a := range g.s.Aggregates {
+		fmt.Fprintf(&b, "\timpl.%s(%s)\n", a.Name, g.qualify(kindAggregates, a.Name))
+	}
+	for _, r := range g.s.Records {
+		fmt.Fprintf(&b, "\timpl.%s(%s)\n", r.Name, g.qualify(kindRecords, r.Name))
+	}
+	fmt.Fprintf(&b, "\treturn %s.NewRegistry(impl)\n}\n", g.genPkg)
 	out["registry.go"] = b.String()
 
 	return out

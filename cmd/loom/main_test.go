@@ -290,10 +290,10 @@ func TestGenerateCheckNamesOrphan(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	sort.Strings(lines)
-	// renaming Order to Shipment also touches registry.go (the Impl field
-	// name) — the orphan is the interesting part: loomgen/order_gen.go,
-	// named stale although render no longer produces it at all.
-	want := []string{"missing loomgen/shipment_gen.go", "stale   loomgen/order_gen.go", "stale   loomgen/registry_gen.go"}
+	// renaming Order to Shipment touches no shared file (ADR 0008): the
+	// orphan, loomgen/order_gen.go, is named stale although render no
+	// longer produces it at all.
+	want := []string{"missing loomgen/shipment_gen.go", "stale   loomgen/order_gen.go"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("got %v, want %v", lines, want)
 	}
