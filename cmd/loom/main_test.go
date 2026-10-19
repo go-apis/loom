@@ -238,17 +238,30 @@ func TestGenerateCheckStaleRegistry(t *testing.T) {
 }
 
 func TestGenerateCheckMissing(t *testing.T) {
-	dir, _, _, check := checkFixture(t)
-	p := filepath.Join(dir, "loomgen/models_gen.go")
-	if err := os.Remove(p); err != nil {
-		t.Fatal(err)
+	// a shared file and an aggregate's own file (ADR 0008) are both checked
+	for _, rel := range []string{"loomgen/models_gen.go", "loomgen/order_gen.go"} {
+		dir, _, _, check := checkFixture(t)
+		p := filepath.Join(dir, rel)
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		out, err := check()
+		if err == nil || strings.TrimSpace(out) != "missing "+rel {
+			t.Fatalf("err %v, out %q", err, out)
+		}
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatal("--check recreated the file")
+		}
 	}
+}
+
+func TestGenerateCheckStaleAggregateFile(t *testing.T) {
+	_, write, _, check := checkFixture(t)
+	// a new command on Order changes Order's file only
+	write("schema/orders.loom", strings.Replace(checkSchema, "  command CancelOrder {", "  command ReopenOrder -> OrderPlaced\n  command CancelOrder {", 1))
 	out, err := check()
-	if err == nil || strings.TrimSpace(out) != "missing loomgen/models_gen.go" {
+	if err == nil || strings.TrimSpace(out) != "stale   loomgen/order_gen.go" {
 		t.Fatalf("err %v, out %q", err, out)
-	}
-	if _, err := os.Stat(p); !os.IsNotExist(err) {
-		t.Fatal("--check recreated the file")
 	}
 }
 

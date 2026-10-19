@@ -1,7 +1,7 @@
 // Command loom is the schema-first toolchain:
 //
 //	loom init <service>   scaffold loom.yml + schema/<service>.loom
-//	loom generate         regenerate models/registry + missing stubs
+//	loom generate         regenerate loomgen (one file per aggregate/record + shared) + missing stubs
 //	loom generate --check write nothing; list stale/missing generated files, exit 1 if any
 //	loom skill            write the Claude Code skill for this loom version into the repo
 //	loom skill --check    exit 1 when the repo's loom skill is missing or from another version
