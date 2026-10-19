@@ -464,6 +464,9 @@ func runGenerate(args []string, out io.Writer) error {
 	for _, f := range res.Skipped {
 		fmt.Fprintln(out, "kept ", rel(*dir, f), "(stub exists)")
 	}
+	for _, f := range res.Removed {
+		fmt.Fprintln(out, "removed", rel(*dir, f))
+	}
 	return nil
 }
 
