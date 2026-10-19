@@ -74,6 +74,9 @@ func (g *generator) render() map[string][]byte {
 		filepath.Join(genDir, "models_gen.go"):   g.models(),
 		filepath.Join(genDir, "registry_gen.go"): g.registry(),
 	}
+	for _, o := range g.owners() {
+		files[filepath.Join(genDir, o.file)] = g.ownerFile(o)
+	}
 	if sql := g.tablesSQL(); sql != "" {
 		files[filepath.Join(genDir, "tables_gen.sql")] = sql
 	}
@@ -203,27 +206,13 @@ var (
 	for _, t := range g.s.Types {
 		g.structDef(&b, t.Name, t.Payload)
 	}
+	// an event emitted by one aggregate or record lives in its file; the
+	// rest (emitted by several, by none, or foreign) stay here
+	owned := g.eventOwners()
 	for _, e := range g.s.Events {
-		g.structDef(&b, e.Name, e.Payload)
-		fmt.Fprintf(&b, "func (*%s) LoomEvent() string { return %q }\n\n", e.Name, e.Name)
-	}
-	for _, a := range g.s.Aggregates {
-		for _, c := range a.Commands {
-			g.commandDef(&b, c)
+		if owned[e.Name] == "" {
+			g.eventDef(&b, e)
 		}
-	}
-	for _, r := range g.s.Records {
-		for _, c := range r.Commands {
-			g.commandDef(&b, c)
-		}
-	}
-	for _, a := range g.s.Aggregates {
-		g.structDef(&b, a.Name, a.State)
-		g.foldDef(&b, a.Name, g.aggregateEvents(a))
-	}
-	for _, r := range g.s.Records {
-		// records don't fold: the state row is the source of truth
-		g.structDef(&b, r.Name, r.State)
 	}
 	for _, e := range g.s.Entities {
 		g.structDef(&b, e.Name, e.State)
@@ -234,6 +223,182 @@ var (
 		g.structDef(&b, sr.Name, sr.State)
 		fmt.Fprintf(&b, "func (*%s) LoomSeries() string { return %q }\n\n", sr.Name, sr.Name)
 	}
+	return b.String()
+}
+
+func (g *generator) eventDef(b *strings.Builder, e *schema.Event) {
+	g.structDef(b, e.Name, e.Payload)
+	fmt.Fprintf(b, "func (*%s) LoomEvent() string { return %q }\n\n", e.Name, e.Name)
+}
+
+// --- one file per aggregate and record ---
+
+// owner is an aggregate or a record and the loomgen file it is rendered
+// into. Exactly one of agg and rec is set.
+type owner struct {
+	name string
+	file string
+	agg  *schema.Aggregate
+	rec  *schema.Record
+}
+
+func (o owner) commands() []*schema.Command {
+	if o.agg != nil {
+		return o.agg.Commands
+	}
+	return o.rec.Commands
+}
+
+// owners lists the aggregates, then the records, in schema order, each
+// with its file: <snake name>_gen.go. A name whose file is already taken —
+// by the shared models_gen.go or registry_gen.go, or by an earlier name
+// that snakes the same way — takes its kind appended, then a number. The
+// choice depends on the schema's slices only, so it is the same on every
+// run (ADR 0008).
+func (g *generator) owners() []owner {
+	taken := map[string]bool{"models": true, "registry": true}
+	pick := func(name, kind string) string {
+		base := toSnake(name)
+		if taken[base] {
+			base += "_" + kind
+		}
+		file := base
+		for n := 2; taken[file]; n++ {
+			file = fmt.Sprintf("%s_%d", base, n)
+		}
+		taken[file] = true
+		return file + "_gen.go"
+	}
+	var out []owner
+	for _, a := range g.s.Aggregates {
+		out = append(out, owner{name: a.Name, file: pick(a.Name, "aggregate"), agg: a})
+	}
+	for _, r := range g.s.Records {
+		out = append(out, owner{name: r.Name, file: pick(r.Name, "record"), rec: r})
+	}
+	return out
+}
+
+// eventOwners maps each event emitted by exactly one aggregate or record
+// to that owner's name. An event emitted by several, or by none (a
+// @retired or a foreign event), has no owner and stays in models_gen.go.
+func (g *generator) eventOwners() map[string]string {
+	emitters := map[string]map[string]bool{}
+	for _, o := range g.owners() {
+		for _, c := range o.commands() {
+			for _, e := range c.Emits {
+				if emitters[e] == nil {
+					emitters[e] = map[string]bool{}
+				}
+				emitters[e][o.name] = true
+			}
+		}
+	}
+	out := map[string]string{}
+	for e, by := range emitters {
+		if len(by) == 1 {
+			out[e] = sortedKeys(by)[0]
+		}
+	}
+	return out
+}
+
+// defFunc names the generated function that builds an owner's definition.
+func (o owner) defFunc() string {
+	if o.agg != nil {
+		return "aggregateDef" + o.name
+	}
+	return "recordDef" + o.name
+}
+
+// ownerFile renders one aggregate's or record's file: its commands and
+// their Validate, the events only it emits, its state (and fold), its
+// Handlers interface, and the function returning its definition with the
+// Handle closures over those handlers.
+func (g *generator) ownerFile(o owner) string {
+	var b strings.Builder
+	b.WriteString(header)
+	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
+	b.WriteString(`import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/go-apis/loom"
+	"github.com/google/uuid"
+)
+
+var (
+	_ context.Context
+	_ = fmt.Sprintf
+	_ = time.Time{}
+	_ = uuid.UUID{}
+)
+
+`)
+	for _, c := range o.commands() {
+		g.commandDef(&b, c)
+	}
+	owned := g.eventOwners()
+	for _, e := range g.s.Events {
+		if owned[e.Name] == o.name {
+			g.eventDef(&b, e)
+		}
+	}
+	if o.agg != nil {
+		g.structDef(&b, o.name, o.agg.State)
+		g.foldDef(&b, o.name, g.aggregateEvents(o.agg))
+	} else {
+		// records don't fold: the state row is the source of truth
+		g.structDef(&b, o.name, o.rec.State)
+	}
+
+	fmt.Fprintf(&b, "type %sHandlers interface {\n", o.name)
+	for _, c := range o.commands() {
+		fmt.Fprintf(&b, "\t%s(ctx context.Context, state *%s, cmd *%s) ([]loom.DomainEvent, error)\n", c.Name, o.name, c.Name)
+	}
+	b.WriteString("}\n\n")
+
+	var state *schema.Payload
+	var readRoles []string
+	defType, cmdType, stateType := "AggregateDef", "CommandDef", "any"
+	if o.agg != nil {
+		state, readRoles, stateType = o.agg.State, o.agg.ReadRoles, "loom.AggregateState"
+	} else {
+		state, readRoles, defType, cmdType = o.rec.State, o.rec.ReadRoles, "RecordDef", "RecordCommandDef"
+	}
+	fmt.Fprintf(&b, "func %s(h %sHandlers) *loom.%s {\n", o.defFunc(), o.name, defType)
+	fmt.Fprintf(&b, "\treturn &loom.%s{\n\t\tName: %q,\n", defType, o.name)
+	if o.agg != nil {
+		fmt.Fprintf(&b, "\t\tSnapshotEvery: %d,\n", o.agg.Snapshot)
+	}
+	if pii := state.PIIFields(); len(pii) > 0 {
+		fmt.Fprintf(&b, "\t\tStatePII: %s,\n", stringSlice(pii))
+	}
+	if sec := state.SecretFields(); len(sec) > 0 {
+		fmt.Fprintf(&b, "\t\tStateSecret: %s,\n", stringSlice(sec))
+	}
+	if len(readRoles) > 0 {
+		fmt.Fprintf(&b, "\t\tReadRoles: %s,\n", stringSlice(readRoles))
+	}
+	fmt.Fprintf(&b, "\t\tNewState: func() %s { return &%s{} },\n", stateType, o.name)
+	fmt.Fprintf(&b, "\t\tCommands: []*loom.%s{\n", cmdType)
+	for _, c := range o.commands() {
+		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
+		if pii := c.Payload.PIIFields(); len(pii) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tPII: %s,\n", stringSlice(pii))
+		}
+		if len(c.Roles) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
+		}
+		if req := requiredFields(c.Payload); len(req) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
+		}
+		fmt.Fprintf(&b, "\t\t\t\tHandle: func(ctx context.Context, state %s, cmd loom.Command) ([]any, error) {\n", stateType)
+		fmt.Fprintf(&b, "\t\t\t\t\tevts, err := h.%s(ctx, state.(*%s), cmd.(*%s))\n", c.Name, o.name, c.Name)
+		b.WriteString("\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t},\n\t\t\t},\n")
+	}
+	b.WriteString("\t\t},\n\t}\n}\n")
 	return b.String()
 }
 
@@ -640,7 +805,10 @@ func (g *generator) registry() string {
 	"github.com/google/uuid"
 )
 
-var _ = uuid.UUID{}
+var (
+	_ context.Context
+	_ = uuid.UUID{}
+)
 
 func loomErrNilEvent(eventType string) error {
 	return fmt.Errorf("nil payload for event %s", eventType)
@@ -648,21 +816,7 @@ func loomErrNilEvent(eventType string) error {
 
 `)
 
-	// handler interfaces
-	for _, a := range g.s.Aggregates {
-		fmt.Fprintf(&b, "type %sHandlers interface {\n", a.Name)
-		for _, c := range a.Commands {
-			fmt.Fprintf(&b, "\t%s(ctx context.Context, state *%s, cmd *%s) ([]loom.DomainEvent, error)\n", c.Name, a.Name, c.Name)
-		}
-		b.WriteString("}\n\n")
-	}
-	for _, r := range g.s.Records {
-		fmt.Fprintf(&b, "type %sHandlers interface {\n", r.Name)
-		for _, c := range r.Commands {
-			fmt.Fprintf(&b, "\t%s(ctx context.Context, state *%s, cmd *%s) ([]loom.DomainEvent, error)\n", c.Name, r.Name, c.Name)
-		}
-		b.WriteString("}\n\n")
-	}
+	// the aggregates' and records' Handlers interfaces live in their own files
 	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
 		fmt.Fprintf(&b, "type %sReactions interface {\n", exported(r.Name))
 		for _, sub := range r.Subscriptions {
@@ -720,69 +874,21 @@ func loomErrNilEvent(eventType string) error {
 	}
 	fmt.Fprintf(&b, "\treturn &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
 
+	// each aggregate and record builds its own definition, in its own file
+	owners := g.owners()
 	b.WriteString("\t\tAggregates: []*loom.AggregateDef{\n")
-	for _, a := range g.s.Aggregates {
-		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tSnapshotEvery: %d,\n", a.Name, a.Snapshot)
-		if pii := a.State.PIIFields(); len(pii) > 0 {
-			fmt.Fprintf(&b, "\t\t\t\tStatePII: %s,\n", stringSlice(pii))
+	for _, o := range owners {
+		if o.agg != nil {
+			fmt.Fprintf(&b, "\t\t\t%s(impl.%s),\n", o.defFunc(), o.name)
 		}
-		if sec := a.State.SecretFields(); len(sec) > 0 {
-			fmt.Fprintf(&b, "\t\t\t\tStateSecret: %s,\n", stringSlice(sec))
-		}
-		if len(a.ReadRoles) > 0 {
-			fmt.Fprintf(&b, "\t\t\t\tReadRoles: %s,\n", stringSlice(a.ReadRoles))
-		}
-		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.AggregateState { return &%s{} },\n", a.Name)
-		b.WriteString("\t\t\t\tCommands: []*loom.CommandDef{\n")
-		for _, c := range a.Commands {
-			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
-			if pii := c.Payload.PIIFields(); len(pii) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\t\t\tPII: %s,\n", stringSlice(pii))
-			}
-			if len(c.Roles) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
-			}
-			if req := requiredFields(c.Payload); len(req) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\t\t\tRequired: %s,\n", stringSlice(req))
-			}
-			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {\n")
-			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", a.Name, c.Name, a.Name, c.Name)
-			b.WriteString("\t\t\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n")
-		}
-		b.WriteString("\t\t\t\t},\n\t\t\t},\n")
 	}
 	b.WriteString("\t\t},\n")
 
 	b.WriteString("\t\tRecords: []*loom.RecordDef{\n")
-	for _, r := range g.s.Records {
-		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n", r.Name)
-		if pii := r.State.PIIFields(); len(pii) > 0 {
-			fmt.Fprintf(&b, "\t\t\t\tStatePII: %s,\n", stringSlice(pii))
+	for _, o := range owners {
+		if o.rec != nil {
+			fmt.Fprintf(&b, "\t\t\t%s(impl.%s),\n", o.defFunc(), o.name)
 		}
-		if sec := r.State.SecretFields(); len(sec) > 0 {
-			fmt.Fprintf(&b, "\t\t\t\tStateSecret: %s,\n", stringSlice(sec))
-		}
-		if len(r.ReadRoles) > 0 {
-			fmt.Fprintf(&b, "\t\t\t\tReadRoles: %s,\n", stringSlice(r.ReadRoles))
-		}
-		fmt.Fprintf(&b, "\t\t\t\tNewState: func() any { return &%s{} },\n", r.Name)
-		b.WriteString("\t\t\t\tCommands: []*loom.RecordCommandDef{\n")
-		for _, c := range r.Commands {
-			fmt.Fprintf(&b, "\t\t\t\t\t{\n\t\t\t\t\t\tName: %q,\n\t\t\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
-			if pii := c.Payload.PIIFields(); len(pii) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\t\t\tPII: %s,\n", stringSlice(pii))
-			}
-			if len(c.Roles) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
-			}
-			if req := requiredFields(c.Payload); len(req) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\t\t\tRequired: %s,\n", stringSlice(req))
-			}
-			fmt.Fprintf(&b, "\t\t\t\t\t\tHandle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {\n")
-			fmt.Fprintf(&b, "\t\t\t\t\t\t\tevts, err := impl.%s.%s(ctx, state.(*%s), cmd.(*%s))\n", r.Name, c.Name, r.Name, c.Name)
-			b.WriteString("\t\t\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n")
-		}
-		b.WriteString("\t\t\t\t},\n\t\t\t},\n")
 	}
 	b.WriteString("\t\t},\n")
 

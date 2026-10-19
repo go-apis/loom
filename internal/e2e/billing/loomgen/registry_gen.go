@@ -10,23 +10,13 @@ import (
 	"github.com/google/uuid"
 )
 
-var _ = uuid.UUID{}
+var (
+	_ context.Context
+	_ = uuid.UUID{}
+)
 
 func loomErrNilEvent(eventType string) error {
 	return fmt.Errorf("nil payload for event %s", eventType)
-}
-
-type InvoiceHandlers interface {
-	MarkInvoicePaid(ctx context.Context, state *Invoice, cmd *MarkInvoicePaid) ([]loom.DomainEvent, error)
-	RaiseInvoice(ctx context.Context, state *Invoice, cmd *RaiseInvoice) ([]loom.DomainEvent, error)
-}
-
-type PayeeHandlers interface {
-	RegisterPayee(ctx context.Context, state *Payee, cmd *RegisterPayee) ([]loom.DomainEvent, error)
-}
-
-type LedgerEntryHandlers interface {
-	PostLedgerEntry(ctx context.Context, state *LedgerEntry, cmd *PostLedgerEntry) ([]loom.DomainEvent, error)
 }
 
 type PostLedgerReactions interface {
@@ -54,70 +44,11 @@ func NewRegistry(impl Impl) *loom.Registry {
 	return &loom.Registry{
 		Service: "billing",
 		Aggregates: []*loom.AggregateDef{
-			{
-				Name:          "Invoice",
-				SnapshotEvery: 0,
-				NewState:      func() loom.AggregateState { return &Invoice{} },
-				Commands: []*loom.CommandDef{
-					{
-						Name:  "MarkInvoicePaid",
-						New:   func() loom.Command { return &MarkInvoicePaid{} },
-						Emits: []string{"InvoicePaid"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Invoice.MarkInvoicePaid(ctx, state.(*Invoice), cmd.(*MarkInvoicePaid))
-							return asAny(evts), err
-						},
-					},
-					{
-						Name:     "RaiseInvoice",
-						New:      func() loom.Command { return &RaiseInvoice{} },
-						Emits:    []string{"InvoiceRaised"},
-						Required: []string{"amount_cents", "currency", "customer_id"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Invoice.RaiseInvoice(ctx, state.(*Invoice), cmd.(*RaiseInvoice))
-							return asAny(evts), err
-						},
-					},
-				},
-			},
-			{
-				Name:          "Payee",
-				SnapshotEvery: 1,
-				StatePII:      []string{"bank_token", "tin"},
-				StateSecret:   []string{"bank_token"},
-				NewState:      func() loom.AggregateState { return &Payee{} },
-				Commands: []*loom.CommandDef{
-					{
-						Name:     "RegisterPayee",
-						New:      func() loom.Command { return &RegisterPayee{} },
-						Emits:    []string{"PayeeRegistered"},
-						PII:      []string{"bank_token", "tin"},
-						Required: []string{"name", "tin", "tin_last4"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Payee.RegisterPayee(ctx, state.(*Payee), cmd.(*RegisterPayee))
-							return asAny(evts), err
-						},
-					},
-				},
-			},
+			aggregateDefInvoice(impl.Invoice),
+			aggregateDefPayee(impl.Payee),
 		},
 		Records: []*loom.RecordDef{
-			{
-				Name:     "LedgerEntry",
-				NewState: func() any { return &LedgerEntry{} },
-				Commands: []*loom.RecordCommandDef{
-					{
-						Name:     "PostLedgerEntry",
-						New:      func() loom.Command { return &PostLedgerEntry{} },
-						Emits:    []string{"LedgerEntryPosted"},
-						Required: []string{"amount_cents", "currency", "customer_id"},
-						Handle: func(ctx context.Context, state any, cmd loom.Command) ([]any, error) {
-							evts, err := impl.LedgerEntry.PostLedgerEntry(ctx, state.(*LedgerEntry), cmd.(*PostLedgerEntry))
-							return asAny(evts), err
-						},
-					},
-				},
-			},
+			recordDefLedgerEntry(impl.LedgerEntry),
 		},
 		Events: []*loom.EventDef{
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &InvoicePaid{} }},

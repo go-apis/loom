@@ -10,18 +10,13 @@ import (
 	"github.com/google/uuid"
 )
 
-var _ = uuid.UUID{}
+var (
+	_ context.Context
+	_ = uuid.UUID{}
+)
 
 func loomErrNilEvent(eventType string) error {
 	return fmt.Errorf("nil payload for event %s", eventType)
-}
-
-type OrderHandlers interface {
-	AttachContract(ctx context.Context, state *Order, cmd *AttachContract) ([]loom.DomainEvent, error)
-	CancelOrder(ctx context.Context, state *Order, cmd *CancelOrder) ([]loom.DomainEvent, error)
-	PlaceOrder(ctx context.Context, state *Order, cmd *PlaceOrder) ([]loom.DomainEvent, error)
-	RequestContract(ctx context.Context, state *Order, cmd *RequestContract) ([]loom.DomainEvent, error)
-	ShipOrder(ctx context.Context, state *Order, cmd *ShipOrder) ([]loom.DomainEvent, error)
 }
 
 type DropAutoCancelReactions interface {
@@ -63,62 +58,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 	return &loom.Registry{
 		Service: "orders",
 		Aggregates: []*loom.AggregateDef{
-			{
-				Name:          "Order",
-				SnapshotEvery: 5,
-				NewState:      func() loom.AggregateState { return &Order{} },
-				Commands: []*loom.CommandDef{
-					{
-						Name:     "AttachContract",
-						New:      func() loom.Command { return &AttachContract{} },
-						Emits:    []string{"ContractAttached"},
-						Required: []string{"contract"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Order.AttachContract(ctx, state.(*Order), cmd.(*AttachContract))
-							return asAny(evts), err
-						},
-					},
-					{
-						Name:  "CancelOrder",
-						New:   func() loom.Command { return &CancelOrder{} },
-						Emits: []string{"OrderCancelled"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Order.CancelOrder(ctx, state.(*Order), cmd.(*CancelOrder))
-							return asAny(evts), err
-						},
-					},
-					{
-						Name:     "PlaceOrder",
-						New:      func() loom.Command { return &PlaceOrder{} },
-						Emits:    []string{"OrderPlaced"},
-						Required: []string{"currency", "customer_id", "items"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Order.PlaceOrder(ctx, state.(*Order), cmd.(*PlaceOrder))
-							return asAny(evts), err
-						},
-					},
-					{
-						Name:     "RequestContract",
-						New:      func() loom.Command { return &RequestContract{} },
-						Emits:    []string{"ContractRequested"},
-						Required: []string{"contract"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Order.RequestContract(ctx, state.(*Order), cmd.(*RequestContract))
-							return asAny(evts), err
-						},
-					},
-					{
-						Name:  "ShipOrder",
-						New:   func() loom.Command { return &ShipOrder{} },
-						Emits: []string{"OrderShipped"},
-						Roles: []string{"owner", "shipper"},
-						Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
-							evts, err := impl.Order.ShipOrder(ctx, state.(*Order), cmd.(*ShipOrder))
-							return asAny(evts), err
-						},
-					},
-				},
-			},
+			aggregateDefOrder(impl.Order),
 		},
 		Records: []*loom.RecordDef{},
 		Series: []*loom.SeriesDef{

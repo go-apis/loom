@@ -61,18 +61,25 @@ process plain {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var registry string
-	for _, w := range res.Written {
-		if strings.HasSuffix(w, "registry_gen.go") {
-			raw, err := os.ReadFile(w)
-			if err != nil {
-				t.Fatal(err)
-			}
-			registry = strings.Join(strings.Fields(string(raw)), " ")
+	// the Impl fields and the reactor wiring are shared, in registry_gen.go;
+	// each aggregate's Handlers interface is in its own file (ADR 0008)
+	read := func(name string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(dir, "loomgen", name))
+		if err != nil {
+			t.Fatalf("%v (wrote %v)", err, res.Written)
 		}
+		return strings.Join(strings.Fields(string(raw)), " ")
 	}
-	if registry == "" {
-		t.Fatalf("no registry_gen.go in %v", res.Written)
+	registry := read("registry_gen.go")
+	for file, iface := range map[string]string{
+		"fleet_stall_gen.go":    "type FleetStallHandlers interface",
+		"org_membership_gen.go": "type OrgMembershipHandlers interface",
+		"snapshot_gen.go":       "type SnapshotHandlers interface",
+	} {
+		if !strings.Contains(read(file), iface) {
+			t.Fatalf("%s has no %q", file, iface)
+		}
 	}
 	for _, want := range []string{
 		"FleetStall FleetStallHandlers", "FleetStallProcess FleetStallReactions",

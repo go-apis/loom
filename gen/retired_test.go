@@ -43,7 +43,13 @@ aggregate Order {
 		t.Errorf("Retired leaked onto a live event")
 	}
 
+	// a retired event is emitted by no command, so it has no owner and
+	// stays in the shared models_gen.go (ADR 0008)
 	models, err := os.ReadFile(filepath.Join(dir, "loomgen", "models_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := os.ReadFile(filepath.Join(dir, "loomgen", "order_gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +63,10 @@ aggregate Order {
 	if !strings.Contains(string(models), `func (*Gone) LoomEvent() string`) {
 		t.Errorf("@retired dropped the event's LoomEvent marker")
 	}
-	if strings.Contains(string(models), "case *Gone:") {
+	if !strings.Contains(string(order), "case *OrderPlaced:") {
+		t.Errorf("order_gen.go holds no fold for OrderPlaced")
+	}
+	if strings.Contains(string(order), "case *Gone:") {
 		t.Errorf("a retired event should fold nothing — it can never be emitted")
 	}
 }

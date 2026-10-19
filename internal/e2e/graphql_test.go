@@ -515,7 +515,7 @@ func sdlBlock(t *testing.T, sdlOut, head string) string {
 }
 
 // mustParseOrdersSchema parses the e2e orders schema straight off disk, the
-// same directory loomgen/registry_gen.go was generated from, so the SDL check
+// same directory the loomgen files were generated from, so the SDL check
 // and the live gateway check stay in lockstep.
 func mustParseOrdersSchema(t *testing.T) *schema.Schema {
 	t.Helper()
