@@ -12,6 +12,40 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Changed
+
+- **`loom generate` writes one file per aggregate and record, and adding
+  one changes no existing generated file.** Each aggregate and record has
+  its own `loomgen/<snake name>_gen.go`, holding its commands, the events
+  only it emits, its state and fold, its `Handlers` interface, its def
+  function and its binding method on `Impl`. It registers itself with
+  `NewRegistry`, which adds aggregates, then records, in name order.
+  `models_gen.go` and `registry_gen.go` keep only what is shared and name
+  no aggregate or record, so two branches that each add an aggregate no
+  longer conflict in `loomgen/`. Output is byte-for-byte deterministic
+  ([ADR 0008](docs/adr/0008-one-generated-file-per-aggregate.md)).
+  **Migration:** `Impl` no longer has a field per aggregate and record.
+  A `registry.go` that sets them stops compiling after you regenerate.
+  Bind each aggregate and record with its method, and keep the reactor
+  fields in the literal:
+
+  ```go
+  impl := loomgen.Impl{ShipOnPayment: &ShipOnPayment{}}
+  impl.Order(&Order{})
+  return loomgen.NewRegistry(impl)
+  ```
+
+  Alternatively, delete `registry.go` and regenerate for a new stub. An
+  aggregate or record left unbound panics at `NewRegistry`, naming the
+  call to add. No type or `Handlers` interface is renamed. Commit the
+  regenerated `loomgen/`, and `generate --check` passes.
+- **`loom generate` removes orphaned generated files.** A `_gen.go` or
+  `_gen.sql` that has loom's header but that the schema no longer
+  produces is deleted and reported as `removed <path>`. A renamed or
+  deleted aggregate's file is the usual case. `generate --check` names
+  such a file stale. Files without the header, and stubs, are never
+  touched.
+
 ### Added
 
 - The agent skill (`loom skill`) gains "When a rebase or merge conflicts in loomgen": resolve only the `.loom` sources, take either side of the generated files, regenerate with `go tool loom generate`, check, and commit the generator's output. Never hand-merge a loomgen conflict.

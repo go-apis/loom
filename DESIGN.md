@@ -122,12 +122,21 @@ Rules enforced at parse/validate time:
 
 ## Generated code
 
-`loom generate` writes `loomgen/` (always regenerated): typed structs for
-commands (embedding `loom.CommandBase`), events (with `LoomEvent()`),
-aggregate/entity states with `Fold` (field-name merge between event and
-state, optionality-bridged), and `NewRegistry(Impl)` wiring everything into
-`loom.Registry`. Stubs (once, then yours): one file per aggregate and
-reactor implementing the generated interfaces, plus `registry.go`.
+`loom generate` writes `loomgen/` (always regenerated, deterministically): typed
+structs for commands (embedding `loom.CommandBase`), events (with
+`LoomEvent()`), aggregate/entity states with `Fold` (field-name merge between
+event and state, optionality-bridged), and `NewRegistry(Impl)` wiring
+everything into `loom.Registry`. Each aggregate and record gets its own
+`<snake name>_gen.go`: its commands, the events only it emits, its state and
+fold, its `Handlers` interface, its def function, and its binding method on
+`Impl` (`impl.Order(h)`). It registers itself, in `init`, into a table that
+`NewRegistry` reads in kind-then-name order. An owner left unbound panics at
+boot with its name. `models_gen.go` and `registry_gen.go` hold only what is
+shared, and name no aggregate or record, so adding an aggregate adds one file
+and edits none. `generate` removes a generated file the schema no longer
+produces (ADR 0008). Stubs (once, then yours): one file per aggregate and
+reactor implementing the generated interfaces, plus `registry.go`, which sets
+reactor fields on `Impl` and binds each aggregate and record.
 `layout: folders` puts stubs in per-kind packages (aggregates/, records/,
 policies/, processes/) with registry.go at the root; flat stays the
 default. Dependency structs are the user's to place — a leaf package like
