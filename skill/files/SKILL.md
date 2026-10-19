@@ -157,3 +157,32 @@ projections, timers and batches are end-to-end territory.
   subscription; implement the stub the compiler names.
 - `generate --check` lists files: regenerate with `go tool loom generate`
   and commit them.
+
+## When a rebase or merge conflicts in loomgen
+
+The generated files are the generator's output, never a merge of two
+people's lines: two branches that each added an aggregate, an event or a
+table both rewrote `registry_gen.go`, `models_gen.go` and
+`tables_gen.sql`, and no line-by-line resolution of those is right.
+
+1. Resolve only the **sources** — the `.loom` schema files and
+   `loom.yml`. A conflict there is real: keep both sides' declarations
+   (with one schema file per aggregate or feature, two branches rarely
+   touch the same file).
+2. Take either side of every conflicted file under `loomgen/` (and the
+   service's `registry_gen.go`) as it is — `git checkout --theirs` or
+   `--ours`, it does not matter which.
+3. Regenerate from the merged sources with the pinned generator, from
+   the directory holding `loom.yml`, and check:
+
+   ```sh
+   go tool loom generate
+   go tool loom generate --check
+   go build ./... && go vet ./...
+   ```
+
+4. Commit what the generator wrote as the generated files' resolution.
+
+Never hand-merge a `loomgen` conflict, and never resolve one by keeping
+both sides' lines: the result compiles by accident or not at all, and the
+next `loom generate` undoes it.

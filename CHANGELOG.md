@@ -14,6 +14,7 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- The agent skill (`loom skill`) gains "When a rebase or merge conflicts in loomgen": resolve only the `.loom` sources, take either side of the generated files, regenerate with `go tool loom generate`, check, and commit the generator's output. Never hand-merge a loomgen conflict.
 - **`loom skill` writes a Claude Code skill for loom into the repository.**
   `.claude/skills/loom/SKILL.md` at the repository root, stamped with the
   loom version: the loop, the pinned generator, the naming and effect rules,
