@@ -237,6 +237,93 @@ func TestGenerateCheckStaleRegistry(t *testing.T) {
 	}
 }
 
+// renaming an aggregate orphans its old file: render no longer produces
+// loomgen/order_gen.go once the schema's Order becomes Shipment.
+const renamedCheckSchema = `service orders
+
+event OrderPlaced {
+  status: string!
+}
+
+aggregate Shipment {
+  state {
+    status: string
+  }
+  command PlaceOrder {
+    status: string!
+  } -> OrderPlaced
+  command CancelOrder {
+    reason: string
+  } -> OrderPlaced
+}
+`
+
+func TestGenerateRemovesOrphanedAggregateFile(t *testing.T) {
+	dir, write, _, _ := checkFixture(t)
+	if _, err := os.Stat(filepath.Join(dir, "loomgen", "order_gen.go")); err != nil {
+		t.Fatalf("fixture missing order_gen.go: %v", err)
+	}
+	write("schema/orders.loom", renamedCheckSchema)
+
+	var out bytes.Buffer
+	if err := runGenerate([]string{"--dir", dir}, &out); err != nil {
+		t.Fatalf("generate: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "removed loomgen/order_gen.go\n") {
+		t.Fatalf("want removed loomgen/order_gen.go, got %q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "loomgen", "order_gen.go")); !os.IsNotExist(err) {
+		t.Fatal("orphaned order_gen.go was not removed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "loomgen", "shipment_gen.go")); err != nil {
+		t.Fatalf("shipment_gen.go not written: %v", err)
+	}
+}
+
+func TestGenerateCheckNamesOrphan(t *testing.T) {
+	dir, write, _, check := checkFixture(t)
+	write("schema/orders.loom", renamedCheckSchema)
+
+	out, err := check()
+	if err == nil {
+		t.Fatal("want --check to fail on an orphaned file")
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	sort.Strings(lines)
+	// renaming Order to Shipment also touches registry.go (the Impl field
+	// name) — the orphan is the interesting part: loomgen/order_gen.go,
+	// named stale although render no longer produces it at all.
+	want := []string{"missing loomgen/shipment_gen.go", "stale   loomgen/order_gen.go", "stale   loomgen/registry_gen.go"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("got %v, want %v", lines, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "loomgen", "order_gen.go")); err != nil {
+		t.Fatal("--check removed the orphaned file")
+	}
+}
+
+func TestGenerateKeepsUnheaderedFile(t *testing.T) {
+	dir, write, read, check := checkFixture(t)
+	write("loomgen/mystery_gen.go", "package loomgen\n\n// hand-written, no loom header\n")
+	write("schema/orders.loom", renamedCheckSchema)
+
+	out, err := check()
+	if err == nil || strings.Contains(out, "mystery_gen.go") {
+		t.Fatalf("unheadered file should not be named: err %v, out %q", err, out)
+	}
+
+	var genOut bytes.Buffer
+	if err := runGenerate([]string{"--dir", dir}, &genOut); err != nil {
+		t.Fatalf("generate: %v\n%s", err, genOut.String())
+	}
+	if strings.Contains(genOut.String(), "mystery_gen.go") {
+		t.Fatalf("generate touched the unheadered file: %q", genOut.String())
+	}
+	if read("loomgen/mystery_gen.go") != "package loomgen\n\n// hand-written, no loom header\n" {
+		t.Fatal("unheadered file was rewritten or removed")
+	}
+}
+
 func TestGenerateCheckMissing(t *testing.T) {
 	// a shared file and an aggregate's own file (ADR 0008) are both checked
 	for _, rel := range []string{"loomgen/models_gen.go", "loomgen/order_gen.go"} {
