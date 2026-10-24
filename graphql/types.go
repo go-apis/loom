@@ -71,6 +71,22 @@ func camel(snake string) string {
 	return out
 }
 
+// camelToSnake is camel's inverse: it maps a GraphQL field name (camelCase,
+// exactly as `loom graphql` emits it) back to the json (snake) field name
+// loom stores, e.g. "dueDate" -> "due_date".
+func camelToSnake(name string) string {
+	var out strings.Builder
+	for _, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			out.WriteByte('_')
+			out.WriteRune(r - 'A' + 'a')
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
 // objectFor builds (or verifies) the named top-level type for a state
 // struct, with row identity fields added.
 func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {
