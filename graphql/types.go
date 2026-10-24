@@ -71,6 +71,36 @@ func camel(snake string) string {
 	return out
 }
 
+// camelFieldMap inverts camel over a type's known state fields (snake),
+// giving the GraphQL selection walk an exact camel-to-snake lookup — no
+// guessing, and a selected GraphQL field that isn't one of these (a
+// declared join, say) simply misses the map.
+func camelFieldMap(snakeFields []string) map[string]string {
+	m := make(map[string]string, len(snakeFields))
+	for _, f := range snakeFields {
+		m[camel(f)] = f
+	}
+	return m
+}
+
+// tableFieldMap is camelFieldMap for a @table mirror: a state field the
+// table has no column for (a @pii field) maps to "", so a selection of it
+// is skipped — it resolves null from the mirror — rather than asking the
+// table for a column it doesn't have.
+func tableFieldMap(snakeFields []string, td *loom.TableDef) map[string]string {
+	cols := make(map[string]bool, len(td.Columns))
+	for _, col := range td.Columns {
+		cols[col.Name] = true
+	}
+	m := camelFieldMap(snakeFields)
+	for c, f := range m {
+		if !cols[f] {
+			m[c] = ""
+		}
+	}
+	return m
+}
+
 // objectFor builds (or verifies) the named top-level type for a state
 // struct, with row identity fields added.
 func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {

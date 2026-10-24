@@ -342,10 +342,11 @@ func (b *builder) service(cli *loom.Client) error {
 			aggQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 				return cli.QueryEntities(ctx, name, q)
 			}
-			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery)); err != nil {
+			byCamel := tableFieldMap(b.types[name].fields, td)
+			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, byCamel, agg.ReadRoles, aggQuery)); err != nil {
 				return err
 			}
-			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery)); err != nil {
+			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, byCamel, agg.ReadRoles, aggQuery)); err != nil {
 				return err
 			}
 		}
@@ -371,10 +372,11 @@ func (b *builder) service(cli *loom.Client) error {
 		recQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryRecords(ctx, recName, q)
 		}
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery)); err != nil {
+		recFields := camelFieldMap(b.types[rec.Name].fields)
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, recFields, rec.ReadRoles, recQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery)); err != nil {
+		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, recFields, rec.ReadRoles, recQuery)); err != nil {
 			return err
 		}
 		for _, def := range rec.Commands {
@@ -411,10 +413,18 @@ func (b *builder) service(cli *loom.Client) error {
 		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryEntities(ctx, entity, q)
 		}
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery)); err != nil {
+		// a @table entity reads from its mirror, which only has the
+		// table's columns; everything else is the jsonb read model
+		entityFields := camelFieldMap(b.types[entity].fields)
+		for _, td := range reg.Tables {
+			if td.Entity == entity {
+				entityFields = tableFieldMap(b.types[entity].fields, td)
+			}
+		}
+		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, entityFields, p.EntityReadRoles, entityQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery)); err != nil {
+		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, entityFields, p.EntityReadRoles, entityQuery)); err != nil {
 			return err
 		}
 		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
@@ -757,6 +767,67 @@ func selectedFields(p gql.ResolveParams) []string {
 	return out
 }
 
+// listQueryFields narrows a list field's loom.Query to the state columns
+// the GraphQL selection actually asked for: the list field's own
+// selection set, fragments resolved, each camelCase name mapped back to
+// its snake state field through byCamel. The meta fields (id, namespace,
+// updatedAt, __typename) ride every Row regardless, so they're dropped
+// rather than mapped. A selection that doesn't map — a declared join, or
+// anything byCamel doesn't know — means the row needs more than byCamel
+// can name, so the whole walk gives up and the query reads the whole
+// row, exactly as it did before this field existed. A name byCamel maps
+// to "" is a state field with nowhere to read it from (a @pii field on a
+// @table mirror): it resolves null, so it is skipped, not asked for.
+func listQueryFields(p gql.ResolveParams, byCamel map[string]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(ss *ast.SelectionSet) bool
+	walk = func(ss *ast.SelectionSet) bool {
+		if ss == nil {
+			return true
+		}
+		for _, sel := range ss.Selections {
+			switch f := sel.(type) {
+			case *ast.Field:
+				if f.Name == nil {
+					continue
+				}
+				switch name := f.Name.Value; name {
+				case "id", "namespace", "updatedAt", "__typename":
+				default:
+					snake, ok := byCamel[name]
+					if !ok {
+						return false
+					}
+					if snake != "" && !seen[snake] {
+						seen[snake] = true
+						out = append(out, snake)
+					}
+				}
+			case *ast.InlineFragment:
+				if !walk(f.SelectionSet) {
+					return false
+				}
+			case *ast.FragmentSpread:
+				if f.Name == nil {
+					continue
+				}
+				frag, ok := p.Info.Fragments[f.Name.Value]
+				if !ok || !walk(frag.GetSelectionSet()) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	for _, fa := range p.Info.FieldASTs {
+		if !walk(fa.SelectionSet) {
+			return nil
+		}
+	}
+	return out
+}
+
 func parseNsID(p gql.ResolveParams, roles []string) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
 	if ns == AllNamespaces {
@@ -869,7 +940,7 @@ func rowDocs(rows []loom.Row) []map[string]any {
 	return out
 }
 
-func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func docList(obj *gql.Object, byCamel map[string]string, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -878,6 +949,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 			if err != nil {
 				return nil, err
 			}
+			q.Fields = listQueryFields(p, byCamel)
 			rows, err := query(p.Context, q)
 			if err != nil {
 				return nil, err
@@ -892,7 +964,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 // Requery-and-diff per log wake-up; no delta bookkeeping, so rows
 // entering and leaving the filter just work. Sized for UI tables, not
 // unbounded feeds — use where/limit.
-func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func listChanged(cli *loom.Client, obj *gql.Object, byCamel map[string]string, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -904,6 +976,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(c
 			if err != nil {
 				return nil, err
 			}
+			q.Fields = listQueryFields(p, byCamel)
 			ctx := p.Context
 			out := make(chan any)
 			go func() {
