@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	gql "github.com/graphql-go/graphql"
+
+	"github.com/go-apis/loom"
 )
 
 // TestListFieldsFromSelection runs listFields through a real graphql-go
@@ -113,5 +115,58 @@ func TestListFieldsFromSelection(t *testing.T) {
 				t.Errorf("listFields(%s) = %v, want %v", tc.query, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGraphQLListSelectsOnlyAskedFields runs a real docList resolver
+// through graphql-go and checks the loom.Query it hands its query func:
+// Fields must match listFields' own view of the selection, and a
+// meta-only selection must leave Fields nil (whole-row default).
+func TestGraphQLListSelectsOnlyAskedFields(t *testing.T) {
+	order := gql.NewObject(gql.ObjectConfig{
+		Name: "Order",
+		Fields: gql.Fields{
+			"id":        &gql.Field{Type: gql.String},
+			"namespace": &gql.Field{Type: gql.String},
+			"updatedAt": &gql.Field{Type: gql.String},
+			"status":    &gql.Field{Type: gql.String},
+			"dueDate":   &gql.Field{Type: gql.String},
+			"total":     &gql.Field{Type: gql.Int},
+		},
+	})
+
+	var captured loom.Query
+	queryFn := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+		captured = q
+		return nil, nil
+	}
+
+	query := gql.NewObject(gql.ObjectConfig{
+		Name:   "Query",
+		Fields: gql.Fields{"orders": docList(order, nil, queryFn)},
+	})
+
+	schema, err := gql.NewSchema(gql.SchemaConfig{Query: query})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(q string) loom.Query {
+		captured = loom.Query{}
+		res := gql.Do(gql.Params{Schema: schema, RequestString: q, Context: context.Background()})
+		if len(res.Errors) > 0 {
+			t.Fatalf("query %q: %v", q, res.Errors)
+		}
+		return captured
+	}
+
+	got := run(`{ orders(namespace: "ns") { id status dueDate ...F } } fragment F on Order { total }`)
+	if want := []string{"status", "due_date", "total"}; !reflect.DeepEqual(got.Fields, want) {
+		t.Errorf("Fields = %v, want %v", got.Fields, want)
+	}
+
+	got = run(`{ orders(namespace: "ns") { id namespace updatedAt } }`)
+	if got.Fields != nil {
+		t.Errorf("meta-only selection: Fields = %v, want nil", got.Fields)
 	}
 }
