@@ -932,6 +932,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 			if err != nil {
 				return nil, err
 			}
+			q.Fields = listFields(p)
 			rows, err := query(p.Context, q)
 			if err != nil {
 				return nil, err
@@ -958,6 +959,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(c
 			if err != nil {
 				return nil, err
 			}
+			q.Fields = listFields(p)
 			ctx := p.Context
 			out := make(chan any)
 			go func() {
