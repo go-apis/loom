@@ -757,6 +757,60 @@ func selectedFields(p gql.ResolveParams) []string {
 	return out
 }
 
+// metaFields are the row identity fields rowDocs fills outside Data —
+// not state, so a selection naming only these asks for nothing listFields
+// can narrow a read to.
+var metaFields = map[string]bool{
+	"id":         true,
+	"namespace":  true,
+	"updatedAt":  true,
+	"__typename": true,
+}
+
+// listFields derives the asked state fields from a list field's own
+// top-level selection — fragments resolved like selectedFields, but
+// unlike selectedFields it does not descend into a nested object's
+// selection: that field is asked for whole, so only its own name
+// (converted to the snake field loom stores) is kept. Returns nil when
+// nothing but meta fields were asked, so a caller keeps the whole-row
+// default.
+func listFields(p gql.ResolveParams) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(ss *ast.SelectionSet)
+	walk = func(ss *ast.SelectionSet) {
+		if ss == nil {
+			return
+		}
+		for _, sel := range ss.Selections {
+			switch f := sel.(type) {
+			case *ast.Field:
+				if f.Name == nil || metaFields[f.Name.Value] {
+					continue
+				}
+				snake := camelToSnake(f.Name.Value)
+				if !seen[snake] {
+					seen[snake] = true
+					out = append(out, snake)
+				}
+			case *ast.InlineFragment:
+				walk(f.SelectionSet)
+			case *ast.FragmentSpread:
+				if f.Name == nil {
+					continue
+				}
+				if frag, ok := p.Info.Fragments[f.Name.Value]; ok {
+					walk(frag.GetSelectionSet())
+				}
+			}
+		}
+	}
+	for _, fa := range p.Info.FieldASTs {
+		walk(fa.SelectionSet)
+	}
+	return out
+}
+
 func parseNsID(p gql.ResolveParams, roles []string) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
 	if ns == AllNamespaces {
