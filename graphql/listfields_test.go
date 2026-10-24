@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	gql "github.com/graphql-go/graphql"
+
+	"github.com/go-apis/loom"
 )
 
 // TestListFieldsFromSelection runs listFields through a real graphql-go
@@ -34,8 +36,12 @@ func TestListFieldsFromSelection(t *testing.T) {
 			"status":     &gql.Field{Type: gql.String},
 			"region":     &gql.Field{Type: gql.String},
 			"customer":   &gql.Field{Type: customer},
+			"invoice":    &gql.Field{Type: customer},
 		},
 	})
+	// invoice stands in for a join (or a @pii field): on the type, not
+	// stored on the row
+	stored := map[string]bool{"due_date": true, "total_cents": true, "status": true, "region": true, "customer": true}
 
 	query := gql.NewObject(gql.ObjectConfig{
 		Name: "Query",
@@ -43,7 +49,7 @@ func TestListFieldsFromSelection(t *testing.T) {
 			"items": &gql.Field{
 				Type: gql.NewList(item),
 				Resolve: func(p gql.ResolveParams) (any, error) {
-					captured = listFields(p)
+					captured = listFields(p, stored)
 					return nil, nil
 				},
 			},
@@ -100,6 +106,16 @@ func TestListFieldsFromSelection(t *testing.T) {
 			[]string{"customer", "due_date"},
 		},
 		{
+			"unstored field keeps the whole row",
+			`{ items { status invoice { name } } }`,
+			nil,
+		},
+		{
+			"unstored field in a fragment keeps the whole row",
+			`{ items { status ...f } } fragment f on Item { invoice { name } }`,
+			nil,
+		},
+		{
 			"only-meta selection returns nil",
 			`{ items { id namespace updatedAt __typename } }`,
 			nil,
@@ -113,5 +129,65 @@ func TestListFieldsFromSelection(t *testing.T) {
 				t.Errorf("listFields(%s) = %v, want %v", tc.query, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGraphQLListSelectsOnlyAskedFields runs a real docList resolver
+// through graphql-go and checks the loom.Query it hands its query func:
+// Fields must match listFields' own view of the selection, and a
+// meta-only selection must leave Fields nil (whole-row default).
+func TestGraphQLListSelectsOnlyAskedFields(t *testing.T) {
+	order := gql.NewObject(gql.ObjectConfig{
+		Name: "Order",
+		Fields: gql.Fields{
+			"id":        &gql.Field{Type: gql.String},
+			"namespace": &gql.Field{Type: gql.String},
+			"updatedAt": &gql.Field{Type: gql.String},
+			"status":    &gql.Field{Type: gql.String},
+			"dueDate":   &gql.Field{Type: gql.String},
+			"total":     &gql.Field{Type: gql.Int},
+			"tin":       &gql.Field{Type: gql.String},
+		},
+	})
+	stored := map[string]bool{"status": true, "due_date": true, "total": true}
+
+	var captured loom.Query
+	queryFn := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
+		captured = q
+		return nil, nil
+	}
+
+	query := gql.NewObject(gql.ObjectConfig{
+		Name:   "Query",
+		Fields: gql.Fields{"orders": docList(order, nil, stored, queryFn)},
+	})
+
+	schema, err := gql.NewSchema(gql.SchemaConfig{Query: query})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(q string) loom.Query {
+		captured = loom.Query{}
+		res := gql.Do(gql.Params{Schema: schema, RequestString: q, Context: context.Background()})
+		if len(res.Errors) > 0 {
+			t.Fatalf("query %q: %v", q, res.Errors)
+		}
+		return captured
+	}
+
+	got := run(`{ orders(namespace: "ns") { id status dueDate ...F } } fragment F on Order { total }`)
+	if want := []string{"status", "due_date", "total"}; !reflect.DeepEqual(got.Fields, want) {
+		t.Errorf("Fields = %v, want %v", got.Fields, want)
+	}
+
+	got = run(`{ orders(namespace: "ns") { id namespace updatedAt } }`)
+	if got.Fields != nil {
+		t.Errorf("meta-only selection: Fields = %v, want nil", got.Fields)
+	}
+
+	got = run(`{ orders(namespace: "ns") { status tin } }`)
+	if got.Fields != nil {
+		t.Errorf("unstored field: Fields = %v, want nil", got.Fields)
 	}
 }

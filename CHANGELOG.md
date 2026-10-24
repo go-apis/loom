@@ -45,6 +45,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   deleted aggregate's file is the usual case. `generate --check` names
   such a file stale. Files without the header, and stubs, are never
   touched.
+- **A list read can ask for only some fields.** `Query.Fields []string`
+  is opt-in: nil/empty keeps the whole-row read,
+  byte-identical to before. Set, it narrows `Row.Data` to the named
+  state fields (`id`/`namespace`/`updated_at` always ride the `Row`);
+  an unknown name is a build-time `loom: bad field` error, like an
+  unknown filter field. On a `@table` entity this also skips detoasting
+  any unasked column — measured at roughly 0.6% of the whole-row read's
+  shared buffers on an 8KB TOASTed column
+  ([docs/measurements/list-read-buffers.md](docs/measurements/list-read-buffers.md)).
+  A GraphQL list field (and its `{x}Changed` subscription) opts in
+  automatically, deriving `Fields` from its own selection set — no
+  schema or gateway change
+  ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
 
 ### Added
 

@@ -432,6 +432,12 @@ rows, _ := cli.QueryEntities(ctx, "GrantIndex", ...)
 The projection may be running on another instance; the checkpoint is
 polled with a short back-off.
 
+A list read that only needs some fields can ask for them: set
+`Query.Fields` to the state field names and the generated SQL selects
+only those columns, leaving a heavy, unasked column untouched (and
+undetoasted, on a `@table` entity). Leave `Fields` nil for the default
+whole-row read.
+
 ## Timers
 
 Durable scheduled commands, written in the same transaction that decided

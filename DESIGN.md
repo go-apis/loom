@@ -399,7 +399,15 @@ generated switches, folds from generated assignments.
 - **HTTP API** (`api.go` / `query.go`): the registry drives a complete
   mounted surface — command dispatch, filtered entity/record queries
   (validated field names, parameterized values, typed numeric/bool
-  comparisons), log browsing, ops stats. This surface is ops-private;
+  comparisons), log browsing, ops stats. A list query's `Query.Fields`
+  opts into reading only the named state fields: nil/empty (the default)
+  reads the whole row, byte-identical to before the option existed; an
+  unknown name is a loud error, the same as an unknown filter field. On a
+  `@table` entity this also keeps an unasked TOASTed column from ever
+  being detoasted — measured in
+  [docs/measurements/list-read-buffers.md](docs/measurements/list-read-buffers.md)
+  ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
+  This surface is ops-private;
   the deployment guards it. The GATEWAY is the public edge and carries
   the authorization model: `graphql.Access{Namespaces, All, Mutate,
   Mutations}` resolved per request by a `Config.Auth` hook (or the
@@ -461,6 +469,15 @@ watch paths pass through Streams; the ops surfaces (events log, stats,
 console, redrive) never face the internet. GraphQL numbers: schema
 `int` is int64 and emits/serves the `Long` scalar everywhere — money in
 cents must not squeeze through a 32-bit Int (decided 2026-07-17).
+
+A list field's resolver opts into `Query.Fields` on the service's
+behalf: it derives the asked state fields from its own GraphQL selection
+set (top-level scalars/enums, fragments followed, meta fields excluded)
+and passes them through — or reads the whole row when the selection names
+a field the rows do not store, such as a join or a `@pii` field — so a list query that only asks for two columns
+reads only those two columns off the service — no gateway contract
+changes, since the narrowing follows a selection the client already sent
+in full ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
 
 Input nullability follows the schema, not Go: a GraphQL input field is
 NonNull exactly when the schema marks it required, at a command's top

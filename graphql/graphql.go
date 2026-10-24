@@ -342,10 +342,11 @@ func (b *builder) service(cli *loom.Client) error {
 			aggQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 				return cli.QueryEntities(ctx, name, q)
 			}
-			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery)); err != nil {
+			stored := tableFields(td)
+			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, stored, aggQuery)); err != nil {
 				return err
 			}
-			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery)); err != nil {
+			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, stored, aggQuery)); err != nil {
 				return err
 			}
 		}
@@ -371,10 +372,11 @@ func (b *builder) service(cli *loom.Client) error {
 		recQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryRecords(ctx, recName, q)
 		}
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery)); err != nil {
+		recStored := stateFields(rec.NewState())
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recStored, recQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery)); err != nil {
+		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recStored, recQuery)); err != nil {
 			return err
 		}
 		for _, def := range rec.Commands {
@@ -411,10 +413,16 @@ func (b *builder) service(cli *loom.Client) error {
 		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryEntities(ctx, entity, q)
 		}
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery)); err != nil {
+		entityStored := stateFields(p.NewState())
+		for _, td := range reg.Tables {
+			if td.Entity == entity {
+				entityStored = tableFields(td)
+			}
+		}
+		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityStored, entityQuery)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery)); err != nil {
+		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityStored, entityQuery)); err != nil {
 			return err
 		}
 		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
@@ -772,11 +780,13 @@ var metaFields = map[string]bool{
 // unlike selectedFields it does not descend into a nested object's
 // selection: that field is asked for whole, so only its own name
 // (converted to the snake field loom stores) is kept. Returns nil when
-// nothing but meta fields were asked, so a caller keeps the whole-row
-// default.
-func listFields(p gql.ResolveParams) []string {
+// nothing but meta fields were asked, or when any asked field is not in
+// stored (a join, which also needs its Via field from the row, or a
+// @pii field with no column), so a caller keeps the whole-row default.
+func listFields(p gql.ResolveParams, stored map[string]bool) []string {
 	var out []string
 	seen := map[string]bool{}
+	whole := false
 	var walk func(ss *ast.SelectionSet)
 	walk = func(ss *ast.SelectionSet) {
 		if ss == nil {
@@ -789,6 +799,10 @@ func listFields(p gql.ResolveParams) []string {
 					continue
 				}
 				snake := camelToSnake(f.Name.Value)
+				if !stored[snake] {
+					whole = true
+					continue
+				}
 				if !seen[snake] {
 					seen[snake] = true
 					out = append(out, snake)
@@ -807,6 +821,30 @@ func listFields(p gql.ResolveParams) []string {
 	}
 	for _, fa := range p.Info.FieldASTs {
 		walk(fa.SelectionSet)
+	}
+	if whole {
+		return nil
+	}
+	return out
+}
+
+// tableFields is the set listFields may narrow a @table list read to:
+// the mirror's state columns.
+func tableFields(td *loom.TableDef) map[string]bool {
+	out := map[string]bool{}
+	for _, col := range td.Columns {
+		out[col.Name] = true
+	}
+	return out
+}
+
+// stateFields is the set listFields may narrow a jsonb-document list read
+// to: the state's own fields, as objectFor names them.
+func stateFields(sample any) map[string]bool {
+	out := map[string]bool{}
+	fields, _ := structFields(reflect.TypeOf(sample))
+	for _, f := range fields {
+		out[f.snake] = true
 	}
 	return out
 }
@@ -923,7 +961,7 @@ func rowDocs(rows []loom.Row) []map[string]any {
 	return out
 }
 
-func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func docList(obj *gql.Object, roles []string, stored map[string]bool, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -932,6 +970,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 			if err != nil {
 				return nil, err
 			}
+			q.Fields = listFields(p, stored)
 			rows, err := query(p.Context, q)
 			if err != nil {
 				return nil, err
@@ -946,7 +985,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 // Requery-and-diff per log wake-up; no delta bookkeeping, so rows
 // entering and leaving the filter just work. Sized for UI tables, not
 // unbounded feeds — use where/limit.
-func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func listChanged(cli *loom.Client, obj *gql.Object, roles []string, stored map[string]bool, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -958,6 +997,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(c
 			if err != nil {
 				return nil, err
 			}
+			q.Fields = listFields(p, stored)
 			ctx := p.Context
 			out := make(chan any)
 			go func() {
