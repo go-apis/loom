@@ -131,7 +131,10 @@ process plain {
 		t.Fatal(err)
 	}
 	tidy := exec.Command("go", "mod", "tidy")
-	tidy.Dir, tidy.Env = dir, append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
+	// tidy walks the whole module graph, including go.mod files of old
+	// versions a build never fetches; on a cold module cache it must be
+	// allowed to download them, so the environment's GOPROXY stands
+	tidy.Dir, tidy.Env = dir, append(os.Environ(), "GOFLAGS=-mod=mod")
 	if out, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, out)
 	}
