@@ -214,45 +214,67 @@ func sortedTables(tables map[string]*tableSQL) []*tableSQL {
 // queryTable is the typed-table twin of queryDocs: same Query in, same Row
 // out, but filters and ORDER BY compile to real columns — no jsonb casts.
 func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, error) {
+	query, args, err := tableListSQL(ts.def, c.reg.Service, q)
+	if err != nil {
+		return nil, err
+	}
+	return c.scanRows(ctx, query, args)
+}
+
+// tableListSQL builds the @table list read. Pure, so the SQL shape is
+// unit-testable without Postgres. The whole-row doc is to_jsonb(t), which
+// detoasts every column; Query.Fields narrows it to jsonb_build_object over
+// only the named columns.
+func tableListSQL(def *TableDef, service string, q Query) (string, []any, error) {
 	if q.Namespace == "" && !q.AllNamespaces {
-		return nil, fmt.Errorf("loom: query needs a namespace")
+		return "", nil, fmt.Errorf("loom: query needs a namespace")
 	}
-	if q.Limit <= 0 {
-		q.Limit = 100
-	}
-	if q.Limit > 500 {
-		q.Limit = 500
-	}
+	q.Limit = clampLimit(q.Limit)
 	colType := map[string]string{}
-	for _, col := range ts.def.Columns {
+	for _, col := range def.Columns {
 		colType[col.Name] = col.Type
+	}
+
+	doc := "to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at'"
+	if len(q.Fields) > 0 {
+		var pairs []string
+		for _, f := range q.Fields {
+			if metaField(f) {
+				continue
+			}
+			if _, ok := colType[f]; !ok {
+				return "", nil, fmt.Errorf("loom: bad field %q", f)
+			}
+			pairs = append(pairs, fmt.Sprintf("'%s', %s", f, quoteIdent(f)))
+		}
+		doc = buildObjectSQL(pairs)
 	}
 
 	var b strings.Builder
 	var args []any
 	if q.AllNamespaces {
-		args = []any{c.reg.Service}
+		args = []any{service}
 		fmt.Fprintf(&b,
-			`SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM %s t WHERE service=$1`,
-			ts.def.Name)
+			`SELECT id, namespace, updated_at, %s FROM %s t WHERE service=$1`,
+			doc, def.Name)
 	} else {
-		args = []any{c.reg.Service, q.Namespace}
+		args = []any{service, q.Namespace}
 		fmt.Fprintf(&b,
-			`SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM %s t WHERE service=$1 AND namespace=$2`,
-			ts.def.Name)
+			`SELECT id, namespace, updated_at, %s FROM %s t WHERE service=$1 AND namespace=$2`,
+			doc, def.Name)
 	}
 
 	for _, f := range q.Filters {
 		typ, ok := colType[f.Field]
 		if !ok {
-			return nil, fmt.Errorf("loom: bad filter field %q", f.Field)
+			return "", nil, fmt.Errorf("loom: bad filter field %q", f.Field)
 		}
 		if typ == "jsonb" {
-			return nil, fmt.Errorf("loom: field %q is not a scalar column and cannot be filtered", f.Field)
+			return "", nil, fmt.Errorf("loom: field %q is not a scalar column and cannot be filtered", f.Field)
 		}
 		if f.Op == "like" {
 			if typ != "text" {
-				return nil, fmt.Errorf("loom: like filter needs a string field, %q is %s", f.Field, typ)
+				return "", nil, fmt.Errorf("loom: like filter needs a string field, %q is %s", f.Field, typ)
 			}
 			args = append(args, "%"+f.Value+"%")
 			fmt.Fprintf(&b, " AND %s ILIKE $%d", quoteIdent(f.Field), len(args))
@@ -262,7 +284,7 @@ func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, 
 			"": "=", "eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<=",
 		}[f.Op]
 		if !ok {
-			return nil, fmt.Errorf("loom: bad filter op %q", f.Op)
+			return "", nil, fmt.Errorf("loom: bad filter op %q", f.Op)
 		}
 		// the column type drives the comparison: the text value is bound as
 		// an untyped parameter and Postgres parses it as the column's type
@@ -276,7 +298,7 @@ func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, 
 		desc = strings.HasPrefix(q.OrderBy, "-")
 		if field != "updated_at" {
 			if _, ok := colType[field]; !ok {
-				return nil, fmt.Errorf("loom: bad order field %q", field)
+				return "", nil, fmt.Errorf("loom: bad order field %q", field)
 			}
 			orderCol = quoteIdent(field)
 		}
@@ -288,20 +310,5 @@ func (c *Client) queryTable(ctx context.Context, ts *tableSQL, q Query) ([]Row, 
 		dir = "DESC NULLS LAST"
 	}
 	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
-
-	rows, err := c.db.Query(ctx, b.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []Row
-	for rows.Next() {
-		var r Row
-		if err := rows.Scan(&r.ID, &r.Namespace, &r.UpdatedAt, &r.Data); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return b.String(), args, nil
 }

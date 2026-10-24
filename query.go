@@ -30,6 +30,12 @@ type Query struct {
 	OrderBy string
 	Limit   int
 	Offset  int
+	// Fields, when set, narrows each Row.Data to the named state fields —
+	// the list read selects only those, so unasked columns are never read.
+	// Nil or empty reads the whole row. The meta fields (id, namespace,
+	// updated_at) ride every Row regardless and are ignored here. Filters
+	// and OrderBy may name fields that Fields leaves out.
+	Fields []string
 }
 
 // Row is one query hit: the entity/record id plus its state document.
@@ -75,30 +81,50 @@ func (c *Client) QueryRecords(ctx context.Context, record string, q Query) ([]Ro
 }
 
 func (c *Client) queryDocs(ctx context.Context, table, typeCol, typeName string, q Query) ([]Row, error) {
+	query, args, err := docsListSQL(table, typeCol, typeName, c.reg.Service, q)
+	if err != nil {
+		return nil, err
+	}
+	return c.scanRows(ctx, query, args)
+}
+
+// docsListSQL builds the jsonb-document list read. Pure, so the SQL shape
+// is unit-testable without Postgres.
+func docsListSQL(table, typeCol, typeName, service string, q Query) (string, []any, error) {
 	if q.Namespace == "" && !q.AllNamespaces {
-		return nil, fmt.Errorf("loom: query needs a namespace")
+		return "", nil, fmt.Errorf("loom: query needs a namespace")
 	}
-	if q.Limit <= 0 {
-		q.Limit = 100
-	}
-	if q.Limit > 500 {
-		q.Limit = 500
+	q.Limit = clampLimit(q.Limit)
+
+	doc := "data"
+	if len(q.Fields) > 0 {
+		var pairs []string
+		for _, f := range q.Fields {
+			if metaField(f) {
+				continue
+			}
+			if !fieldRe.MatchString(f) {
+				return "", nil, fmt.Errorf("loom: bad field %q", f)
+			}
+			pairs = append(pairs, fmt.Sprintf("'%s', data->'%s'", f, f))
+		}
+		doc = buildObjectSQL(pairs)
 	}
 
 	var b strings.Builder
 	var args []any
 	if q.AllNamespaces {
-		args = []any{c.reg.Service, typeName}
-		fmt.Fprintf(&b, `SELECT id, namespace, updated_at, data FROM %s WHERE service=$1 AND %s=$2`, table, typeCol)
+		args = []any{service, typeName}
+		fmt.Fprintf(&b, `SELECT id, namespace, updated_at, %s FROM %s WHERE service=$1 AND %s=$2`, doc, table, typeCol)
 	} else {
-		args = []any{c.reg.Service, q.Namespace, typeName}
-		fmt.Fprintf(&b, `SELECT id, namespace, updated_at, data FROM %s WHERE service=$1 AND namespace=$2 AND %s=$3`, table, typeCol)
+		args = []any{service, q.Namespace, typeName}
+		fmt.Fprintf(&b, `SELECT id, namespace, updated_at, %s FROM %s WHERE service=$1 AND namespace=$2 AND %s=$3`, doc, table, typeCol)
 	}
 
 	for _, f := range q.Filters {
 		frag, arg, err := filterSQL(f)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		args = append(args, arg)
 		fmt.Fprintf(&b, " AND %s$%d)", frag, len(args))
@@ -112,7 +138,7 @@ func (c *Client) queryDocs(ctx context.Context, table, typeCol, typeName string,
 			orderCol = "updated_at"
 		} else {
 			if !fieldRe.MatchString(field) {
-				return nil, fmt.Errorf("loom: bad order field %q", field)
+				return "", nil, fmt.Errorf("loom: bad order field %q", field)
 			}
 			orderCol = fmt.Sprintf("data->>'%s'", field)
 		}
@@ -126,8 +152,45 @@ func (c *Client) queryDocs(ctx context.Context, table, typeCol, typeName string,
 		dir = "DESC NULLS LAST"
 	}
 	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
+	return b.String(), args, nil
+}
 
-	rows, err := c.db.Query(ctx, b.String(), args...)
+func clampLimit(n int) int {
+	if n <= 0 {
+		return 100
+	}
+	if n > 500 {
+		return 500
+	}
+	return n
+}
+
+// metaField reports a Row meta column, which every list read returns
+// outside Data; naming one in Query.Fields is a no-op.
+func metaField(f string) bool {
+	return f == "id" || f == "namespace" || f == "updated_at"
+}
+
+// buildObjectSQL renders jsonb_build_object over "'key', value" pairs,
+// chunked and joined with || because a Postgres function takes at most 100
+// arguments (50 pairs).
+func buildObjectSQL(pairs []string) string {
+	if len(pairs) == 0 {
+		return "'{}'::jsonb"
+	}
+	var parts []string
+	for len(pairs) > 0 {
+		n := min(len(pairs), 50)
+		parts = append(parts, "jsonb_build_object("+strings.Join(pairs[:n], ", ")+")")
+		pairs = pairs[n:]
+	}
+	return strings.Join(parts, " || ")
+}
+
+// scanRows runs a list read and scans its (id, namespace, updated_at, doc)
+// rows.
+func (c *Client) scanRows(ctx context.Context, query string, args []any) ([]Row, error) {
+	rows, err := c.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
