@@ -153,6 +153,16 @@ loomtest.Aggregate(t, reg, "Invoice").
 `ThenNothing` asserts a converging no-op, `ThenError` a guard. Effects,
 projections, timers and batches are end-to-end territory.
 
+- **A test that shells out to `go mod tidy` must not set `GOPROXY=off`.**
+  `tidy` reads the `go.mod` of every version in the module graph, not
+  just the ones a build already resolved, so it needs versions a prior
+  `go build`/`go test` never fetched and never cached. `GOPROXY=off`
+  fails on a fresh module cache with "module lookup disabled by
+  GOPROXY=off", costing a session real time chasing what looks like a
+  broken test. Let the subprocess inherit the environment's `GOPROXY`,
+  or warm the cache first with `go mod download all` in the module it
+  will tidy.
+
 ## When the generated code does not compile
 
 - `X redeclared` in `registry_gen.go`: a reactor collides with an
