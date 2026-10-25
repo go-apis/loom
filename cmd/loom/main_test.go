@@ -527,3 +527,55 @@ func TestInitWritesTheSkillOnce(t *testing.T) {
 		t.Fatalf("init overwrote the repository's skill: %q", b)
 	}
 }
+
+// a @table entity's declared indexes reach loomgen/registry_gen.go (its
+// TableDef) and loomgen/tables_gen.sql; --check must catch a schema/registry
+// mismatch that is only an index, naming both stale files and writing
+// nothing.
+const indexCheckSchema = `service orders
+
+entity WorkItem @table {
+  org_id: uuid
+  status: string
+}
+`
+
+func TestGenerateCheckFailsOnIndexMismatch(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, src string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/orders\n\ngo 1.22\n")
+	write("loom.yml", "schema: schema\n")
+	write("schema/orders.loom", indexCheckSchema)
+	if err := runGenerate([]string{"--dir", dir}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	// declare an index without regenerating: the registry's TableDef and
+	// tables_gen.sql both go stale
+	withIndex := strings.Replace(indexCheckSchema, "  status: string\n}", "  status: string\n  index (status)\n}", 1)
+	write("schema/orders.loom", withIndex)
+
+	before := snapshot(t, dir)
+	var out bytes.Buffer
+	err := runGenerate([]string{"--dir", dir, "--check"}, &out)
+	if err == nil {
+		t.Fatal("want --check to fail on an index-only mismatch")
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	sort.Strings(lines)
+	want := []string{"stale   loomgen/registry_gen.go", "stale   loomgen/tables_gen.sql"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("got %v, want %v", lines, want)
+	}
+	if !reflect.DeepEqual(before, snapshot(t, dir)) {
+		t.Fatal("--check wrote files")
+	}
+}

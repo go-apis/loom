@@ -198,6 +198,9 @@ type TableDef struct {
 	// Values extracts the column values from the entity state, aligned with
 	// Columns. JSON-typed columns are pre-marshaled via JSONValue.
 	Values func(state EntityState) []any
+	// Indexes lists the secondary indexes declared on this table, in
+	// declared order. Also written to loomgen/tables_gen.sql for review.
+	Indexes []TableIndex
 }
 
 type TableColumn struct {
@@ -206,6 +209,15 @@ type TableColumn struct {
 	// Type is the Postgres type as written in the DDL (bigint, text, uuid,
 	// timestamptz, double precision, boolean, jsonb).
 	Type string
+}
+
+// TableIndex is a secondary index declared on a @table entity (SDL `index`).
+type TableIndex struct {
+	Name string
+	// DDL is the full CREATE INDEX CONCURRENTLY IF NOT EXISTS statement.
+	// CONCURRENTLY cannot run inside a transaction, so Migrate issues it on
+	// its own connection after the migration commits.
+	DDL string
 }
 
 // JSONValue marshals a jsonb-column value explicitly, so strings and byte
