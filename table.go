@@ -312,3 +312,10 @@ func tableListSQL(def *TableDef, service string, q Query) (string, []any, error)
 	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
 	return b.String(), args, nil
 }
+
+// ListSQL exposes tableListSQL to callers outside this package — namely
+// cmd/explainlist, which measures the real @table list-read SQL rather
+// than a hand-written stand-in.
+func ListSQL(def *TableDef, service string, q Query) (string, []any, error) {
+	return tableListSQL(def, service, q)
+}
