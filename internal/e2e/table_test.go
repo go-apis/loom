@@ -101,7 +101,7 @@ func TestTypedEntityTable(t *testing.T) {
 		t.Fatalf("Entity decode wrong: %d", got)
 	}
 
-	// rebuild truncates the table and refolds the log into it
+	// rebuild empties the table and refolds the log into it
 	if err := cli.Rebuild(ctx, "orderSummary"); err != nil {
 		t.Fatal(err)
 	}

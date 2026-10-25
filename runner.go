@@ -506,7 +506,11 @@ func (c *Client) haltProjection(ctx context.Context, p *ProjectionDef, from int6
 }
 
 // Rebuild resets a projection: checkpoint to zero and its read model
-// truncated. The runner refolds the full log on its next pass.
+// emptied. The runner refolds the full log on its next pass.
+// The read model is emptied with DELETE … WHERE service, never truncated or
+// dropped: the table and its indexes — including a @table's declared ones
+// (TableDef.Indexes), built CONCURRENTLY by Migrate — survive the rebuild,
+// and other services sharing the table keep their rows.
 func (c *Client) Rebuild(ctx context.Context, projection string) error {
 	var def *ProjectionDef
 	for _, p := range c.reg.Projections {

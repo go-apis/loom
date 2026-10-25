@@ -180,13 +180,18 @@ CREATE TABLE IF NOT EXISTS loom_dead_letters (
 `
 
 // Migrate applies the storage schema, including any @table entity tables
-// with their additive column diff. Idempotent; meant for a deploy-time
+// with their additive column diff and their declared indexes. Idempotent; meant for a deploy-time
 // migration endpoint or command, never for application boot.
 func (c *Client) Migrate(ctx context.Context) error {
 	if _, err := c.db.Exec(ctx, ddl); err != nil {
 		return err
 	}
 	if err := c.migrateTables(ctx); err != nil {
+		return err
+	}
+	// CREATE INDEX CONCURRENTLY refuses a transaction: declared @table
+	// indexes go after the table DDL, each on its own connection
+	if err := c.migrateIndexes(ctx); err != nil {
 		return err
 	}
 	if err := c.migrateSeries(ctx); err != nil {

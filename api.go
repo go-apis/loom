@@ -44,7 +44,7 @@ import (
 //	POST /projections/{name}/rebuild    refold one read model from the event log
 //	POST /runners/{name}/skip           park a stalled projection's failing event to dead letters and advance past it
 //	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?) — the junk lever, irreversible
-//	POST /reset                         factory-reset: truncate every loom_* table (body: {"confirm": "<service>"}) — irreversible
+//	POST /reset                         factory-reset: empty every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
 //	POST /uploads/{session}/parts?n=    s3-multipart dialect: presigned PUT URL for part n
 //	POST /uploads/{session}/complete    s3-multipart dialect: assemble parts (body: {parts:[{number,etag}]}) — verified finalize
@@ -654,7 +654,7 @@ func (c *Client) apiDeleteStreams(w http.ResponseWriter, r *http.Request) {
 
 // apiReset is the console's danger zone: the body must name the service
 // verbatim (the type-to-arm flow), so a stray request or a replay
-// without the phrase refuses before anything is touched. The truncation
+// without the phrase refuses before anything is touched. The wipe
 // is logged with the caller's X-Actor before it runs — the last line
 // this data ever produces.
 func (c *Client) apiReset(w http.ResponseWriter, r *http.Request) {
@@ -665,7 +665,7 @@ func (c *Client) apiReset(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, fmt.Sprintf("confirm must be the service name %q", c.reg.Service))
 		return
 	}
-	c.log.ErrorContext(r.Context(), "RESET: truncating the event store", "actor", r.Header.Get("X-Actor"))
+	c.log.ErrorContext(r.Context(), "RESET: emptying the event store", "actor", r.Header.Get("X-Actor"))
 	tables, err := c.Reset(r.Context())
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())

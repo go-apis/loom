@@ -3,18 +3,19 @@ package loom
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
-// Reset factory-resets the store: TRUNCATE every loom_* table in the
-// current schema — events, snapshots, entities, records, checkpoints,
+// Reset factory-resets the store: DELETE every row of every loom_* table
+// in the current schema — events, snapshots, entities, records, checkpoints,
 // dedup, outbox, timers, batches, effects, dead letters, and the
 // per-stream data keys. Generated @table mirrors (loom_t_*) ride the
 // same sweep; a hand-named TableDef gets a service-scoped DELETE. All
 // one transaction, then this instance's unwrapped-key cache drops. The
-// returned list names what was truncated.
-// Tables are emptied, never dropped: the schema survives and no
-// re-migration is needed.
+// returned list names what was emptied.
+// Tables are emptied with DELETE, never truncated or dropped: the schema
+// and every index survive — loom's own and a @table's declared ones
+// (TableDef.Indexes, built CONCURRENTLY by Migrate and slow to rebuild on
+// a large table) — and no re-migration is needed.
 //
 // Scope: the WHOLE schema, every service sharing it — the log is one
 // table, so there is no per-service reset. Sequences are NOT restarted:
@@ -22,7 +23,7 @@ import (
 // seqs mean post-reset events are still seen without a restart.
 //
 // Other instances of a scaled service should still be restarted after a
-// reset: their unwrapped-key caches can hold a truncated stream's key,
+// reset: their unwrapped-key caches can hold a deleted stream's key,
 // and a re-created stream with the same id mints a fresh one.
 func (c *Client) Reset(ctx context.Context) ([]string, error) {
 	rows, err := c.db.Query(ctx,
@@ -51,17 +52,21 @@ func (c *Client) Reset(ctx context.Context) ([]string, error) {
 	defer tx.Rollback(ctx)
 	// a projection step in flight on this or another instance has read
 	// its batch and is folding it: wait for every projection's lock so
-	// no step lands pre-reset rows after the truncate (each step's folds
+	// no step lands pre-reset rows after the delete (each step's folds
 	// and checkpoint are its own transaction, gated by this lock)
 	for _, p := range c.reg.Projections {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('loom_' || $1 || '_' || $2))`, c.reg.Service, "projection:"+p.Name); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := tx.Exec(ctx, `TRUNCATE `+strings.Join(tables, ", ")+` CASCADE`); err != nil {
-		return nil, err
+	// no loom table references another, so the order is free; a
+	// partitioned series parent's DELETE also empties its partitions
+	for _, t := range tables {
+		if _, err := tx.Exec(ctx, `DELETE FROM `+quoteIdent(t)); err != nil {
+			return nil, err
+		}
 	}
-	// generated @table mirrors are loom_t_* and already truncated above;
+	// generated @table mirrors are loom_t_* and already emptied above;
 	// a hand-named TableDef escapes the prefix, so sweep it here —
 	// service-scoped, since only this registry knows it belongs to loom
 	seen := map[string]bool{}
