@@ -118,9 +118,31 @@ type Entity struct {
 	// `join`); the runtime ignores them — only the GraphQL gateway wires
 	// them up, erroring at compose time if the target isn't mounted.
 	Joins []*Join `yaml:"joins,omitempty" json:"joins,omitempty"`
+	// Indexes are secondary indexes on a @table entity's columns (declared
+	// with `index`): state fields or the meta columns service, namespace,
+	// id, updated_at. Only meaningful alongside @table — the doc store has
+	// no real columns to index.
+	Indexes []*Index `yaml:"indexes,omitempty" json:"indexes,omitempty"`
 	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the entity's
 	// generated get, list, and both Changed subscriptions.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+}
+
+// Index is a secondary index on a @table entity, declared in the SDL as
+// `index (col [desc] [nulls last|first], ...)`. Name is filled in by
+// Schema.Sort, deterministically, from the entity and its columns, when
+// the SDL gives none.
+type Index struct {
+	Name    string        `yaml:"name" json:"name"`
+	Columns []IndexColumn `yaml:"columns" json:"columns"`
+}
+
+// IndexColumn is one column of an Index, in declared order. Nulls is
+// "first", "last", or "" (the engine default).
+type IndexColumn struct {
+	Name  string `yaml:"name" json:"name"`
+	Desc  bool   `yaml:"desc,omitempty" json:"desc,omitempty"`
+	Nulls string `yaml:"nulls,omitempty" json:"nulls,omitempty"`
 }
 
 // Series is the third persistence shape, beside aggregate (decisions,
@@ -475,6 +497,15 @@ func (s *Schema) Sort() {
 		sort.Slice(r.Uploads, func(i, j int) bool { return r.Uploads[i].Name < r.Uploads[j].Name })
 	}
 	sort.Slice(s.Entities, func(i, j int) bool { return s.Entities[i].Name < s.Entities[j].Name })
+	for _, e := range s.Entities {
+		// column order within an index is meaningful (it is the SQL column
+		// order), so only a missing name is filled in, never the columns
+		for _, idx := range e.Indexes {
+			if idx.Name == "" {
+				idx.Name = defaultIndexName(e.Name, idx.Columns)
+			}
+		}
+	}
 	// a series' dim/key order is meaningful (it is the primary-key column
 	// order), so only the declarations themselves sort
 	sort.Slice(s.Series, func(i, j int) bool { return s.Series[i].Name < s.Series[j].Name })
@@ -741,6 +772,39 @@ func (s *Schema) Validate() error {
 		}
 		if pii := e.State.PIIFields(); len(pii) > 0 {
 			fail("entity %s: @table and @pii are incompatible — typed columns cannot hold sealed values; keep this entity in the doc store (filters cannot match sealed fields anyway)", e.Name)
+		}
+	}
+
+	// indexes: only meaningful on a @table entity (the doc store has no
+	// real columns to index), every column must be a state field or a meta
+	// column, and no two indexes may name the same columns the same way.
+	for _, e := range s.Entities {
+		if len(e.Indexes) == 0 {
+			continue
+		}
+		if !e.Table {
+			fail("entity %s: index declared without @table — only a @table entity has real columns to index", e.Name)
+			continue
+		}
+		props := payloadProps(e.State)
+		for _, idx := range e.Indexes {
+			for _, c := range idx.Columns {
+				switch c.Name {
+				case "service", "namespace", "id", "updated_at":
+					continue // meta columns, always present on a @table entity
+				default:
+					if props[c.Name] == nil {
+						fail("entity %s: index names unknown column %s", e.Name, c.Name)
+					}
+				}
+			}
+		}
+		for i, idx := range e.Indexes {
+			for _, other := range e.Indexes[i+1:] {
+				if indexColumnsEqual(idx.Columns, other.Columns) {
+					fail("entity %s: index %s declared twice", e.Name, idx.Name)
+				}
+			}
 		}
 	}
 
@@ -1068,6 +1132,51 @@ func scalarColumn(s *Schema, pl *Payload) bool {
 		return true
 	}
 	return false
+}
+
+// defaultIndexName derives a deterministic index name from the entity and
+// its columns, for an index whose SDL left the name unstated:
+// idx_<entity, snake_case>_<col>_<col>...
+func defaultIndexName(entity string, cols []IndexColumn) string {
+	var b strings.Builder
+	b.WriteString("idx_")
+	b.WriteString(snakeCase(entity))
+	for _, c := range cols {
+		b.WriteByte('_')
+		b.WriteString(c.Name)
+	}
+	return b.String()
+}
+
+// snakeCase converts a CamelCase schema name to snake_case.
+func snakeCase(name string) string {
+	var b strings.Builder
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 && !(name[i-1] >= 'A' && name[i-1] <= 'Z') {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r + ('a' - 'A'))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// indexColumnsEqual reports whether two indexes name the same columns, in
+// the same order, with the same direction and null placement — the
+// "declared twice" case Validate refuses.
+func indexColumnsEqual(a, b []IndexColumn) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func payloadProps(pl *Payload) map[string]*Payload {

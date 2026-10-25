@@ -703,3 +703,53 @@ process p @snapshot(5) { on E -> C }
 		}
 	}
 }
+
+func TestParseIndexLines(t *testing.T) {
+	src := `
+service s
+
+entity WorkItem @table {
+  org_id: uuid
+  status: string
+  index (service, namespace, org_id, updated_at desc nulls last)
+  index (status)
+}
+`
+	s, err := sdl.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ent := s.FindEntity("WorkItem")
+	if ent == nil || len(ent.Indexes) != 2 {
+		t.Fatalf("index misparsed: %+v", ent)
+	}
+	cols := ent.Indexes[0].Columns
+	if len(cols) != 4 ||
+		cols[0].Name != "service" || cols[0].Desc || cols[0].Nulls != "" ||
+		cols[1].Name != "namespace" || cols[1].Desc || cols[1].Nulls != "" ||
+		cols[2].Name != "org_id" || cols[2].Desc || cols[2].Nulls != "" ||
+		cols[3].Name != "updated_at" || !cols[3].Desc || cols[3].Nulls != "last" {
+		t.Fatalf("index columns misparsed: %+v", cols)
+	}
+	if name := ent.Indexes[0].Name; name != "idx_work_item_service_namespace_org_id_updated_at" {
+		t.Fatalf("index name misparsed: %q", name)
+	}
+	if other := ent.Indexes[1]; len(other.Columns) != 1 || other.Columns[0].Name != "status" || other.Name != "idx_work_item_status" {
+		t.Fatalf("second index misparsed: %+v", other)
+	}
+}
+
+func TestIndexUnknownColumnRefused(t *testing.T) {
+	src := `
+service s
+
+entity WorkItem @table {
+  status: string
+  index (missing_col)
+}
+`
+	_, err := sdl.Parse(src)
+	if err == nil || !strings.Contains(err.Error(), "missing_col") {
+		t.Fatalf("want error naming missing_col, got %v", err)
+	}
+}
