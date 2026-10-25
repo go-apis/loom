@@ -84,6 +84,8 @@ entity OrderSummary @table {
   currency: string
   reason: string
   items: [OrderItem]
+  // the customer's newest-first order list (TestMigrateCreatesDeclaredIndexes)
+  index (service, namespace, customer_id, updated_at desc nulls last)
 }
 
 projection orderSummary -> OrderSummary {

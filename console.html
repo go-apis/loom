@@ -199,7 +199,7 @@ footer { color:var(--muted); font-size:12px; padding:20px; text-align:center; }
         <label><input type="checkbox" id="delRebuild" checked> rebuild projections</label>
         <button id="delBtn" class="act reset">delete streams</button>
       </div>
-      <p>Reset truncates every loom table in this schema — the event log, projections, timers, effects,
+      <p>Reset empties every loom table in this schema — the event log, projections, timers, effects,
         and per-stream encryption keys. Every service sharing the schema, no undo. Restart other
         instances afterwards: their cached stream keys must not outlive the reset.</p>
       <div class="filters">
@@ -662,7 +662,7 @@ $("resetBtn").onclick = async () => {
   try {
     const out = await post("reset", {confirm: svc});
     $("resetArm").value = ""; $("resetBtn").disabled = true;
-    alert("reset: " + (out.tables || []).length + " tables truncated. Restart other service instances now.");
+    alert("reset: " + (out.tables || []).length + " tables emptied. Restart other service instances now.");
     refresh();
   } catch (e) { alert("reset failed: " + e.message); }
 };

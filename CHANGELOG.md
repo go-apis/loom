@@ -14,6 +14,24 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A `@table` projection declares its indexes.** Inside
+  `entity X @table { ... }`, `index (col [desc] [nulls first|last], ...)`
+  declares a secondary index over state fields and the meta columns
+  (`service`, `namespace`, `id`, `updated_at`). The name defaults to
+  `idx_<entity>_<columns>`. An unknown column, an index on an entity
+  without `@table` and a duplicate column list are validation errors.
+  `loom generate` emits the indexes as `TableDef.Indexes`
+  (`loom.TableIndex{Name, DDL}`) and into `loomgen/tables_gen.sql`.
+  `generate --check` reports an index-only mismatch. `Migrate` builds each
+  index with `CREATE INDEX CONCURRENTLY` on its own connection, outside
+  any transaction. It drops and retries an invalid index left by a failed
+  build (up to 3 attempts, then an error naming the index), and running it
+  twice is a no-op. On runsheet production, an index on
+  `(service, namespace, org_id, updated_at DESC NULLS LAST)` took page reads
+  of `loom_t_platform_work_item_index` from 79,390 to 1,282 buffers per call
+  ([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md)).
+  **Migration:** regenerate `loomgen/`.
+
 - **A list read can ask for only the fields it needs.** `Query.Fields
   []string` is opt-in on `QueryEntities`/`QueryRecords`; nil or empty
   keeps the existing whole-row read, byte-identical. Named, a `@table`
@@ -26,6 +44,11 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
 
 ### Changed
+
+- **`Reset` empties tables with `DELETE` instead of `TRUNCATE`**, as
+  `Rebuild` already did. Indexes survive either way, and `Reset` no longer
+  takes an `ACCESS EXCLUSIVE` lock. On a very large store it is slower and
+  leaves dead tuples for autovacuum.
 
 - **`loom generate` writes one file per aggregate and record, and adding
   one changes no existing generated file.** Each aggregate and record has

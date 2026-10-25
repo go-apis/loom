@@ -37,10 +37,13 @@ on          := "on" eventRef ("->" identList)?
 eventRef    := IDENT | IDENT "." IDENT          // qualified = foreign
 type        := "type" IDENT fields
 enum        := "enum" IDENT "+="? "{" IDENT+ "}"     // += extends an enum declared once elsewhere
-entity      := "entity" IDENT "@table"? fields
+entity      := "entity" IDENT "@table"? "{" (field | index)* "}"   // index needs @table
+index       := "index" "(" indexCol ("," indexCol)* ")"
+indexCol    := IDENT "desc"? ("nulls" ("first" | "last"))?
 series      := "series" IDENT "@time" "(" IDENT ")" "@dim" "(" identList ")"
                ("@key" "(" identList ")")? fields
-fields      := "{" (IDENT ":" ftype "!"? "@pii"?)* "}"
+fields      := "{" field* "}"
+field       := IDENT ":" ftype "!"? "@pii"?
 ftype       := builtin ("(" IDENT ")")? | IDENT | "[" ftype "]"     ("?" = nullable)
 builtin     := string int float bool uuid timestamp bytes any map file
 directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
@@ -119,6 +122,20 @@ Rules enforced at parse/validate time:
   `on`), or `upcast` it: all four are validation errors. Deleting the
   declaration instead is what leaves the log holding a type nothing can
   name, which `Migrate` now refuses (see Runtime)
+- `index (col [desc] [nulls first|last], ...)` inside an `entity X @table`
+  block declares a secondary index on its typed table. Columns are the
+  entity's state fields or the meta columns `service`, `namespace`, `id`,
+  `updated_at`, in the order written. The SDL gives no name: it defaults
+  deterministically to `idx_` + snake_case(entity) + `_` + each column
+  joined by `_` (WorkItem's `index (service, namespace, org_id, updated_at
+  desc nulls last)` is `idx_work_item_service_namespace_org_id_updated_at`).
+  It lands on `schema.Entity.Indexes` (`schema.Index{Name, Columns
+  []IndexColumn{Name, Desc, Nulls}}`). Validation refuses an index on an
+  entity without `@table` (and so on an aggregate mirror), a column the
+  entity does not have (naming the entity and the column), and two indexes
+  with identical column lists. `index` is a keyword only when `(` follows,
+  so a field named `index` still parses
+  ([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md))
 
 ## Generated code
 
@@ -290,6 +307,26 @@ generated switches, folds from generated assignments.
   drop table → `Migrate` → `Rebuild`; a storage swap is exactly the same
   move — a perf change, not a semantic one). `@table` + `@pii` is a
   validation error.
+- **Declared indexes**: a `@table` entity's SDL `index` lines generate
+  `TableDef.Indexes` (`[]loom.TableIndex{Name, DDL}`), each DDL
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS <name> ON <table> ("col" [DESC]
+  [NULLS FIRST|LAST], ...);`, also written to `loomgen/tables_gen.sql`
+  right after the table's CREATE TABLE. `Migrate` creates them after the
+  table DDL and column diff (`migrateIndexes`), in table-name then
+  declared order. CONCURRENTLY builds without blocking writes on a live
+  table but cannot run in a transaction block, so each index runs
+  autocommitted on its own `pool.Acquire`d connection. A failed or
+  interrupted concurrent build leaves an invalid index (`pg_index.indisvalid
+  = false`) that `IF NOT EXISTS` would skip forever and the planner never
+  uses, so before each create `Migrate` looks the name up in `pg_index`:
+  valid is a no-op (a second `Migrate` changes nothing), invalid is dropped
+  `CONCURRENTLY` and created again, up to 3 attempts, then an error naming
+  the index and table. An index is matched by name only — a changed
+  column list gets a new default name, and the old index is left for the
+  operator to drop, like an extra column. `Rebuild` and `Reset` empty
+  tables with `DELETE`, never truncate or drop, so declared indexes (slow
+  to build on a large table) survive both
+  ([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md)).
 - **List reads select only the fields they ask**: `Query.Fields []string`
   is opt-in; nil/empty is the whole-row read, byte-identical SQL to before
   it existed. Named, it narrows a `@table` list read's SELECT to those
@@ -305,7 +342,7 @@ generated switches, folds from generated assignments.
   ledger/balance class. Row-locked writes, version per write; emitted
   events enter the log with the record's stream identity (projections and
   processes see them) but never rebuild the record. Deliberately a separate
-  table from `loom_entities`: projection Rebuild truncates entities and
+  table from `loom_entities`: projection Rebuild empties entities and
   must never touch records.
 - **Timers** (`loom_timers`): durable scheduled commands, written in the
   scheduling unit's transaction. Keyed idempotently (default: command type

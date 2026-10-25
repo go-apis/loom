@@ -332,6 +332,25 @@ back. Projections are rebuildable, so switching storage (or fixing drift)
 is: drop table, `Migrate`, `Rebuild`. `@table` and `@pii` are incompatible
 by design — sealed ciphertext in a typed column would serve neither.
 
+A list read that always filters and sorts the same way declares its index
+in the entity block, columns in the order written:
+
+```
+entity OrderSummary @table {
+  customer_id: uuid
+  total_cents: int
+  index (service, namespace, customer_id, updated_at desc nulls last)
+}
+```
+
+The name defaults to `idx_<entity>_<columns>`. `loom generate` writes it
+as `CREATE INDEX CONCURRENTLY IF NOT EXISTS …` into `tables_gen.sql`.
+`Migrate` builds it concurrently on its own connection, so writes keep
+flowing. It replaces an invalid index left behind by a failed build, and
+does nothing when the index is already there and valid. `Rebuild` and
+`Reset` empty tables with `DELETE`, so the index survives both
+([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md)).
+
 Note `Migrate` is per service once `@table` is in play: the shared
 `loom_*` DDL is identical from any client, but each service's typed
 tables ride its own registry — deployments that share one database must

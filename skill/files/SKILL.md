@@ -98,6 +98,11 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
 - A process that re-arms itself on a timer does it from the reaction
   that handles the tick (`loom.After`), never synchronously inside the
   timer's dispatch.
+- A `@table` list read that filters and sorts the same way on every
+  page gets an index in the schema, not by hand:
+  `index (service, namespace, org_id, updated_at desc nulls last)` inside
+  the entity block, columns in the filter-then-sort order. `Migrate`
+  builds it `CONCURRENTLY`; `Rebuild` keeps it.
 
 ## Calling the outside world: effects
 

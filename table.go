@@ -2,11 +2,14 @@ package loom
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Typed entity tables (@table). The generated TableDef owns the shape —
@@ -118,6 +121,86 @@ func (c *Client) migrateTables(ctx context.Context) error {
 			strings.Join(drift, "\n  - "))
 	}
 	return nil
+}
+
+// indexAttempts bounds how many times Migrate creates one declared index
+// before it gives up and names it.
+const indexAttempts = 3
+
+// migrateIndexes creates every @table entity's declared indexes
+// (TableDef.Indexes). Each DDL is CREATE INDEX CONCURRENTLY, which cannot
+// run inside a transaction block, so it runs autocommitted on its own
+// acquired connection, after migrateTables has committed the table DDL.
+func (c *Client) migrateIndexes(ctx context.Context) error {
+	for _, ts := range sortedTables(c.tables) {
+		for _, idx := range ts.def.Indexes {
+			if err := c.createIndex(ctx, ts.def.Name, idx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// createIndex makes one declared index exist and be valid. A failed or
+// interrupted CREATE INDEX CONCURRENTLY leaves an invalid index behind
+// (pg_index.indisvalid false) that IF NOT EXISTS would then skip forever
+// while the planner never uses it: an invalid one is dropped concurrently
+// and created again, up to indexAttempts times. A valid one is a no-op, so
+// a second Migrate changes nothing.
+func (c *Client) createIndex(ctx context.Context, table string, idx TableIndex) error {
+	conn, err := c.db.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		valid, exists, err := indexValid(ctx, conn, idx.Name)
+		if err != nil {
+			return fmt.Errorf("loom: index %s on %s: %w", idx.Name, table, err)
+		}
+		if exists && valid {
+			return nil
+		}
+		if attempt == indexAttempts {
+			if lastErr == nil {
+				lastErr = errors.New("still invalid")
+			}
+			return fmt.Errorf("loom: create index %s on %s: gave up after %d attempts: %w",
+				idx.Name, table, indexAttempts, lastErr)
+		}
+		if exists {
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+quoteIdent(idx.Name)); err != nil {
+				lastErr = fmt.Errorf("drop invalid index: %w", err)
+				continue
+			}
+		}
+		if _, err := conn.Exec(ctx, idx.DDL); err != nil {
+			lastErr = err
+		}
+	}
+}
+
+// indexValid reports whether an index of this name exists in the current
+// schema and, if so, whether pg_index marks it valid. The name is cut to
+// Postgres's 63-byte identifier limit, as CREATE INDEX cuts it.
+func indexValid(ctx context.Context, conn *pgxpool.Conn, name string) (valid, exists bool, err error) {
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	err = conn.QueryRow(ctx, `
+		SELECT i.indisvalid FROM pg_index i
+		JOIN pg_class ic ON ic.oid = i.indexrelid
+		JOIN pg_namespace n ON n.oid = ic.relnamespace
+		WHERE n.nspname = current_schema() AND ic.relname = $1`, name).Scan(&valid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return valid, true, nil
 }
 
 // backfillAggregateTable fills a freshly created @table aggregate mirror
