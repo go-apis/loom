@@ -290,6 +290,17 @@ generated switches, folds from generated assignments.
   drop table → `Migrate` → `Rebuild`; a storage swap is exactly the same
   move — a perf change, not a semantic one). `@table` + `@pii` is a
   validation error.
+- **List reads select only the fields they ask**: `Query.Fields []string`
+  is opt-in; nil/empty is the whole-row read, byte-identical SQL to before
+  it existed. Named, it narrows a `@table` list read's SELECT to those
+  real columns — an unasked TOASTed column is never read off disk — and
+  narrows the jsonb-document path's projection the same way, though that
+  path still reads the whole `data` value server-side, so its saving is on
+  the wire and in decoding only. The meta fields (`id`, `namespace`,
+  `updated_at`) always ride the `Row`; `Filters`/`OrderBy` may still name
+  fields `Fields` leaves out. The GraphQL list resolvers (`{x}s`,
+  `{x}sChanged`) opt in automatically from the list field's own selection
+  ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
 - **Records** (`loom_records`): state-of-record persistence for the
   ledger/balance class. Row-locked writes, version per write; emitted
   events enter the log with the record's stream identity (projections and

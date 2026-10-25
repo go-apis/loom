@@ -668,6 +668,13 @@ GET  /timers                                   pending schedule and @retry rows 
 GET  /batches                                  recent batches
 ```
 
+`QueryEntities`/`QueryRecords` take an opt-in `Query.Fields []string`: name
+the state fields a list read actually needs and the SQL selects only those
+columns instead of the whole row — nil/empty keeps the existing whole-row
+read. GraphQL's list fields (`{x}s`, `{x}sChanged`) opt in automatically
+from the query's own selection set
+([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
+
 ## Uploads: large files, chunked, event-sourced
 
 Declare an upload on the aggregate/record that owns the file; its

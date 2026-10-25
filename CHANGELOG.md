@@ -12,6 +12,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Added
+
+- **A list read can ask for only the fields it needs.** `Query.Fields
+  []string` is opt-in on `QueryEntities`/`QueryRecords`; nil or empty
+  keeps the existing whole-row read, byte-identical. Named, a `@table`
+  list read's SELECT narrows to those columns, so an unasked TOASTed
+  column is never read — measured at a 0.0060 buffer ratio for a page of
+  50 rows against an 8192-byte column
+  (`docs/measurements/list-read-buffers.md`). The GraphQL list fields
+  (`{x}s`, `{x}sChanged`) opt in automatically from the query's own
+  selection set
+  ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
+
 ### Changed
 
 - **`loom generate` writes one file per aggregate and record, and adding
