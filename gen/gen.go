@@ -523,7 +523,7 @@ func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 		}
 		if o.agg.Table {
 			b.WriteString("\t\tr.Tables = append(r.Tables,\n")
-			g.tableDef(b, "&loom.TableDef{", o.name, o.agg.State)
+			g.tableDef(b, "&loom.TableDef{", o.name, o.agg.State, nil)
 			b.WriteString("\t\t)\n")
 		}
 	} else if uploads := g.ownerUploads(o.name, o.rec.Commands, o.rec.Uploads); uploads != "" {
@@ -816,32 +816,59 @@ func (g *generator) tableDDL(name string, pl *schema.Payload) string {
 }
 
 // tablePayloads lists every @table shape in declaration order: entities
-// first, then aggregates whose state mirrors into a typed table.
+// first, then aggregates whose state mirrors into a typed table. Only an
+// entity may declare indexes (schema.Validate refuses them on an
+// aggregate's mirror table).
 func (g *generator) tablePayloads() []struct {
-	Name  string
-	State *schema.Payload
+	Name    string
+	State   *schema.Payload
+	Indexes []*schema.Index
 } {
 	var out []struct {
-		Name  string
-		State *schema.Payload
+		Name    string
+		State   *schema.Payload
+		Indexes []*schema.Index
 	}
 	for _, e := range g.s.Entities {
 		if e.Table {
 			out = append(out, struct {
-				Name  string
-				State *schema.Payload
-			}{e.Name, e.State})
+				Name    string
+				State   *schema.Payload
+				Indexes []*schema.Index
+			}{e.Name, e.State, e.Indexes})
 		}
 	}
 	for _, a := range g.s.Aggregates {
 		if a.Table {
 			out = append(out, struct {
-				Name  string
-				State *schema.Payload
-			}{a.Name, a.State})
+				Name    string
+				State   *schema.Payload
+				Indexes []*schema.Index
+			}{a.Name, a.State, nil})
 		}
 	}
 	return out
+}
+
+// indexDDL renders the full CREATE INDEX CONCURRENTLY statement for one
+// declared index. CONCURRENTLY cannot run inside a transaction, so Migrate
+// (item 3) issues it on its own connection after the migration commits.
+func (g *generator) indexDDL(tableName string, idx *schema.Index) string {
+	cols := make([]string, len(idx.Columns))
+	for i, c := range idx.Columns {
+		col := fmt.Sprintf("%q", c.Name)
+		if c.Desc {
+			col += " DESC"
+		}
+		switch c.Nulls {
+		case "first":
+			col += " NULLS FIRST"
+		case "last":
+			col += " NULLS LAST"
+		}
+		cols[i] = col
+	}
+	return fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s (%s);", idx.Name, tableName, strings.Join(cols, ", "))
 }
 
 // tablesSQL renders the reviewable DDL artifact (loomgen/tables_gen.sql) —
@@ -857,6 +884,10 @@ func (g *generator) tablesSQL() string {
 		writeHeader()
 		b.WriteString(g.tableDDL(t.Name, t.State))
 		b.WriteString("\n\n")
+		for _, idx := range t.Indexes {
+			b.WriteString(g.indexDDL(g.tableName(t.Name), idx))
+			b.WriteString("\n\n")
+		}
 	}
 	for _, sr := range g.s.Series {
 		writeHeader()
@@ -1188,14 +1219,15 @@ func (g *generator) tableDefs(b *strings.Builder) {
 	// a @table aggregate's entry is added by its own file
 	b.WriteString("\t\tTables: []*loom.TableDef{\n")
 	for _, t := range tables {
-		g.tableDef(b, "{", t.Name, t.State)
+		g.tableDef(b, "{", t.Name, t.State, t.Indexes)
 	}
 	b.WriteString("\t\t},\n")
 }
 
 // tableDef renders one TableDef entry; open is how it begins: "{" in a
-// slice literal, "&loom.TableDef{" in an append.
-func (g *generator) tableDef(b *strings.Builder, open, name string, state *schema.Payload) {
+// slice literal, "&loom.TableDef{" in an append. indexes is nil for an
+// aggregate's mirror table — only an entity may declare them.
+func (g *generator) tableDef(b *strings.Builder, open, name string, state *schema.Payload, indexes []*schema.Index) {
 	fmt.Fprintf(b, "\t\t\t%s\n\t\t\t\tEntity: %q,\n\t\t\t\tName: %q,\n\t\t\t\tDDL: `%s`,\n", open, name, g.tableName(name), g.tableDDL(name, state))
 	b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
 	for _, col := range g.tableColumns(state) {
@@ -1210,7 +1242,15 @@ func (g *generator) tableDef(b *strings.Builder, open, name string, state *schem
 			fmt.Fprintf(b, "\t\t\t\t\t\te.%s,\n", exported(col.Name))
 		}
 	}
-	b.WriteString("\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t},\n")
+	b.WriteString("\t\t\t\t\t}\n\t\t\t\t},\n")
+	if len(indexes) > 0 {
+		b.WriteString("\t\t\t\tIndexes: []loom.TableIndex{\n")
+		for _, idx := range indexes {
+			fmt.Fprintf(b, "\t\t\t\t\t{Name: %q, DDL: `%s`},\n", idx.Name, g.indexDDL(g.tableName(name), idx))
+		}
+		b.WriteString("\t\t\t\t},\n")
+	}
+	b.WriteString("\t\t\t},\n")
 }
 
 // seriesDefs renders the registry entries for series: the DDL and column

@@ -3,6 +3,7 @@ package gen_test
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -307,5 +308,83 @@ aggregate A {
 	}
 	if got := fieldLine("tiers"); got != "tiers: [String!]!" {
 		t.Errorf("required list: got %q, want tiers: [String!]!", got)
+	}
+}
+
+// TestEmitTableIndexes proves a @table entity's declared indexes
+// (schema.Entity.Indexes) reach both the generated registry, as
+// loom.TableIndex entries on its TableDef, and loomgen/tables_gen.sql, as
+// CREATE INDEX CONCURRENTLY statements after the table's own CREATE TABLE
+// — in declared order, and byte-identical across two renders (ADR 0008).
+func TestEmitTableIndexes(t *testing.T) {
+	src := `
+service s
+
+entity WorkItem @table {
+  org_id: uuid
+  status: string
+  index (service, namespace, org_id, updated_at desc nulls last)
+  index (status)
+}
+`
+	s, err := sdl.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := gen.Config{Package: "s", Module: "example.com/s"}
+
+	wantRegistry := `Indexes:[]loom.TableIndex{` +
+		`{Name:"idx_work_item_service_namespace_org_id_updated_at",DDL:` + "`" +
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_work_item_service_namespace_org_id_updated_at ON loom_t_s_work_item ("service", "namespace", "org_id", "updated_at" DESC NULLS LAST);` + "`" + `},` +
+		`{Name:"idx_work_item_status",DDL:` + "`" +
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_work_item_status ON loom_t_s_work_item ("status");` + "`" + `},` +
+		`},`
+	wantSQL1 := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_work_item_service_namespace_org_id_updated_at ON loom_t_s_work_item ("service", "namespace", "org_id", "updated_at" DESC NULLS LAST);`
+	wantSQL2 := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_work_item_status ON loom_t_s_work_item ("status");`
+	wantRegistry = strings.Join(strings.Fields(wantRegistry), "")
+
+	var renders [][]byte
+	for i := 0; i < 2; i++ {
+		dir := t.TempDir()
+		cfg.Dir = dir
+		res, err := gen.Generate(s, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var all strings.Builder
+		for _, w := range res.Written {
+			raw, err := os.ReadFile(w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			all.Write(raw)
+		}
+		renders = append(renders, []byte(all.String()))
+
+		registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "registry_gen.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		flat := strings.Join(strings.Fields(string(registry)), "")
+		if !strings.Contains(flat, wantRegistry) {
+			t.Fatalf("render %d: registry missing %q, got:\n%s", i, wantRegistry, flat)
+		}
+
+		sql, err := os.ReadFile(filepath.Join(dir, "loomgen", "tables_gen.sql"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tableAt := strings.Index(string(sql), "CREATE TABLE IF NOT EXISTS loom_t_s_work_item")
+		idx1At := strings.Index(string(sql), wantSQL1)
+		idx2At := strings.Index(string(sql), wantSQL2)
+		if tableAt < 0 || idx1At < 0 || idx2At < 0 {
+			t.Fatalf("render %d: tables_gen.sql missing table or index DDL, got:\n%s", i, sql)
+		}
+		if !(tableAt < idx1At && idx1At < idx2At) {
+			t.Fatalf("render %d: want table then index 1 then index 2 (declared order), got positions %d, %d, %d", i, tableAt, idx1At, idx2At)
+		}
+	}
+	if string(renders[0]) != string(renders[1]) {
+		t.Fatal("rendering twice produced different bytes")
 	}
 }
