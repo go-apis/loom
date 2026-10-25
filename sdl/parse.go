@@ -650,6 +650,13 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 			}
 			continue
 		}
+		if p.peek().text == "index" && p.peekAt(1).text == "(" {
+			p.next()
+			if err := p.index(ent); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -727,6 +734,54 @@ func (p *parser) join(ent *schema.Entity) error {
 		}
 	}
 	ent.Joins = append(ent.Joins, j)
+	return nil
+}
+
+// index parses a secondary-index declaration on a @table entity:
+//
+//	index (service, namespace, org_id, updated_at desc nulls last)
+//
+// Each column may carry `desc` (default ascending) and `nulls first` or
+// `nulls last` (default the engine's). Columns may be the entity's own
+// state fields or the meta columns service, namespace, id, updated_at —
+// checked against the entity's actual fields in schema.Validate, not
+// here, since the state block may be parsed before or after this line.
+func (p *parser) index(ent *schema.Entity) error {
+	t := p.next() // "("
+	idx := &schema.Index{}
+	for {
+		name, err := p.ident()
+		if err != nil {
+			return err
+		}
+		col := schema.IndexColumn{Name: name}
+		if p.accept("desc") {
+			col.Desc = true
+		}
+		if p.accept("nulls") {
+			nt := p.peek()
+			n, err := p.ident()
+			if err != nil {
+				return err
+			}
+			if n != "first" && n != "last" {
+				return p.errf(nt, "entity %s: index nulls wants first or last, got %q", ent.Name, n)
+			}
+			col.Nulls = n
+		}
+		idx.Columns = append(idx.Columns, col)
+		if p.accept(",") {
+			continue
+		}
+		break
+	}
+	if err := p.expect(")"); err != nil {
+		return err
+	}
+	if len(idx.Columns) == 0 {
+		return p.errf(t, "entity %s: index has no columns", ent.Name)
+	}
+	ent.Indexes = append(ent.Indexes, idx)
 	return nil
 }
 
