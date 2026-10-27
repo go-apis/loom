@@ -342,10 +342,11 @@ func (b *builder) service(cli *loom.Client) error {
 			aggQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 				return cli.QueryEntities(ctx, name, q)
 			}
-			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery)); err != nil {
+			narrow := b.narrower(name, td)
+			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery, narrow)); err != nil {
 				return err
 			}
-			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery)); err != nil {
+			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery, narrow)); err != nil {
 				return err
 			}
 		}
@@ -371,10 +372,11 @@ func (b *builder) service(cli *loom.Client) error {
 		recQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryRecords(ctx, recName, q)
 		}
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery)); err != nil {
+		recNarrow := b.narrower(rec.Name, nil)
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery, recNarrow)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery)); err != nil {
+		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery, recNarrow)); err != nil {
 			return err
 		}
 		for _, def := range rec.Commands {
@@ -411,10 +413,17 @@ func (b *builder) service(cli *loom.Client) error {
 		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
 			return cli.QueryEntities(ctx, entity, q)
 		}
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery)); err != nil {
+		var entityTable *loom.TableDef
+		for _, td := range reg.Tables {
+			if td.Entity == entity {
+				entityTable = td
+			}
+		}
+		entityNarrow := b.narrower(entity, entityTable)
+		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery, entityNarrow)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery)); err != nil {
+		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery, entityNarrow)); err != nil {
 			return err
 		}
 		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
@@ -757,6 +766,43 @@ func selectedFields(p gql.ResolveParams) []string {
 	return out
 }
 
+// narrower turns listFields' asked names into the Query.Fields a list
+// read of typeName can serve. A name that is not one of the type's own
+// state fields is a join (declared or hand-written), whose resolver reads
+// the source row as it likes — a declared join its Via field, a
+// hand-written one anything — so the read keeps the whole row (nil). On a
+// @table read, state fields with no column (@pii, @secret) are dropped:
+// the row never carries them and they resolve null, as before the read
+// was narrowed.
+func (b *builder) narrower(typeName string, table *loom.TableDef) func([]string) []string {
+	own := map[string]bool{}
+	if e, ok := b.types[typeName]; ok {
+		for _, f := range e.fields {
+			own[f] = true
+		}
+	}
+	var columns map[string]bool
+	if table != nil {
+		columns = map[string]bool{}
+		for _, c := range table.Columns {
+			columns[c.Name] = true
+		}
+	}
+	return func(asked []string) []string {
+		var out []string
+		for _, f := range asked {
+			if !own[f] {
+				return nil
+			}
+			if columns != nil && !columns[f] {
+				continue
+			}
+			out = append(out, f)
+		}
+		return out
+	}
+}
+
 // metaFields are the row identity fields rowDocs fills outside Data —
 // not state, so a selection naming only these asks for nothing listFields
 // can narrow a read to.
@@ -923,7 +969,7 @@ func rowDocs(rows []loom.Row) []map[string]any {
 	return out
 }
 
-func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -932,7 +978,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 			if err != nil {
 				return nil, err
 			}
-			q.Fields = listFields(p)
+			q.Fields = narrow(listFields(p))
 			rows, err := query(p.Context, q)
 			if err != nil {
 				return nil, err
@@ -947,7 +993,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 // Requery-and-diff per log wake-up; no delta bookkeeping, so rows
 // entering and leaving the filter just work. Sized for UI tables, not
 // unbounded feeds — use where/limit.
-func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error)) *gql.Field {
+func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -959,7 +1005,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(c
 			if err != nil {
 				return nil, err
 			}
-			q.Fields = listFields(p)
+			q.Fields = narrow(listFields(p))
 			ctx := p.Context
 			out := make(chan any)
 			go func() {

@@ -143,7 +143,7 @@ func TestGraphQLListSelectsOnlyAskedFields(t *testing.T) {
 
 	query := gql.NewObject(gql.ObjectConfig{
 		Name:   "Query",
-		Fields: gql.Fields{"orders": docList(order, nil, queryFn)},
+		Fields: gql.Fields{"orders": docList(order, nil, queryFn, func(f []string) []string { return f })},
 	})
 
 	schema, err := gql.NewSchema(gql.SchemaConfig{Query: query})
@@ -168,5 +168,32 @@ func TestGraphQLListSelectsOnlyAskedFields(t *testing.T) {
 	got = run(`{ orders(namespace: "ns") { id namespace updatedAt } }`)
 	if got.Fields != nil {
 		t.Errorf("meta-only selection: Fields = %v, want nil", got.Fields)
+	}
+}
+
+// TestNarrowerKeepsOnlyServableFields: a list read is narrowed to the
+// asked state fields that are columns of its @table — a @pii field with
+// no column is dropped (it resolves null either way) — and any asked join
+// widens the read back to the whole row, since a join's resolver reads
+// the source row as it likes (#83/#87 asked for both and the read failed
+// with `bad field`).
+func TestNarrowerKeepsOnlyServableFields(t *testing.T) {
+	b := &builder{types: map[string]*typeEntry{
+		"Payee": {fields: []string{"bank_token", "name", "tin", "tin_last4"}},
+	}}
+	table := &loom.TableDef{Entity: "Payee", Columns: []loom.TableColumn{{Name: "name"}, {Name: "tin_last4"}}}
+	narrow := b.narrower("Payee", table)
+	if got, want := narrow([]string{"name", "tin_last4", "tin"}), []string{"name", "tin_last4"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("pii field: got %v, want %v", got, want)
+	}
+	if got := narrow([]string{"name", "invoice"}); got != nil {
+		t.Errorf("join asked: got %v, want nil (whole row)", got)
+	}
+	if got := narrow([]string{"tin"}); len(got) != 0 {
+		t.Errorf("only a column-less field: got %v, want none (whole row)", got)
+	}
+	// A record or document read has no table: own fields pass as asked.
+	if got, want := b.narrower("Payee", nil)([]string{"tin", "name"}), []string{"tin", "name"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("no table: got %v, want %v", got, want)
 	}
 }
