@@ -425,6 +425,17 @@ is a hypertable with a retention policy. Adding `@retain` to a series
 whose table already exists unpartitioned is reported as drift for a
 hand migration, like any other incompatible series change.
 
+`Config.SeriesPartitionAhead` sets how many days ahead the partitions
+are kept (default 7). A deployment that runs Migrate as the schema
+owner and serves as a role with DML rights only works too: Migrate
+leaves two `SECURITY DEFINER` functions per service,
+`loom_series_partition_<service>(tbl, day)` and
+`loom_series_maintain_<service>(ahead)`, with the service's @retain
+tables and their retention written into them, and the serving process
+creates and expires partitions through those — Postgres refuses even
+`CREATE TABLE IF NOT EXISTS` on an existing partition to a role without
+CREATE on the schema.
+
 The gateway serves each series as `{name}s` (range query),
 `{name}Buckets` (aggregation, with `percentiles` and `ALL`), and an
 `append{Name}s` mutation, under the same namespace authorization as

@@ -137,6 +137,11 @@ func (c *Client) migrateSeries(ctx context.Context) error {
 			}
 		}
 	}
+	if !timescale {
+		if err := c.migrateSeriesFuncs(ctx); err != nil {
+			return err
+		}
+	}
 	if len(drift) > 0 {
 		return fmt.Errorf(
 			"loom: incompatible series drift (series data is NOT rebuildable — migrate the column by hand):\n  - %s",
@@ -155,10 +160,11 @@ func (c *Client) tableShape(ctx context.Context, table string) (exists, partitio
 	return exists, partitioned, err
 }
 
-// seriesPartitionAhead is how many days of partitions maintenance keeps
-// created in advance, so a stalled runner does not stall appends (an
-// append into a missing day repairs itself too).
-const seriesPartitionAhead = 7
+// defaultSeriesPartitionAhead is how many days of partitions maintenance
+// keeps created in advance unless Config.SeriesPartitionAhead says
+// otherwise, so a stalled runner does not stall appends (an append into
+// a missing day repairs itself too).
+const defaultSeriesPartitionAhead = 7
 
 // MaintainSeries does the periodic upkeep every @retain series needs on
 // plain Postgres: create the next days' partitions and drop the ones
@@ -184,6 +190,16 @@ func (c *Client) MaintainSeries(ctx context.Context) error {
 	if !locked {
 		return nil
 	}
+	// A runtime role without DDL rights maintains through the functions
+	// Migrate created as the owner (seriesfuncs.go).
+	if ok, err := c.haveSeriesFuncs(ctx); err != nil {
+		return err
+	} else if ok {
+		if _, err := c.db.Exec(ctx, `SELECT `+c.seriesFuncName("maintain")+`($1)`, c.seriesAhead); err != nil {
+			return fmt.Errorf("loom: series maintenance: %w", err)
+		}
+		return tx.Commit(ctx)
+	}
 	for _, ss := range sortedSeries(c.series) {
 		if ss.def.RetainDays > 0 && ss.def.PartitionDDL != "" {
 			if err := c.maintainSeriesPartitions(ctx, ss.def); err != nil {
@@ -196,7 +212,7 @@ func (c *Client) MaintainSeries(ctx context.Context) error {
 
 func (c *Client) maintainSeriesPartitions(ctx context.Context, def *SeriesDef) error {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	for i := -1; i <= seriesPartitionAhead; i++ {
+	for i := -1; i <= c.seriesAhead; i++ {
 		day := today.AddDate(0, 0, i)
 		part := seriesPartitionName(def.Table, day)
 		if _, err := c.db.Exec(ctx, fmt.Sprintf(
@@ -273,7 +289,18 @@ func (c *Client) ensureSeriesPartitionsFor(ctx context.Context, ss *seriesSQL, r
 			days[day] = true
 		}
 	}
+	viaFunc, err := c.haveSeriesFuncs(ctx)
+	if err != nil {
+		return err
+	}
 	for day := range days {
+		if viaFunc {
+			if _, err := c.db.Exec(ctx, `SELECT `+c.seriesFuncName("partition")+`($1, $2::date)`,
+				ss.def.Table, day.Format("2006-01-02")); err != nil {
+				return fmt.Errorf("loom: partition %s %s: %w", ss.def.Table, day.Format("2006-01-02"), err)
+			}
+			continue
+		}
 		part := seriesPartitionName(ss.def.Table, day)
 		if _, err := c.db.Exec(ctx, fmt.Sprintf(
 			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,

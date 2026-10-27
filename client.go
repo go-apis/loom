@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,6 +49,10 @@ type Config struct {
 	// in doubt. Optional; an effect with no hook (and not @idempotent)
 	// still parks for an operator. See ReconcileFunc.
 	Reconcile map[string]ReconcileFunc
+
+	// SeriesPartitionAhead is how many days of @retain series partitions
+	// maintenance keeps created in advance on plain Postgres. Default 7.
+	SeriesPartitionAhead int
 }
 
 type Client struct {
@@ -80,6 +85,9 @@ type Client struct {
 	retries int
 
 	reconcile map[string]ReconcileFunc // Config.Reconcile, by effect name
+
+	seriesAhead int         // Config.SeriesPartitionAhead
+	seriesFuncs atomic.Bool // the series partition functions exist (seriesfuncs.go)
 }
 
 func New(cfg Config) (*Client, error) {
@@ -131,6 +139,10 @@ func New(cfg Config) (*Client, error) {
 		tel:         newTelemetry(cfg.Registry.Service),
 		retries:     cfg.ConflictRetries,
 		reconcile:   cfg.Reconcile,
+		seriesAhead: cfg.SeriesPartitionAhead,
+	}
+	if c.seriesAhead <= 0 {
+		c.seriesAhead = defaultSeriesPartitionAhead
 	}
 	c.registerGauges()
 	// the dev store signals finalized uploads in-process; production

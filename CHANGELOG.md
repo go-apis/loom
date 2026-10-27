@@ -14,6 +14,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **@retain series upkeep works for a DML-only serving role.** Migrate,
+  run as the schema owner, creates `loom_series_partition_<service>` and
+  `loom_series_maintain_<service>` (`SECURITY DEFINER`, search path and
+  UTC pinned, tables and retention written into the body), and
+  `MaintainSeries` and the append-path repair use them when they exist.
+  Before, a serving role without CREATE on the schema failed every
+  hourly maintenance pass (Postgres checks CREATE even for `CREATE TABLE
+  IF NOT EXISTS` on an existing partition), so partitions ran out and
+  appends past the last day failed. `Config.SeriesPartitionAhead` sets
+  the days kept ahead (default 7, the old constant).
+
 - **A `@table` projection declares its indexes.** Inside
   `entity X @table { ... }`, `index (col [desc] [nulls first|last], ...)`
   declares a secondary index over state fields and the meta columns
