@@ -134,7 +134,10 @@ func (c *Client) splitSubscriptions(p *ReactorDef) (local, foreign []string) {
 // checkpoint row still doesn't exist one poll after it started is
 // logged as `runner never checkpointed`, under the same ceiling.
 func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, rw *runnerWake, step func(ctx context.Context) (int, error)) {
-	t := time.NewTicker(poll)
+	// wait is how long the runner sleeps before it steps unwoken
+	// (idleWait); a wake steps it at once whatever wait is
+	wait := poll
+	t := time.NewTimer(wait)
 	defer t.Stop()
 	boundedStep := func(ctx context.Context) (int, error) {
 		select {
@@ -151,6 +154,7 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 	silent := logLimiter{every: time.Minute}
 	for {
 		var backoff time.Duration
+		busy := false
 		for {
 			n, err := boundedStep(ctx)
 			if err != nil {
@@ -166,12 +170,15 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 				if count, ok := failed.allow(time.Now()); ok {
 					c.log.ErrorContext(ctx, "runner step failed", append(attrs, "failures", count)...)
 				}
+				busy = true
 				break
 			}
 			if n == 0 {
 				break
 			}
+			busy = true
 		}
+		wait = idleWait(wait, poll, c.runnerIdlePoll, busy)
 		if !checkpointed && time.Since(started) >= poll {
 			if _, exists, err := checkpointRow(ctx, c.db, c.reg.Service, runner); err == nil {
 				if exists {
@@ -191,14 +198,41 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 			}
 			continue
 		}
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+		t.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return
 		case <-rw.ch:
+			wait = poll
 		case <-rw.kick:
+			wait = poll
 		case <-t.C:
 		}
 	}
+}
+
+// idleWait is a log runner's next unwoken sleep: poll after a round
+// with work or an error, otherwise the last sleep doubled, up to
+// idleMax (Config.RunnerIdlePoll). With idleMax at or under poll every
+// sleep is poll, which is Start's behaviour without the knob.
+func idleWait(last, poll, idleMax time.Duration, busy bool) time.Duration {
+	if busy || idleMax <= poll {
+		return poll
+	}
+	next := last * 2
+	if next < poll {
+		next = poll
+	}
+	if next > idleMax {
+		next = idleMax
+	}
+	return next
 }
 
 // logLimiter lets a repeating log line through at most once per every,
