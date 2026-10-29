@@ -257,7 +257,7 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 			return fmt.Errorf("marshal %s: %w", e.Type, err)
 		}
 		if def := c.reg.eventDef(e.Type); def != nil && len(def.PII) > 0 {
-			if data, err = c.encryptFields(ctx, e.Namespace, e.AggregateID, data, def.PII); err != nil {
+			if data, err = c.encryptFields(ctx, tx, e.Namespace, e.AggregateID, data, def.PII); err != nil {
 				return err
 			}
 		}
@@ -294,7 +294,7 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 	).Scan(&snapVersion, &snap)
 	switch {
 	case err == nil:
-		if snap, err = c.decryptFields(ctx, namespace, id, snap, agg.StatePII); err != nil {
+		if snap, err = c.decryptFields(ctx, q, namespace, id, snap, agg.StatePII); err != nil {
 			return nil, 0, fmt.Errorf("snapshot %s/%s: %w", agg.Name, id, err)
 		}
 		if err := json.Unmarshal(snap, state); err != nil {
@@ -316,26 +316,41 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 		return nil, 0, err
 	}
 	defer rows.Close()
+	type stored struct {
+		v, sv int
+		typ   string
+		data  []byte
+	}
+	var evts []stored
 	for rows.Next() {
-		var v, sv int
-		var typ string
-		var data []byte
-		if err := rows.Scan(&v, &typ, &sv, &data); err != nil {
+		var e stored
+		if err := rows.Scan(&e.v, &e.typ, &e.sv, &e.data); err != nil {
 			return nil, 0, err
 		}
-		if data, err = c.decryptEventData(ctx, namespace, id, typ, data); err != nil {
-			return nil, 0, err
-		}
-		payload, err := c.decode(typ, sv, data)
+		evts = append(evts, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Decrypt after the rows are closed: on a transaction a key read
+	// cannot run while rows are open, and on the pool it would take a
+	// second connection while holding the first (see readLog).
+	rows.Close()
+	for _, e := range evts {
+		data, err := c.decryptEventData(ctx, q, namespace, id, e.typ, e.data)
 		if err != nil {
 			return nil, 0, err
 		}
-		if err := state.Fold(typ, payload); err != nil {
-			return nil, 0, fmt.Errorf("fold %s at version %d: %w", typ, v, err)
+		payload, err := c.decode(e.typ, e.sv, data)
+		if err != nil {
+			return nil, 0, err
 		}
-		version = v
+		if err := state.Fold(e.typ, payload); err != nil {
+			return nil, 0, fmt.Errorf("fold %s at version %d: %w", e.typ, e.v, err)
+		}
+		version = e.v
 	}
-	return state, version, rows.Err()
+	return state, version, nil
 }
 
 // decode turns a stored payload into the typed current-version struct,
@@ -397,7 +412,7 @@ func (c *Client) saveSnapshot(ctx context.Context, tx pgx.Tx, agg *AggregateDef,
 	if err != nil {
 		return err
 	}
-	if data, err = c.encryptFields(ctx, namespace, id, data, agg.StatePII); err != nil {
+	if data, err = c.encryptFields(ctx, tx, namespace, id, data, agg.StatePII); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `
@@ -416,8 +431,8 @@ func (c *Client) saveSnapshot(ctx context.Context, tx pgx.Tx, agg *AggregateDef,
 // here meant one row of an undeclared or @retired type failed the whole
 // batch — for every runner sharing it through the fan-out buffer, even
 // the ones that never look at that type.
-func (c *Client) readLog(ctx context.Context, afterSeq int64, limit int) ([]*Event, error) {
-	rows, err := c.db.Query(ctx, `
+func (c *Client) readLog(ctx context.Context, q querier, afterSeq int64, limit int) ([]*Event, error) {
+	rows, err := q.Query(ctx, `
 		SELECT global_seq, namespace, aggregate_type, aggregate_id, version, type, schema_version, at, correlation_id, causation_id, actor, data
 		FROM loom_events
 		WHERE service=$1 AND global_seq > $2
@@ -432,17 +447,25 @@ func (c *Client) readLog(ctx context.Context, afterSeq int64, limit int) ([]*Eve
 	var out []*Event
 	for rows.Next() {
 		e := &Event{Service: c.reg.Service}
-		var data []byte
-		if err := rows.Scan(&e.GlobalSeq, &e.Namespace, &e.AggregateType, &e.AggregateID, &e.Version, &e.Type, &e.SchemaVersion, &e.At, &e.Meta.CorrelationID, &e.Meta.CausationID, &e.Meta.Actor, &data); err != nil {
+		if err := rows.Scan(&e.GlobalSeq, &e.Namespace, &e.AggregateType, &e.AggregateID, &e.Version, &e.Type, &e.SchemaVersion, &e.At, &e.Meta.CorrelationID, &e.Meta.CausationID, &e.Meta.Actor, &e.raw); err != nil {
 			return nil, err
 		}
-		if data, err = c.decryptEventData(ctx, e.Namespace, e.AggregateID, e.Type, data); err != nil {
-			return nil, err
-		}
-		e.raw = data
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Decrypt only once the rows are closed, on the same q: a key read
+	// with the rows still open would wait for a second pooled connection
+	// while holding the first, and with every connection held that way
+	// the pool deadlocks.
+	rows.Close()
+	for _, e := range out {
+		if e.raw, err = c.decryptEventData(ctx, q, e.Namespace, e.AggregateID, e.Type, e.raw); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 type querier interface {
@@ -452,6 +475,12 @@ type querier interface {
 
 type executor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// dbConn is the pool or a transaction on it, where a write may also seal.
+type dbConn interface {
+	querier
+	executor
 }
 
 // maxLogSeq is the reader's starting high-water mark: everything at or

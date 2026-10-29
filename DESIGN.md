@@ -171,6 +171,14 @@ generated switches, folds from generated assignments.
   through it doubled every process step's connection use and starved
   projections and Dispatch (measured: projection lag ×3). A lease costs
   one connection, only while leading; hand-over is at-least-once.
+- **One connection per caller.** Nothing waits for a pooled connection
+  while it holds one: rows are read in full and closed before the
+  events or rows in them are opened, a data-key read or mint runs on the
+  caller's own connection or transaction, and a projection step reads the
+  log on its own transaction. Holding one connection while waiting for a
+  second deadlocks the pool once every connection is held that way, and
+  under load that is a matter of time (readLog opening @pii fields with
+  its rows still open did it on 2026-10-30).
 - **Process start position**: a missing checkpoint row reads as sequence
   0, so a process deployed into a service with history would react to all
   of it on its first run. `Start` closes that: before a process runner can

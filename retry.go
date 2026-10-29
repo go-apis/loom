@@ -64,7 +64,7 @@ func (c *Client) exhausted(ctx context.Context, runner string, p *ReactorDef, ev
 	if p.Retry == nil {
 		return c.park(ctx, runner, evt, cause)
 	}
-	rec, err := json.Marshal(retryRecord{Process: p.Name, LastError: cause.Error(), Event: c.sealedEnvelope(ctx, evt)})
+	rec, err := json.Marshal(retryRecord{Process: p.Name, LastError: cause.Error(), Event: c.sealedEnvelope(ctx, c.db, evt)})
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (c *Client) fireRetry(ctx context.Context, d dueTimer) (retErr error) {
 	if p == nil {
 		return c.parkRetryRaw(ctx, d, rec.Event, "retry for unknown process "+rec.Process)
 	}
-	evt, err := c.openEnvelope(ctx, rec.Event)
+	evt, err := c.openEnvelope(ctx, c.db, rec.Event)
 	if err != nil {
 		return c.parkRetryRaw(ctx, d, rec.Event, err.Error())
 	}
