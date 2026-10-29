@@ -410,7 +410,7 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 	} else if err != nil {
 		return nil, err
 	} else {
-		if data, err = c.decryptFields(ctx, namespace, id, data, rec.StatePII); err != nil {
+		if data, err = c.decryptFields(ctx, tx, namespace, id, data, rec.StatePII); err != nil {
 			return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
 		}
 		if err := json.Unmarshal(data, state); err != nil {
@@ -459,7 +459,7 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 	if err != nil {
 		return nil, err
 	}
-	if out, err = c.encryptFields(ctx, namespace, id, out, rec.StatePII); err != nil {
+	if out, err = c.encryptFields(ctx, tx, namespace, id, out, rec.StatePII); err != nil {
 		return nil, err
 	}
 	if existed {
@@ -501,7 +501,7 @@ func (c *Client) Record(ctx context.Context, record, namespace string, id uuid.U
 		if err != nil {
 			return nil, err
 		}
-		if data, err = c.decryptFields(ctx, namespace, id, data, rec.StatePII); err != nil {
+		if data, err = c.decryptFields(ctx, c.db, namespace, id, data, rec.StatePII); err != nil {
 			return nil, err
 		}
 		state := rec.NewState()
@@ -572,7 +572,7 @@ func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.U
 		return nil, err
 	}
 	if c.tables[entity] == nil { // @table excludes @pii by validation
-		if data, err = c.decryptFields(ctx, namespace, id, data, proj.PII); err != nil {
+		if data, err = c.decryptFields(ctx, c.db, namespace, id, data, proj.PII); err != nil {
 			return nil, err
 		}
 	}
@@ -617,15 +617,29 @@ func (c *Client) Entities(ctx context.Context, entity, namespace string, ids []u
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[uuid.UUID]EntityState, len(ids))
+	type row struct {
+		id   uuid.UUID
+		data []byte
+	}
+	var found []row
 	for rows.Next() {
-		var id uuid.UUID
-		var data []byte
-		if err := rows.Scan(&id, &data); err != nil {
+		var r row
+		if err := rows.Scan(&r.id, &r.data); err != nil {
 			return nil, err
 		}
+		found = append(found, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// decrypt with the rows closed: a key read with them open would take
+	// a second pooled connection while holding the first (see readLog)
+	rows.Close()
+	out := make(map[uuid.UUID]EntityState, len(found))
+	for _, r := range found {
+		data := r.data
 		if c.tables[entity] == nil { // @table excludes @pii by validation
-			if data, err = c.decryptFields(ctx, namespace, id, data, proj.PII); err != nil {
+			if data, err = c.decryptFields(ctx, c.db, namespace, r.id, data, proj.PII); err != nil {
 				return nil, err
 			}
 		}
@@ -633,9 +647,9 @@ func (c *Client) Entities(ctx context.Context, entity, namespace string, ids []u
 		if err := json.Unmarshal(data, state); err != nil {
 			return nil, err
 		}
-		out[id] = state
+		out[r.id] = state
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (c *Client) eventNameOf(payload any) (string, int, error) {

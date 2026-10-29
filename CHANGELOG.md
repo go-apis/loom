@@ -12,6 +12,23 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Opening or sealing @pii fields no longer deadlocks a full pool.**
+  The data-key read ran on the pool while the caller still held a
+  connection: `readLog` and `Load` opened each event with the log rows
+  still open, `Entities` did the same over its rows, and every write
+  (dispatch, record, projection fold, timer, batch, dead letter) sealed
+  through the pool from inside its transaction. A projection step also
+  read the log on the pool from inside its own transaction. Each of these
+  held one connection while waiting for a second, so once every pooled
+  connection was held that way nothing returned. Now rows are read in
+  full and closed before anything is opened, and the key is read (and
+  minted) on the connection or transaction the caller already holds. A
+  key minted inside a transaction commits or rolls back with the writes
+  it seals, and is cached only after it is committed. Nothing about the
+  stored data changes.
+
 ### Added
 
 - **@retain series upkeep works for a DML-only serving role.** Migrate,
