@@ -206,12 +206,14 @@ func vetGenerated(t *testing.T, dir, module string) {
 	// tidy walks the whole module graph, including go.mod files of old
 	// versions a build never fetches; on a cold module cache it must be
 	// allowed to download them, so the environment's GOPROXY stands
-	tidy.Dir, tidy.Env = dir, append(os.Environ(), "GOFLAGS=-mod=mod")
+	// (goEnv: a writable module cache even where the inherited one is
+	// read-only; see goenv_test.go)
+	tidy.Dir, tidy.Env = dir, goEnv(t, "-mod=mod")
 	if out, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, out)
 	}
 	vet := exec.Command("go", "vet", "./...")
-	vet.Dir = dir
+	vet.Dir, vet.Env = dir, goEnv(t)
 	if out, err := vet.CombinedOutput(); err != nil {
 		t.Fatalf("the generated package does not compile: %v\n%s", err, out)
 	}

@@ -2,7 +2,6 @@ package gen_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -111,36 +110,6 @@ process plain {
 		}
 	}
 
-	// and it compiles: a module beside the generated code, loom replaced by this tree
-	if testing.Short() {
-		return
-	}
-	root, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	gomod := "module example.com/s\n\ngo 1.24\n\nrequire github.com/go-apis/loom v0.0.0\n\nreplace github.com/go-apis/loom => " + root + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	src, err := os.ReadFile(filepath.Join(root, "go.sum"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "go.sum"), src, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	tidy := exec.Command("go", "mod", "tidy")
-	// tidy walks the whole module graph, including go.mod files of old
-	// versions a build never fetches; on a cold module cache it must be
-	// allowed to download them, so the environment's GOPROXY stands
-	tidy.Dir, tidy.Env = dir, append(os.Environ(), "GOFLAGS=-mod=mod")
-	if out, err := tidy.CombinedOutput(); err != nil {
-		t.Fatalf("go mod tidy: %v\n%s", err, out)
-	}
-	build := exec.Command("go", "vet", "./...")
-	build.Dir = dir
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("the generated package does not compile: %v\n%s", err, out)
-	}
+	// and it compiles
+	vetGenerated(t, dir, "example.com/s")
 }
