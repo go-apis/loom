@@ -79,7 +79,7 @@ func (c *Client) writeTimer(ctx context.Context, tx pgx.Tx, sc *scheduledCommand
 	if err != nil {
 		return err
 	}
-	if data, err = c.sealCommand(ctx, sc.Command, data); err != nil {
+	if data, err = c.sealCommand(ctx, tx, sc.Command, data); err != nil {
 		return err
 	}
 	metaRaw, err := json.Marshal(meta)
@@ -291,7 +291,7 @@ func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, met
 		attribute.String("loom.timer", key), attribute.String("loom.command", cmdType))
 	defer func() { end(retErr) }()
 	c.tel.count(ctx, c.tel.timersFired, 1)
-	cmdRaw, err := c.openCommand(ctx, cmdType, cmdRaw)
+	cmdRaw, err := c.openCommand(ctx, c.db, cmdType, cmdRaw)
 	if err != nil {
 		return err
 	}

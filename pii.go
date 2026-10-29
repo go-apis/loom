@@ -94,7 +94,18 @@ func open(key, sealed []byte) ([]byte, error) {
 
 // dek returns the stream's data key, minting one when create is set. A nil
 // key with no error means the stream was shredded (or never had PII).
-func (c *Client) dek(ctx context.Context, namespace string, id uuid.UUID, create bool) ([]byte, error) {
+//
+// q is the connection or transaction the caller already holds; the key is
+// read (and minted) on it, never on a second pooled connection. A caller
+// holding one connection while dek waited for another is a hold-and-wait:
+// with every pooled connection held by such a caller, the pool deadlocks
+// (readLog decrypting with its rows open was the case that hung).
+//
+// Inside a transaction a minted key commits or rolls back with the writes
+// it seals, so it is cached only once it is known to be committed: a key
+// this transaction inserted (xmin is its own xid) is used but not cached,
+// and the next read after the commit caches it.
+func (c *Client) dek(ctx context.Context, q querier, namespace string, id uuid.UUID, create bool) ([]byte, error) {
 	cacheKey := namespace + "/" + id.String()
 	c.dekMu.Lock()
 	if k, ok := c.deks[cacheKey]; ok {
@@ -104,9 +115,11 @@ func (c *Client) dek(ctx context.Context, namespace string, id uuid.UUID, create
 	c.dekMu.Unlock()
 
 	var wrapped []byte
-	err := c.db.QueryRow(ctx, `
-		SELECT wrapped_dek FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
-		c.reg.Service, namespace, id).Scan(&wrapped)
+	var uncommitted bool // inserted by q's own still-open transaction
+	err := q.QueryRow(ctx, `
+		SELECT wrapped_dek, (xmin::text::bigint = txid_current_if_assigned() % 4294967296) IS TRUE
+		FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
+		c.reg.Service, namespace, id).Scan(&wrapped, &uncommitted)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		if !create {
@@ -121,15 +134,21 @@ func (c *Client) dek(ctx context.Context, namespace string, id uuid.UUID, create
 			return nil, err
 		}
 		// a losing racer reads the winner's key back
-		if _, err := c.db.Exec(ctx, `
+		err = q.QueryRow(ctx, `
 			INSERT INTO loom_keys (service, namespace, stream_id, wrapped_dek)
-			VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-			c.reg.Service, namespace, id, w); err != nil {
-			return nil, err
-		}
-		if err := c.db.QueryRow(ctx, `
-			SELECT wrapped_dek FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
-			c.reg.Service, namespace, id).Scan(&wrapped); err != nil {
+			VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING
+			RETURNING wrapped_dek`,
+			c.reg.Service, namespace, id, w).Scan(&wrapped)
+		switch {
+		case err == nil:
+			_, uncommitted = q.(pgx.Tx)
+		case errors.Is(err, pgx.ErrNoRows):
+			if err := q.QueryRow(ctx, `
+				SELECT wrapped_dek FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
+				c.reg.Service, namespace, id).Scan(&wrapped); err != nil {
+				return nil, err
+			}
+		default:
 			return nil, err
 		}
 	case err != nil:
@@ -139,6 +158,9 @@ func (c *Client) dek(ctx context.Context, namespace string, id uuid.UUID, create
 	dek, err := c.keys.Unwrap(ctx, wrapped)
 	if err != nil {
 		return nil, fmt.Errorf("loom: unwrap data key for %s/%s: %w", namespace, id, err)
+	}
+	if uncommitted {
+		return dek, nil
 	}
 	c.dekMu.Lock()
 	if len(c.deks) > 16384 { // crude cap; keys re-fetch cheaply
@@ -157,7 +179,7 @@ func (c *Client) dropDEK(namespace, id string) {
 
 // encryptFields seals the named top-level fields of a JSON document under
 // the stream's data key. Already-sealed and null fields pass through.
-func (c *Client) encryptFields(ctx context.Context, namespace string, id uuid.UUID, data []byte, fields []string) ([]byte, error) {
+func (c *Client) encryptFields(ctx context.Context, q querier, namespace string, id uuid.UUID, data []byte, fields []string) ([]byte, error) {
 	if len(fields) == 0 {
 		return data, nil
 	}
@@ -177,7 +199,7 @@ func (c *Client) encryptFields(ctx context.Context, namespace string, id uuid.UU
 		}
 		if dek == nil {
 			var err error
-			if dek, err = c.dek(ctx, namespace, id, true); err != nil {
+			if dek, err = c.dek(ctx, q, namespace, id, true); err != nil {
 				return nil, err
 			}
 		}
@@ -201,7 +223,7 @@ func (c *Client) encryptFields(ctx context.Context, namespace string, id uuid.UU
 // decryptFields opens the named fields. A shredded stream (no key) redacts:
 // the fields are dropped, decoding to zero values, so folds and rebuilds
 // keep working without the PII.
-func (c *Client) decryptFields(ctx context.Context, namespace string, id uuid.UUID, data []byte, fields []string) ([]byte, error) {
+func (c *Client) decryptFields(ctx context.Context, q querier, namespace string, id uuid.UUID, data []byte, fields []string) ([]byte, error) {
 	if len(fields) == 0 {
 		return data, nil
 	}
@@ -219,7 +241,7 @@ func (c *Client) decryptFields(ctx context.Context, namespace string, id uuid.UU
 	if !sealed {
 		return data, nil
 	}
-	dek, err := c.dek(ctx, namespace, id, false)
+	dek, err := c.dek(ctx, q, namespace, id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -253,12 +275,12 @@ func isSealed(raw json.RawMessage) bool {
 }
 
 // decryptEventData opens an event payload's @pii fields before decoding.
-func (c *Client) decryptEventData(ctx context.Context, namespace string, id uuid.UUID, eventType string, data []byte) ([]byte, error) {
+func (c *Client) decryptEventData(ctx context.Context, q querier, namespace string, id uuid.UUID, eventType string, data []byte) ([]byte, error) {
 	def := c.reg.eventDef(eventType)
 	if def == nil || len(def.PII) == 0 {
 		return data, nil
 	}
-	return c.decryptFields(ctx, namespace, id, data, def.PII)
+	return c.decryptFields(ctx, q, namespace, id, data, def.PII)
 }
 
 // Shred deletes a stream's data key: every @pii field ever written for it —
@@ -300,18 +322,18 @@ func (r *Registry) piiForCommand(name string) []string {
 
 // sealCommand encrypts a command's @pii fields under its target stream's
 // key — commands rest in timers and batch items.
-func (c *Client) sealCommand(ctx context.Context, cmd Command, raw []byte) ([]byte, error) {
+func (c *Client) sealCommand(ctx context.Context, q querier, cmd Command, raw []byte) ([]byte, error) {
 	fields := c.reg.piiForCommand(cmd.LoomCommand())
 	if len(fields) == 0 {
 		return raw, nil
 	}
 	ns, id := cmd.CommandTarget()
-	return c.encryptFields(ctx, ns, id, raw, fields)
+	return c.encryptFields(ctx, q, ns, id, raw, fields)
 }
 
 // openCommand decrypts a stored command's @pii fields; the target rides
 // plaintext inside the JSON.
-func (c *Client) openCommand(ctx context.Context, cmdType string, raw []byte) ([]byte, error) {
+func (c *Client) openCommand(ctx context.Context, q querier, cmdType string, raw []byte) ([]byte, error) {
 	fields := c.reg.piiForCommand(cmdType)
 	if len(fields) == 0 {
 		return raw, nil
@@ -323,7 +345,7 @@ func (c *Client) openCommand(ctx context.Context, cmdType string, raw []byte) ([
 	if err := json.Unmarshal(raw, &target); err != nil {
 		return nil, err
 	}
-	return c.decryptFields(ctx, target.Namespace, target.AggregateID, raw, fields)
+	return c.decryptFields(ctx, q, target.Namespace, target.AggregateID, raw, fields)
 }
 
 func (r *Registry) hasPII() bool {
