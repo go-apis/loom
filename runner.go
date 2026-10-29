@@ -261,7 +261,7 @@ func (c *Client) runReader(ctx context.Context, poll time.Duration) {
 	defer t.Stop()
 	for {
 		for {
-			events, err := c.readLog(ctx, c.fan.headSeq(), logBatch)
+			events, err := c.readLog(ctx, c.db, c.fan.headSeq(), logBatch)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -291,11 +291,15 @@ func (c *Client) runReader(ctx context.Context, poll time.Duration) {
 // (catch-up after skipped wakes, rebuilds). Buffered events are shared
 // pointers, pre-decrypted but undecoded — callers treat them as read-only
 // and decode their own subscribed types with decodeEvent.
-func (c *Client) readEvents(ctx context.Context, afterSeq int64, limit int) ([]*Event, error) {
+//
+// q is where a direct read runs: a projection step passes its own
+// transaction, so the step never holds one connection while waiting for
+// a second (see Config.StepConcurrency).
+func (c *Client) readEvents(ctx context.Context, q querier, afterSeq int64, limit int) ([]*Event, error) {
 	if evts, ok := c.fan.tail(afterSeq, limit); ok {
 		return evts, nil
 	}
-	return c.readLog(ctx, afterSeq, limit)
+	return c.readLog(ctx, q, afterSeq, limit)
 }
 
 // projectionStep folds one batch into the read model. Entity writes and the
@@ -326,7 +330,7 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 		if err != nil {
 			return 0, err
 		}
-		events, err := c.readEvents(ctx, seq, logBatch)
+		events, err := c.readEvents(ctx, tx, seq, logBatch)
 		if err != nil {
 			return 0, err
 		}
@@ -412,7 +416,7 @@ func (c *Client) foldEvent(ctx context.Context, tx pgx.Tx, p *ProjectionDef, tab
 	}
 	if err == nil {
 		if table == nil { // @table excludes @pii by validation
-			if data, err = c.decryptFields(ctx, evt.Namespace, id, data, p.PII); err != nil {
+			if data, err = c.decryptFields(ctx, tx, evt.Namespace, id, data, p.PII); err != nil {
 				return fmt.Errorf("entity %s/%s: %w", p.Entity, id, err)
 			}
 		}
@@ -438,7 +442,7 @@ func (c *Client) foldEvent(ctx context.Context, tx pgx.Tx, p *ProjectionDef, tab
 	if err != nil {
 		return err
 	}
-	if out, err = c.encryptFields(ctx, evt.Namespace, id, out, p.PII); err != nil {
+	if out, err = c.encryptFields(ctx, tx, evt.Namespace, id, out, p.PII); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `
@@ -596,7 +600,7 @@ func (c *Client) SkipStalled(ctx context.Context, runner string) (int64, error) 
 		return 0, err
 	}
 
-	evts, err := c.readLog(ctx, failingSeq-1, 1)
+	evts, err := c.readLog(ctx, tx, failingSeq-1, 1)
 	if err != nil {
 		return 0, err
 	}
@@ -639,7 +643,7 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 		if err != nil {
 			return 0, err
 		}
-		events, err := c.readEvents(ctx, seq, logBatch)
+		events, err := c.readEvents(ctx, c.db, seq, logBatch)
 		if err != nil {
 			return 0, err
 		}
@@ -822,8 +826,8 @@ func (c *Client) park(ctx context.Context, runner string, evt *Event, cause erro
 
 // parkOn is park on a given connection or transaction, with the attempts
 // the runner actually made.
-func (c *Client) parkOn(ctx context.Context, q executor, runner string, evt *Event, cause error, attempts int) error {
-	raw := c.sealedEnvelope(ctx, evt)
+func (c *Client) parkOn(ctx context.Context, q dbConn, runner string, evt *Event, cause error, attempts int) error {
+	raw := c.sealedEnvelope(ctx, q, evt)
 	c.log.ErrorContext(ctx, "parking event to dead letters", "runner", runner, "type", evt.Type, "error", cause)
 	c.tel.count(ctx, c.tel.parked, 1, attribute.String("loom.runner", runner))
 	_, err := q.Exec(ctx, `
@@ -836,11 +840,11 @@ func (c *Client) parkOn(ctx context.Context, q executor, runner string, evt *Eve
 // sealedEnvelope is an event as it rests outside the log — a dead letter
 // or a durable retry — with its @pii payload fields re-sealed. openEnvelope
 // reads it back.
-func (c *Client) sealedEnvelope(ctx context.Context, evt *Event) []byte {
+func (c *Client) sealedEnvelope(ctx context.Context, q querier, evt *Event) []byte {
 	parked := evt
 	if def := c.reg.eventDef(evt.Type); def != nil && len(def.PII) > 0 && evt.Data != nil {
 		if dataRaw, err := json.Marshal(evt.Data); err == nil {
-			if dataRaw, err = c.encryptFields(ctx, evt.Namespace, evt.AggregateID, dataRaw, def.PII); err == nil {
+			if dataRaw, err = c.encryptFields(ctx, q, evt.Namespace, evt.AggregateID, dataRaw, def.PII); err == nil {
 				copied := *evt
 				copied.Data = json.RawMessage(dataRaw)
 				parked = &copied
@@ -855,7 +859,7 @@ func (c *Client) sealedEnvelope(ctx context.Context, evt *Event) []byte {
 }
 
 // openEnvelope decodes a sealedEnvelope back into a typed event.
-func (c *Client) openEnvelope(ctx context.Context, raw []byte) (*Event, error) {
+func (c *Client) openEnvelope(ctx context.Context, q querier, raw []byte) (*Event, error) {
 	var parked struct {
 		Event
 		Data json.RawMessage `json:"data"`
@@ -864,7 +868,7 @@ func (c *Client) openEnvelope(ctx context.Context, raw []byte) (*Event, error) {
 		return nil, err
 	}
 	evt := parked.Event
-	data, err := c.decryptEventData(ctx, evt.Namespace, evt.AggregateID, evt.Type, parked.Data)
+	data, err := c.decryptEventData(ctx, q, evt.Namespace, evt.AggregateID, evt.Type, parked.Data)
 	if err != nil {
 		return nil, err
 	}
@@ -959,7 +963,7 @@ func (c *Client) redriveProcess(ctx context.Context, process string, raw []byte)
 	if p == nil {
 		return fmt.Errorf("loom: dead letter belongs to unknown process %s", process)
 	}
-	evt, err := c.openEnvelope(ctx, raw)
+	evt, err := c.openEnvelope(ctx, c.db, raw)
 	if err != nil {
 		return err
 	}
