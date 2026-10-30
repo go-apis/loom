@@ -253,7 +253,7 @@ type storedEvent struct {
 // bind, the escape hatch is a commit-visibility barrier on the read
 // side, not dropping this lock.
 func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('loom_log_' || $1))`, c.reg.Service); err != nil {
+	if err := c.lockLog(ctx, tx); err != nil {
 		return err
 	}
 	for _, e := range evts {
@@ -282,6 +282,92 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 		c.tel.count(ctx, c.tel.appended, 1, attribute.String("loom.event", e.Type))
 	}
 	return nil
+}
+
+// defaultLogLockWait is Config.LogLockWait's default.
+const defaultLogLockWait = 15 * time.Second
+
+// lockLog takes the service's log lock for tx, waiting at most
+// c.logLockWait. Its own deadline is the guard: a unit of work that holds
+// the lock while it waits on something outside its transaction (a pooled
+// connection, a mutex, an HTTP call) would otherwise hang every dispatch
+// behind it, each holding a pooled connection, until nothing in the
+// service that touches the database answers (mesh-api, 2026-10-30). Past
+// the wait the statement is cancelled, the dispatch fails with a
+// *LogLockError, and its connection goes back to the pool, which is
+// also what lets a holder waiting on the pool go on.
+func (c *Client) lockLog(ctx context.Context, tx pgx.Tx) error {
+	lctx, cancel := context.WithTimeout(ctx, c.logLockWait)
+	defer cancel()
+	_, err := tx.Exec(lctx, `SELECT pg_advisory_xact_lock(hashtext('loom_log_' || $1))`, c.reg.Service)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() == nil && errors.Is(lctx.Err(), context.DeadlineExceeded) {
+		// who holds it is read once this unit's connection is back in
+		// the pool (Dispatch), never while it holds one
+		return &LogLockError{Service: c.reg.Service, Waited: c.logLockWait}
+	}
+	return err
+}
+
+// LogLockError is a dispatch that waited Config.LogLockWait for the
+// service's log lock and gave up. Holder is the session that held it, as
+// far as it could be read.
+type LogLockError struct {
+	Service string
+	Waited  time.Duration
+	Holder  LockHolder
+}
+
+// LockHolder is the Postgres session holding a lock: its pid, state
+// ("idle in transaction" is a unit of work waiting on something outside
+// its transaction), when its transaction began and its last statement.
+type LockHolder struct {
+	PID   int
+	State string
+	Since time.Time
+	Query string
+}
+
+func (e *LogLockError) Error() string {
+	h := "an unknown session"
+	if e.Holder.PID != 0 {
+		h = fmt.Sprintf("pid %d (%s since %s)", e.Holder.PID, e.Holder.State, e.Holder.Since.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("loom: waited %s for %s's log lock, held by %s: a unit of work is holding it while it waits on something outside its transaction", e.Waited, e.Service, h)
+}
+
+// logLockHolder reads who holds the service's log lock, best effort and
+// briefly, holding no other connection: a starved pool may have none to
+// give it, and then it names no one.
+func (c *Client) logLockHolder() LockHolder {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var h LockHolder
+	var since *time.Time
+	var state, query *string
+	err := c.db.QueryRow(ctx, `
+		SELECT a.pid, a.state, a.xact_start, left(a.query, 200)
+		FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+		WHERE l.locktype = 'advisory' AND l.granted
+		  AND l.objid = (hashtext('loom_log_' || $1)::bigint & 4294967295)::oid
+		  AND l.classid = ((hashtext('loom_log_' || $1)::bigint >> 32) & 4294967295)::oid
+		  AND l.objsubid = 1
+		LIMIT 1`, c.reg.Service).Scan(&h.PID, &state, &since, &query)
+	if err != nil {
+		return LockHolder{}
+	}
+	if state != nil {
+		h.State = *state
+	}
+	if since != nil {
+		h.Since = *since
+	}
+	if query != nil {
+		h.Query = *query
+	}
+	return h
 }
 
 // loadState folds an aggregate from its snapshot (if any) plus subsequent
