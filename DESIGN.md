@@ -204,7 +204,17 @@ generated switches, folds from generated assignments.
   log on its own transaction. Holding one connection while waiting for a
   second deadlocks the pool once every connection is held that way, and
   under load that is a matter of time (readLog opening @pii fields with
-  its rows still open did it on 2026-10-30).
+  its rows still open did it on 2026-10-30). A handler's or policy's
+  `loom.Load`/`GetRecord`/`GetEntity` runs on the dispatch's own
+  transaction for the same reason: that transaction holds the log lock,
+  the dispatches queued on the lock hold the pool, and a policy read on
+  the pool hung mesh-api on 2026-10-30.
+- **The log lock is waited for with a deadline** (`Config.LogLockWait`,
+  default 15s). A unit holds it for milliseconds; one that holds it for
+  longer is stuck on something outside its transaction, and unbounded,
+  every dispatch behind it waits with a connection apiece until the
+  service hangs. Past the wait the dispatch fails with a `*LogLockError`
+  naming the holder, logged at ERROR, and its connection goes back.
 - **Process start position**: a missing checkpoint row reads as sequence
   0, so a process deployed into a service with history would react to all
   of it on its first run. `Start` closes that: before a process runner can
@@ -303,7 +313,9 @@ generated switches, folds from generated assignments.
   read access (`loom.Load`/`GetRecord`/`GetEntity` on the ctx), so
   implementations never hold a client and registries wire without the
   set-client-after-New dance. Reads only — dispatch from inside a handler
-  would nest units of work; reactions return commands.
+  would nest units of work; reactions return commands. Inside a unit of
+  work the reads run on its transaction and see its writes so far; a
+  process's reads run on the pool.
 - **Read models**: one `loom_entities` jsonb doc table by default; `@table`
   opts an entity into its own typed table (`loom_t_<service>_<entity>`, one
   real column per state field, non-scalars as jsonb). Generated code owns

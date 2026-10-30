@@ -53,6 +53,16 @@ type Config struct {
 	// SeriesPartitionAhead is how many days of @retain series partitions
 	// maintenance keeps created in advance on plain Postgres. Default 7.
 	SeriesPartitionAhead int
+
+	// LogLockWait bounds how long an append waits for the service's log
+	// lock, which one unit of work holds from its first append to its
+	// commit. A unit holds it for milliseconds; one that holds it for
+	// longer is stuck on something outside its transaction, and every
+	// dispatch behind it would otherwise wait with it, a pooled
+	// connection apiece, until the pool and the service hang. Past the
+	// wait the dispatch fails with a *LogLockError naming the holder, and
+	// gives its connection back. Default 15s.
+	LogLockWait time.Duration
 }
 
 type Client struct {
@@ -86,8 +96,9 @@ type Client struct {
 
 	reconcile map[string]ReconcileFunc // Config.Reconcile, by effect name
 
-	seriesAhead int         // Config.SeriesPartitionAhead
-	seriesFuncs atomic.Bool // the series partition functions exist (seriesfuncs.go)
+	seriesAhead int           // Config.SeriesPartitionAhead
+	logLockWait time.Duration // Config.LogLockWait
+	seriesFuncs atomic.Bool   // the series partition functions exist (seriesfuncs.go)
 }
 
 func New(cfg Config) (*Client, error) {
@@ -144,6 +155,10 @@ func New(cfg Config) (*Client, error) {
 	if c.seriesAhead <= 0 {
 		c.seriesAhead = defaultSeriesPartitionAhead
 	}
+	c.logLockWait = cfg.LogLockWait
+	if c.logLockWait <= 0 {
+		c.logLockWait = defaultLogLockWait
+	}
 	c.registerGauges()
 	// the dev store signals finalized uploads in-process; production
 	// stores are wired to FinalizeUpload in the deployment (gblob.Watch)
@@ -191,6 +206,16 @@ func (c *Client) Dispatch(ctx context.Context, cmds ...Command) (err error) {
 
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		err = c.dispatchOnce(ctx, cmds)
+		var stuck *LogLockError
+		if errors.As(err, &stuck) {
+			// the unit's transaction is rolled back and its connection
+			// returned: name the holder now, loudly
+			stuck.Holder = c.logLockHolder()
+			c.log.ErrorContext(ctx, "loom: log lock wait exceeded", "commands", names, "waited", stuck.Waited.String(),
+				"holder_pid", stuck.Holder.PID, "holder_state", stuck.Holder.State,
+				"holder_since", stuck.Holder.Since, "holder_query", stuck.Holder.Query)
+			return err
+		}
 		var conflict *ConflictError
 		if !errors.As(err, &conflict) {
 			return err
@@ -202,7 +227,6 @@ func (c *Client) Dispatch(ctx context.Context, cmds ...Command) (err error) {
 }
 
 func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
-	ctx = withReader(ctx, c)
 	meta := MetaFrom(ctx)
 	if meta.CorrelationID == "" {
 		meta.CorrelationID = uuid.NewString()
@@ -213,6 +237,11 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// handlers and policies read on this transaction: it holds the log
+	// lock from its first append, so a read that waited for a pooled
+	// connection would wait on the dispatches queued behind that lock
+	// (reader.go)
+	ctx = withTxReader(ctx, c, tx)
 
 	published := false
 	batched := false
@@ -486,12 +515,17 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 // Record reads a state-of-record object (nil if absent), decoded into the
 // generated state type.
 func (c *Client) Record(ctx context.Context, record, namespace string, id uuid.UUID) (any, error) {
+	return c.record(ctx, c.db, record, namespace, id)
+}
+
+// record is Record on q: the pool, or a unit of work's transaction.
+func (c *Client) record(ctx context.Context, q querier, record, namespace string, id uuid.UUID) (any, error) {
 	for _, rec := range c.reg.Records {
 		if rec.Name != record {
 			continue
 		}
 		var data []byte
-		err := c.db.QueryRow(ctx, `
+		err := q.QueryRow(ctx, `
 			SELECT data FROM loom_records
 			WHERE service=$1 AND namespace=$2 AND record_type=$3 AND id=$4`,
 			c.reg.Service, namespace, record, id).Scan(&data)
@@ -501,7 +535,7 @@ func (c *Client) Record(ctx context.Context, record, namespace string, id uuid.U
 		if err != nil {
 			return nil, err
 		}
-		if data, err = c.decryptFields(ctx, c.db, namespace, id, data, rec.StatePII); err != nil {
+		if data, err = c.decryptFields(ctx, q, namespace, id, data, rec.StatePII); err != nil {
 			return nil, err
 		}
 		state := rec.NewState()
@@ -534,9 +568,14 @@ func (c *Client) runPolicies(ctx context.Context, evt *Event) ([]Command, error)
 // Load folds and returns an aggregate's current state and version, outside
 // any unit of work (for queries and the console).
 func (c *Client) Load(ctx context.Context, aggregate, namespace string, id uuid.UUID) (AggregateState, int, error) {
+	return c.load(ctx, c.db, aggregate, namespace, id)
+}
+
+// load is Load on q: the pool, or a unit of work's transaction.
+func (c *Client) load(ctx context.Context, q querier, aggregate, namespace string, id uuid.UUID) (AggregateState, int, error) {
 	for _, agg := range c.reg.Aggregates {
 		if agg.Name == aggregate {
-			return c.loadState(ctx, c.db, agg, namespace, id)
+			return c.loadState(ctx, q, agg, namespace, id)
 		}
 	}
 	return nil, 0, fmt.Errorf("loom: unknown aggregate %s", aggregate)
@@ -545,6 +584,11 @@ func (c *Client) Load(ctx context.Context, aggregate, namespace string, id uuid.
 // Entity returns a read-model row (nil if absent), decoded into the
 // projection's generated state type.
 func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.UUID) (EntityState, error) {
+	return c.entity(ctx, c.db, entity, namespace, id)
+}
+
+// entity is Entity on q: the pool, or a unit of work's transaction.
+func (c *Client) entity(ctx context.Context, q querier, entity, namespace string, id uuid.UUID) (EntityState, error) {
 	var proj *ProjectionDef
 	for _, p := range c.reg.Projections {
 		if p.Entity == entity {
@@ -558,9 +602,9 @@ func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.U
 	var data []byte
 	var err error
 	if table := c.tables[entity]; table != nil {
-		err = c.db.QueryRow(ctx, table.selectDoc, c.reg.Service, namespace, id).Scan(&data)
+		err = q.QueryRow(ctx, table.selectDoc, c.reg.Service, namespace, id).Scan(&data)
 	} else {
-		err = c.db.QueryRow(ctx, `
+		err = q.QueryRow(ctx, `
 			SELECT data FROM loom_entities
 			WHERE service=$1 AND namespace=$2 AND entity_type=$3 AND id=$4`,
 			c.reg.Service, namespace, entity, id).Scan(&data)
@@ -572,7 +616,7 @@ func (c *Client) Entity(ctx context.Context, entity, namespace string, id uuid.U
 		return nil, err
 	}
 	if c.tables[entity] == nil { // @table excludes @pii by validation
-		if data, err = c.decryptFields(ctx, c.db, namespace, id, data, proj.PII); err != nil {
+		if data, err = c.decryptFields(ctx, q, namespace, id, data, proj.PII); err != nil {
 			return nil, err
 		}
 	}

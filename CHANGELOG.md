@@ -14,6 +14,31 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **A handler's or policy's reads run on the dispatch's transaction.**
+  `loom.Load`, `GetRecord` and `GetEntity` from inside a command handler
+  or a policy went to the pool while the dispatch's transaction was open.
+  That transaction holds the service's log lock from its first append to
+  its commit, and every other dispatch waits on the lock holding a pooled
+  connection of its own: once those waiters held every free connection,
+  the holder's read never got one and nothing moved. mesh-api hung that
+  way on 2026-10-30 (a hand-back's policy read the Lease record with the
+  lock held; 20 minutes, every database route). The reads now run on the
+  unit's own transaction, so they also see what the unit has written so
+  far (a policy reacting to `InvoicePaid` loads the invoice as paid). A
+  process reacts outside any transaction and still reads on the pool.
+
+### Added
+
+- **`Config.LogLockWait` bounds the wait for the log lock (default
+  15s).** Past it, the dispatch fails with a `*LogLockError` naming the
+  session that holds the lock (pid, state, transaction start, last
+  statement), logs it at ERROR, and gives its connection back. A unit of
+  work stuck while it holds the lock now shows as errors within seconds
+  instead of a silent hang, and the connections the waiters return let a
+  holder that waits on the pool go on.
+
+### Fixed
+
 - **Opening or sealing @pii fields no longer deadlocks a full pool.**
   The data-key read ran on the pool while the caller still held a
   connection: `readLog` and `Load` opened each event with the log rows
