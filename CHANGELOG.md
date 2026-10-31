@@ -14,6 +14,27 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **A deploy moves the process lease to the new build.** The lease is a
+  session advisory lock, and an instance of the previous revision that
+  stayed alive (a traffic tag, CPU always allocated, a deleted revision
+  running on) kept it, so the processes ran the old code for up to ~15
+  minutes after a deploy, or indefinitely. An instance now has a
+  generation, `Config.Generation`, defaulting to the sequence of Cloud
+  Run's `K_REVISION` (`Config.Revision`), and names it on its lease
+  session (`application_name` `loom lease <generation> <revision>`). A
+  follower of a strictly newer generation asks the leader to yield
+  (`NOTIFY loom.process_lease`); the leader stops between events, waits
+  for the reaction in flight (at most 30s) and releases, and the
+  follower, trying every poll/20, leads within milliseconds. A leader
+  that does not answer within two polls has its session ended
+  (`pg_terminate_backend`), a hand-over as at-least-once as a crash.
+  Equal or older generations, and leaders whose session names none (an
+  older loom), are never preempted; with no generation (no K_REVISION,
+  or a negative Generation) nothing changes. No migration. See
+  [ADR 0010](docs/adr/0010-a-newer-generation-takes-the-process-lease.md).
+
+### Fixed
+
 - **A handler's or policy's reads run on the dispatch's transaction.**
   `loom.Load`, `GetRecord` and `GetEntity` from inside a command handler
   or a policy went to the pool while the dispatch's transaction was open.

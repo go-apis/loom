@@ -249,6 +249,16 @@ hand-over the guarantee is the at-least-once processes carry anyway.
 `Client.Leading()` says whether this instance leads. The relay and the
 timer/batch runners claim with `SKIP LOCKED` and need no election.
 
+A deploy moves the lease to the new build. `Config.Generation` (default:
+the sequence of Cloud Run's `K_REVISION`, so `mesh-api-00021-j42` is 21)
+names the leader's generation on its lease session; a follower of a
+strictly newer generation asks the leader to yield, the leader finishes
+the reaction it is on and lets go, and a leader that does not answer
+within two polls (a throttled or wedged instance) has its session ended.
+An equal or older generation never takes the lease, and with no
+generation the election is as above. See
+[ADR 0010](docs/adr/0010-a-newer-generation-takes-the-process-lease.md).
+
 Budget the pool for that: a started client parks one connection on
 `LISTEN` for its whole life, plus the lease connection while it leads, and
 everything else — `Dispatch`, `Load`, the readers, the relay — queues

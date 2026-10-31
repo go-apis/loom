@@ -63,6 +63,25 @@ type Config struct {
 	// wait the dispatch fails with a *LogLockError naming the holder, and
 	// gives its connection back. Default 15s.
 	LogLockWait time.Duration
+
+	// Generation orders this instance's build against the service's
+	// other instances for the process lease: a follower of a strictly
+	// newer generation takes the lease from an older leader, so the
+	// processes run the newest deploy's code soon after it starts rather
+	// than whenever the previous revision's last instance goes away
+	// (election.go, ADR 0010). Any number that grows with each deploy of
+	// the service: a build number, the deploy's Unix time. Zero (the
+	// default) takes the sequence of Revision when it is a Cloud Run
+	// revision name (mesh-api-00021-j42 is 21), and none otherwise. A
+	// negative Generation turns generations off. With none, the election
+	// is as it always was: whoever takes the lease keeps it until its
+	// session ends. Every instance of one service must use the same
+	// scheme; generations from two schemes do not compare.
+	Generation int64
+
+	// Revision names this instance's build on its lease session and in
+	// the election's logs. Default: K_REVISION, which Cloud Run sets.
+	Revision string
 }
 
 type Client struct {
@@ -79,6 +98,8 @@ type Client struct {
 	batchNudge      chan struct{} // batch enqueued: wake the batch runner
 	stepSem         chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
 	leader          leaderFlag    // this instance holds the service's process lease (election.go)
+	gen             generation    // Config.Generation, Config.Revision as the election orders them
+	procSteps       atomic.Int64  // process runner steps in flight (a yielding leader drains them)
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
@@ -151,6 +172,7 @@ func New(cfg Config) (*Client, error) {
 		retries:     cfg.ConflictRetries,
 		reconcile:   cfg.Reconcile,
 		seriesAhead: cfg.SeriesPartitionAhead,
+		gen:         generationFrom(cfg.Generation, cfg.Revision),
 	}
 	if c.seriesAhead <= 0 {
 		c.seriesAhead = defaultSeriesPartitionAhead

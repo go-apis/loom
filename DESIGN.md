@@ -196,7 +196,10 @@ generated switches, folds from generated assignments.
   reaction is an external call, and a lock that pinned a pool connection
   through it doubled every process step's connection use and starved
   projections and Dispatch (measured: projection lag ×3). A lease costs
-  one connection, only while leading; hand-over is at-least-once.
+  one connection, only while leading; hand-over is at-least-once. A
+  strictly newer generation (`Config.Generation`, default K_REVISION's
+  sequence) takes the lease: the leader yields between events, or has its
+  session ended if it does not answer (ADR 0010).
 - **One connection per caller.** Nothing waits for a pooled connection
   while it holds one: rows are read in full and closed before the
   events or rows in them are opened, a data-key read or mint runs on the
