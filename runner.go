@@ -636,6 +636,10 @@ func (c *Client) SkipStalled(ctx context.Context, runner string) (int64, error) 
 func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Context) (int, error) {
 	runner := "process:" + p.Name
 	return func(ctx context.Context) (n int, retErr error) {
+		// counted before the lease is read: a leader yielding the lease
+		// clears it, then waits for what was counted (election.go)
+		c.procSteps.Add(1)
+		defer c.procSteps.Add(-1)
 		if !c.leading() {
 			return 0, nil // a follower: the leader advances the checkpoint
 		}
@@ -661,7 +665,13 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 			c.tel.stepDur.Record(ctx, nowUTC().Sub(start).Seconds(),
 				metric.WithAttributes(c.tel.service, attribute.String("loom.runner", runner)))
 		}()
-		for _, evt := range events {
+		for i, evt := range events {
+			if i > 0 && !c.leading() {
+				// the lease went (yielded to a newer generation, or lost):
+				// stop at the last checkpointed event; the next leader
+				// starts after it
+				return i, nil
+			}
 			if contains(local, evt.Type) {
 				// same as the projection: decode this process's own types
 				// only, and into a copy of the shared event
