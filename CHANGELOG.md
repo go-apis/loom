@@ -56,6 +56,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **Idle runners back off: `Config.RunnerIdlePoll`.** A projection or
+  process runner with nothing to do stepped every Start poll, and each
+  idle step is a transaction (advisory lock, checkpoint read): a few
+  hundred runners on a 200ms poll cost an idle service about 1,300
+  transactions a second. Runners are already woken at once by new events
+  (the log fan-out on NOTIFY), so the unwoken step is a safety net. With
+  `RunnerIdlePoll` set, a runner that had work or an error steps again
+  after the poll, and each idle round doubles that up to RunnerIdlePoll.
+  Zero (the default) keeps every runner on the poll, as before. The
+  runsheet e2e rig (about ten services per shard on one Postgres)
+  measured one settled rig at 1,277 transactions/s before, 202 after,
+  with RunnerIdlePoll at 5s and the poll at 200ms.
+
 - **@retain series upkeep works for a DML-only serving role.** Migrate,
   run as the schema owner, creates `loom_series_partition_<service>` and
   `loom_series_maintain_<service>` (`SECURITY DEFINER`, search path and
