@@ -69,14 +69,17 @@ type Config struct {
 	// newer generation takes the lease from an older leader, so the
 	// processes run the newest deploy's code soon after it starts rather
 	// than whenever the previous revision's last instance goes away
-	// (election.go, ADR 0010). Any number that grows with each deploy of
-	// the service: a build number, the deploy's Unix time. Zero (the
-	// default) takes the sequence of Revision when it is a Cloud Run
-	// revision name (mesh-api-00021-j42 is 21), and none otherwise. A
-	// negative Generation turns generations off. With none, the election
-	// is as it always was: whoever takes the lease keeps it until its
-	// session ends. Every instance of one service must use the same
-	// scheme; generations from two schemes do not compare.
+	// (election.go, generation.go, ADR 0010). It must grow with every
+	// deploy and be the same on every instance of one revision; by
+	// convention, the deploy's Unix time in seconds. Zero (the default)
+	// takes LOOM_GENERATION, which a deploy sets (gcloud run deploy
+	// --update-env-vars LOOM_GENERATION=$(date +%s)), and failing that,
+	// on Cloud Run, the revision's createTime from the Cloud Run Admin API
+	// (needs run.revisions.get). A negative Generation turns generations
+	// off. With none, the election is as it always was: whoever takes the
+	// lease keeps it until its session ends. Not the sequence in a Cloud
+	// Run revision's name: Cloud Run does not number revisions in deploy
+	// order.
 	Generation int64
 
 	// Revision names this instance's build on its lease session and in

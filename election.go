@@ -3,7 +3,6 @@ package loom
 import (
 	"context"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -36,15 +35,17 @@ import (
 // traffic tag, idles it with CPU always allocated, or lets a deleted
 // revision run on for minutes) keeps the lease, and the processes run the
 // old code and configuration until its session ends. So an instance with
-// a generation (Config.Generation, by default the sequence of Cloud Run's
-// K_REVISION) names it on its lease session (application_name
-// "loom lease <generation> <revision>"), and a follower of a strictly
-// newer generation takes the lease over:
+// a generation (generation.go: Config.Generation, LOOM_GENERATION, or the
+// Cloud Run revision's createTime) names it on its lease session
+// (application_name "loom lease g<generation> <revision>"), and a
+// follower of a strictly newer generation takes the lease over:
 //
 //  1. It finds the leader's session (pg_locks joined to pg_stat_activity)
 //     and reads its generation. An equal or newer one, or a session that
 //     names none (an older loom, an instance with no generation), is left
 //     alone: an older generation never takes the lease from a newer one.
+//     A loom v0.85.0 leader names a bare Cloud Run revision sequence,
+//     which orders nothing: any deploy generation takes the lease from it.
 //  2. It asks the leader to yield: NOTIFY on loom.process_lease. The
 //     leader LISTENs on its lease session, so it hears at once. It marks
 //     its session yielding, stops its process runners taking another
@@ -59,8 +60,8 @@ import (
 //     follower ends it (pg_terminate_backend). That is a crash as far as
 //     the processes are concerned, the at-least-once hand-over above.
 //
-// With no generation (Config.Generation unset and no K_REVISION, or
-// negative) nothing of this happens: the election is as it always was.
+// With no generation nothing of this happens: the election is as it
+// always was.
 
 // Leading reports whether this instance holds the service's process
 // lease — the one whose local-event processes are reacting. Exposed for
@@ -81,55 +82,14 @@ const leaseChannel = "loom.process_lease"
 // leader's session.
 var handoverDrain = 30 * time.Second
 
-// generation is this instance's build as the process election orders it.
-type generation struct {
-	n        int64  // 0: none — the election ignores builds
-	revision string // a name for logs and the lease session; may be empty
-}
-
-// generationFrom resolves Config.Generation and Config.Revision. Revision
-// defaults to K_REVISION; Generation defaults to the revision's Cloud Run
-// sequence; a negative Generation turns generations off.
-func generationFrom(n int64, revision string) generation {
-	if revision == "" {
-		revision = os.Getenv("K_REVISION")
-	}
-	if n < 0 {
-		return generation{revision: revision}
-	}
-	if n == 0 {
-		n, _ = RevisionSequence(revision)
-	}
-	return generation{n: n, revision: revision}
-}
-
-// RevisionSequence is the number Cloud Run gives a revision it names:
-// mesh-api-00021-j42 is 21. Cloud Run numbers a service's revisions in the
-// order they are created, so a later deploy has a larger one. ok is false
-// for a name not of that shape (a custom --revision-suffix, a local run).
-func RevisionSequence(revision string) (n int64, ok bool) {
-	parts := strings.Split(revision, "-")
-	if len(parts) < 3 || parts[len(parts)-1] == "" {
-		return 0, false
-	}
-	seq := parts[len(parts)-2]
-	for _, r := range seq {
-		if r < '0' || r > '9' {
-			return 0, false
-		}
-	}
-	n, err := strconv.ParseInt(seq, 10, 64)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
-}
-
-// leaseName is the application_name of a leader's lease session. Postgres
-// keeps 63 bytes of it; the generation comes first so a long revision
-// loses only its tail.
+// leaseName is the application_name of a leader's lease session:
+// "loom lease g<generation> <revision>". Postgres keeps 63 bytes of it;
+// the generation comes first so a long revision loses only its tail. The
+// "g" marks a deploy generation (generation.go): loom v0.85.0 named its
+// lease with a bare Cloud Run revision sequence, which it cannot parse
+// this as, so a v0.85.0 follower never takes the lease from this one.
 func leaseName(g generation, yielding bool) string {
-	s := "loom lease " + strconv.FormatInt(g.n, 10)
+	s := "loom lease g" + strconv.FormatInt(g.n, 10)
 	if yielding {
 		s += " yielding"
 	}
@@ -139,17 +99,26 @@ func leaseName(g generation, yielding bool) string {
 	return s
 }
 
+// leaseGen is a lease holder's generation as its session names it.
+type leaseGen struct {
+	n        int64
+	legacy   bool   // a bare number: loom v0.85.0's Cloud Run revision sequence
+	revision string // may be empty
+}
+
 // parseLeaseName reads a lease session's application_name. ok is false for
-// one that is not loom's — an older loom's leader, or one with no
-// generation, which is never preempted.
-func parseLeaseName(app string) (g generation, yielding, ok bool) {
+// one that is not loom's: a leader with no generation, or a loom older than
+// v0.85.0, which is never preempted.
+func parseLeaseName(app string) (g leaseGen, yielding, ok bool) {
 	f := strings.Fields(app)
 	if len(f) < 3 || f[0] != "loom" || f[1] != "lease" {
-		return generation{}, false, false
+		return leaseGen{}, false, false
 	}
-	n, err := strconv.ParseInt(f[2], 10, 64)
-	if err != nil || n <= 0 {
-		return generation{}, false, false
+	num, legacy := strings.CutPrefix(f[2], "g")
+	legacy = !legacy
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || strings.HasPrefix(num, "+") {
+		return leaseGen{}, false, false
 	}
 	rest := f[3:]
 	if len(rest) > 0 && rest[0] == "yielding" {
@@ -158,14 +127,40 @@ func parseLeaseName(app string) (g generation, yielding, ok bool) {
 	if len(rest) > 0 {
 		g.revision = rest[0]
 	}
-	g.n = n
+	g.n, g.legacy = n, legacy
 	return g, yielding, true
+}
+
+// outranks reports whether this instance, of generation mine, takes the
+// lease from a holder of generation theirs. Like compares with like: a
+// strictly newer deploy generation outranks an older one, and any deploy
+// generation outranks a v0.85.0 holder's revision sequence. Cloud Run's
+// revision numbers are not ordered by deploy, and every build that has a
+// deploy generation is a later loom than v0.85.0, so a v0.85.0 holder
+// is taken from by the first deploy onto this loom.
+func outranks(mine generation, theirs leaseGen) bool {
+	if mine.n <= 0 {
+		return false
+	}
+	return theirs.legacy || theirs.n < mine.n
+}
+
+// askPayload is what a follower of generation mine sends a holder of
+// generation theirs on the lease channel. A v0.85.0 leader reads a bare
+// number and yields to one larger than its own, so it is asked in its
+// own terms and hands over cooperatively rather than being ended.
+func askPayload(service string, mine generation, theirs leaseGen) string {
+	if theirs.legacy {
+		return service + " " + strconv.FormatInt(max(mine.n, theirs.n+1), 10)
+	}
+	return service + " g" + strconv.FormatInt(mine.n, 10)
 }
 
 // runElection keeps trying for the lease; while held, keeps the
 // connection alive and watches for its loss — or, with a generation, for
 // a newer generation asking for it.
 func (c *Client) runElection(ctx context.Context, poll time.Duration) {
+	c.resolveGeneration(ctx)
 	var to takeover
 	for ctx.Err() == nil {
 		held, yielded, err := c.lead(ctx, poll)
@@ -296,10 +291,16 @@ func (c *Client) lead(ctx context.Context, poll time.Duration) (held, yielded bo
 }
 
 // newerAsking reads a lease-channel payload: a follower of this service
-// whose generation is strictly newer than this instance's.
+// whose deploy generation is strictly newer than this instance's. A bare
+// number is a v0.85.0 follower asking by Cloud Run revision sequence,
+// which does not compare with a deploy generation: it is not answered.
 func (c *Client) newerAsking(payload string) (int64, bool) {
 	svc, n, ok := strings.Cut(payload, " ")
 	if !ok || svc != c.reg.Service {
+		return 0, false
+	}
+	n, ok = strings.CutPrefix(n, "g")
+	if !ok || strings.HasPrefix(n, "+") {
 		return 0, false
 	}
 	gen, err := strconv.ParseInt(n, 10, 64)
@@ -332,7 +333,7 @@ func (c *Client) genAttrs() []any {
 	if c.gen.n <= 0 {
 		return nil
 	}
-	return []any{"generation", c.gen.n, "revision", c.gen.revision}
+	return []any{"generation", c.gen.n, "generation_source", c.gen.source, "revision", c.gen.revision}
 }
 
 // leaseHolder finds the session holding service's lease: loom takes it
@@ -369,7 +370,7 @@ func (c *Client) takeOver(ctx context.Context, to *takeover, poll time.Duration)
 		return false, err
 	}
 	theirs, yielding, ok := parseLeaseName(app)
-	if !ok || theirs.n >= c.gen.n {
+	if !ok || !outranks(c.gen, theirs) {
 		*to = takeover{} // an equal or newer generation, or one with none
 		return false, nil
 	}
@@ -377,11 +378,11 @@ func (c *Client) takeOver(ctx context.Context, to *takeover, poll time.Duration)
 	if to.pid != pid {
 		*to = takeover{pid: pid, since: now}
 		c.log.InfoContext(ctx, "process lease held by an older generation: asking it to yield",
-			append(c.genAttrs(), "from_generation", theirs.n, "from_revision", theirs.revision)...)
+			append(c.genAttrs(), "from_generation", theirs.n, "from_legacy", theirs.legacy, "from_revision", theirs.revision)...)
 	}
 	if now.Sub(to.notified) >= poll {
 		if _, err := c.db.Exec(ctx, `SELECT pg_notify($1, $2)`, leaseChannel,
-			c.reg.Service+" "+strconv.FormatInt(c.gen.n, 10)); err != nil {
+			askPayload(c.reg.Service, c.gen, theirs)); err != nil {
 			return true, err
 		}
 		to.notified = now
@@ -398,7 +399,7 @@ func (c *Client) takeOver(ctx context.Context, to *takeover, poll time.Duration)
 		return true, err
 	}
 	c.log.WarnContext(ctx, "process lease taken from an older generation that did not yield",
-		append(c.genAttrs(), "from_generation", theirs.n, "from_revision", theirs.revision,
+		append(c.genAttrs(), "from_generation", theirs.n, "from_legacy", theirs.legacy, "from_revision", theirs.revision,
 			"yielding", yielding, "ended", ended, "waited", now.Sub(to.since).String())...)
 	*to = takeover{}
 	return true, nil

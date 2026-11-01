@@ -249,9 +249,14 @@ hand-over the guarantee is the at-least-once processes carry anyway.
 `Client.Leading()` says whether this instance leads. The relay and the
 timer/batch runners claim with `SKIP LOCKED` and need no election.
 
-A deploy moves the lease to the new build. `Config.Generation` (default:
-the sequence of Cloud Run's `K_REVISION`, so `mesh-api-00021-j42` is 21)
-names the leader's generation on its lease session; a follower of a
+A deploy moves the lease to the new build. The instance's generation
+names the leader's lease session: `Config.Generation`, else
+`LOOM_GENERATION`, which the deploy sets to its Unix time
+(`gcloud run deploy … --update-env-vars LOOM_GENERATION=$(date +%s)`, on
+every deploy), else on Cloud Run the revision's `createTime` from the
+Cloud Run Admin API (the service account needs `run.revisions.get`). Not
+the number in the revision's name: Cloud Run does not number revisions in
+deploy order. A follower of a
 strictly newer generation asks the leader to yield, the leader finishes
 the reaction it is on and lets go, and a leader that does not answer
 within two polls (a throttled or wedged instance) has its session ended.
