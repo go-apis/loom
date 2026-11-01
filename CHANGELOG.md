@@ -14,6 +14,24 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **A generation comes from the deploy, not the revision name.** v0.85.0
+  ordered builds by the sequence in Cloud Run's `K_REVISION`, and Cloud
+  Run does not number revisions in deploy order: on 2026-11-01
+  `latchkey-00355-7rg` was deployed hours after `latchkey-00380-xih`,
+  and 380 kept the process lease. A generation is now
+  `Config.Generation`, else `LOOM_GENERATION` (set by the deploy, by
+  convention `$(date +%s)`, on every deploy), else on Cloud Run the
+  revision's `createTime` from the Cloud Run Admin API (needs
+  `run.revisions.get`; any failure is no generation). The lease is named
+  `loom lease g<generation> <revision>` and asked for with
+  `<service> g<generation>`, so a v0.85.0 instance never takes it or
+  is yielded to, and a deploy generation takes the lease from a v0.85.0
+  leader, asking in its terms so it yields cooperatively. Deploy recipes
+  should add `--update-env-vars LOOM_GENERATION=$(date +%s)`.
+  `RevisionSequence` is deprecated. ADR 0010, amendment 2026-11-01.
+
+### Fixed
+
 - **A deploy moves the process lease to the new build.** The lease is a
   session advisory lock, and an instance of the previous revision that
   stayed alive (a traffic tag, CPU always allocated, a deleted revision

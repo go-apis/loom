@@ -2,6 +2,8 @@ package e2e_test
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +19,25 @@ import (
 // revision that is still alive must not keep the processes on the old
 // code. A follower of a strictly newer generation takes the lease; an
 // equal or older one never does; with no generation the election is as
-// it always was.
+// it always was. Generations are deploy times, and the revision names
+// are numbered as Cloud Run numbered latchkey's on 2026-11-01: the later
+// deploy has the lower number.
 
 const genPoll = 100 * time.Millisecond
+
+// Deploy generations: the earlier deploy and the later one.
+const (
+	genEarlier = int64(1793440000)
+	genLater   = int64(1793453000)
+)
+
+// noAmbientGeneration keeps the test's instances to the generations it
+// gives them.
+func noAmbientGeneration(t *testing.T) {
+	t.Setenv("LOOM_GENERATION", "")
+	t.Setenv("K_SERVICE", "")
+	t.Setenv("K_REVISION", "")
+}
 
 // startGen starts a billing instance of the given generation (0: none)
 // and answers it with the function that stops it.
@@ -75,19 +93,21 @@ func assertNothingParked(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 	}
 }
 
-// TestANewerGenerationTakesTheProcessLease is a deploy: revision 20
-// leads and is mid-reaction when revision 21 starts. 21 leads within a
-// poll or two, 20 finishes the reaction it was on first (each invoice is
-// captured exactly once, nothing parked), 20 never leads again while 21
-// is alive, and takes the lease back only once 21 is gone.
+// TestANewerGenerationTakesTheProcessLease is a deploy: revision 380
+// leads and is mid-reaction when revision 355, deployed later, starts.
+// 355 leads within a poll or two, 380 finishes the reaction it was on
+// first (each invoice is captured exactly once, nothing parked), 380
+// never leads again while 355 is alive, and takes the lease back only
+// once 355 is gone. The revision numbers play no part.
 func TestANewerGenerationTakesTheProcessLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	pool := testDB(t, ctx)
 	resetBilling()
+	noAmbientGeneration(t)
 
-	old, _ := startGen(t, ctx, pool, 0, "billing-00020-abc", true)
-	waitFor(t, ctx, "revision 20 leads", old.Leading)
+	old, _ := startGen(t, ctx, pool, genEarlier, "billing-00380-xih", true)
+	waitFor(t, ctx, "revision 380 leads", old.Leading)
 
 	// reactions long enough that the hand-over lands in the middle of one
 	billing.Gateway.SetDelay(300 * time.Millisecond)
@@ -95,17 +115,17 @@ func TestANewerGenerationTakesTheProcessLease(t *testing.T) {
 	for i := 0; i < invoices; i++ {
 		payInvoice(t, ctx, old, uuid.New())
 	}
-	waitFor(t, ctx, "revision 20 reacting", func() bool { return billing.Gateway.CallsN() >= 1 })
+	waitFor(t, ctx, "revision 380 reacting", func() bool { return billing.Gateway.CallsN() >= 1 })
 
 	started := time.Now()
-	newer, stopNewer := startGen(t, ctx, pool, 0, "billing-00021-xyz", false)
-	waitFor(t, ctx, "revision 21 leads", newer.Leading)
+	newer, stopNewer := startGen(t, ctx, pool, genLater, "billing-00355-7rg", false)
+	waitFor(t, ctx, "revision 355 leads", newer.Leading)
 	took := time.Since(started)
 	if old.Leading() {
 		t.Fatal("two leaders after the hand-over")
 	}
-	// 20 yields once its reaction checkpoints (300ms at most here), and
-	// 21 tries every fastPoll meanwhile
+	// 380 yields once its reaction checkpoints (300ms at most here), and
+	// 355 tries every fastPoll meanwhile
 	if took > 300*time.Millisecond+4*genPoll {
 		t.Fatalf("the hand-over took %s", took)
 	}
@@ -123,9 +143,9 @@ func TestANewerGenerationTakesTheProcessLease(t *testing.T) {
 
 	// an older generation never takes the lease back from a newer one,
 	// not even when the newer one's session is briefly away from it
-	neverLeads(t, old, 10*genPoll, "revision 20, with 21 alive,")
+	neverLeads(t, old, 10*genPoll, "revision 380, with 355 alive,")
 	if !newer.Leading() {
-		t.Fatal("revision 21 lost the lease")
+		t.Fatal("revision 355 lost the lease")
 	}
 	var app string
 	if err := pool.QueryRow(ctx, `
@@ -133,53 +153,70 @@ func TestANewerGenerationTakesTheProcessLease(t *testing.T) {
 		WHERE l.locktype = 'advisory' AND l.granted AND l.objid = (hashtext('loom_processes_billing')::bigint & 4294967295)::oid`).Scan(&app); err != nil {
 		t.Fatal(err)
 	}
-	if app != "loom lease 21 billing-00021-xyz" {
+	if app != "loom lease g1793453000 billing-00355-7rg" {
 		t.Fatalf("the lease session is named %q", app)
 	}
-	// 20's lease connection went back to its pool unnamed and deaf
+	// 380's lease connection went back to its pool unnamed and deaf
 	var named int
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM pg_stat_activity
-		WHERE datname = current_database() AND application_name LIKE 'loom lease 20%'`).Scan(&named); err != nil {
+		WHERE datname = current_database() AND application_name LIKE 'loom lease g1793440000%'`).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
 	if named != 0 {
-		t.Fatalf("%d sessions still named for revision 20's lease", named)
+		t.Fatalf("%d sessions still named for revision 380's lease", named)
 	}
 
-	// 21 is the one that keeps reacting
+	// 355 is the one that keeps reacting
 	billing.Gateway.Reset()
 	billing.Gateway.SetDelay(0)
 	billing.ResetReactions()
 	for i := 0; i < 3; i++ {
 		payInvoice(t, ctx, old, uuid.New())
 	}
-	waitFor(t, ctx, "captures under 21", func() bool { return billing.Gateway.CallsN() == 3 })
+	waitFor(t, ctx, "captures under 355", func() bool { return billing.Gateway.CallsN() == 3 })
 
-	// with 21 gone, 20 leads again: better the old code than none
+	// with 355 gone, 380 leads again: better the old code than none
 	stopNewer()
-	waitFor(t, ctx, "revision 20 leads once 21 is gone", old.Leading)
+	waitFor(t, ctx, "revision 380 leads once 355 is gone", old.Leading)
 }
 
-// TestAnOlderGenerationNeverTakesTheLease: revision 21 leads; revision 20
-// started after it (a tagged revision woken later) follows for good, and
-// so does another instance of 21.
+// TestAnOlderGenerationNeverTakesTheLease: revision 355 (the later
+// deploy) leads; revision 380 (the earlier deploy, a higher number)
+// started after it, a tagged revision woken later, follows for good, and
+// so do another instance of 355, an env-only redeploy that kept the
+// generation (revision 356), and an instance whose revision name alone
+// would once have been a newer generation.
 func TestAnOlderGenerationNeverTakesTheLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	pool := testDB(t, ctx)
 	resetBilling()
+	noAmbientGeneration(t)
 
-	newer, _ := startGen(t, ctx, pool, 0, "billing-00021-xyz", true)
-	waitFor(t, ctx, "revision 21 leads", newer.Leading)
-	old, _ := startGen(t, ctx, pool, 0, "billing-00020-abc", false)
-	twin, _ := startGen(t, ctx, pool, 0, "billing-00021-def", false)
-	explicit, _ := startGen(t, ctx, pool, 21, "", false) // the same generation, given explicitly
+	newer, _ := startGen(t, ctx, pool, genLater, "billing-00355-7rg", true)
+	waitFor(t, ctx, "revision 355 leads", newer.Leading)
+	old, _ := startGen(t, ctx, pool, genEarlier, "billing-00380-xih", false)
+	twin, _ := startGen(t, ctx, pool, genLater, "billing-00355-7rg", false)
+	redeploy, _ := startGen(t, ctx, pool, genLater, "billing-00356-abc", false)
+	byName, _ := startGen(t, ctx, pool, 0, "billing-99999-zzz", false)
 	end := time.Now().Add(15 * genPoll)
 	for time.Now().Before(end) {
-		if old.Leading() || twin.Leading() || explicit.Leading() || !newer.Leading() {
-			t.Fatalf("the lease moved: 21 %v, 20 %v, 21 twin %v, 21 explicit %v",
-				newer.Leading(), old.Leading(), twin.Leading(), explicit.Leading())
+		if old.Leading() || twin.Leading() || redeploy.Leading() || byName.Leading() || !newer.Leading() {
+			t.Fatalf("the lease moved: 355 %v, 380 %v, 355 twin %v, 356 same generation %v, 99999 by name %v",
+				newer.Leading(), old.Leading(), twin.Leading(), redeploy.Leading(), byName.Leading())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// a v0.85.0 follower asks by revision sequence, however large: the
+	// leader does not answer
+	if _, err := pool.Exec(ctx, `SELECT pg_notify('loom.process_lease', 'billing 99999')`); err != nil {
+		t.Fatal(err)
+	}
+	end = time.Now().Add(5 * genPoll)
+	for time.Now().Before(end) {
+		if !newer.Leading() {
+			t.Fatal("a v0.85.0 follower's request moved the lease")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -194,12 +231,13 @@ func TestALeaderThatDoesNotYieldIsEnded(t *testing.T) {
 	defer cancel()
 	pool := testDB(t, ctx)
 	resetBilling()
+	noAmbientGeneration(t)
 	migrate(t, ctx, pool)
 
-	wedged := holdLease(t, ctx, pool, "loom lease 20 billing-00020-abc")
+	wedged := holdLease(t, ctx, pool, "loom lease g1793440000 billing-00380-xih")
 	started := time.Now()
-	newer, _ := startGen(t, ctx, pool, 0, "billing-00021-xyz", false)
-	waitFor(t, ctx, "revision 21 leads", newer.Leading)
+	newer, _ := startGen(t, ctx, pool, genLater, "billing-00355-7rg", false)
+	waitFor(t, ctx, "revision 355 leads", newer.Leading)
 	took := time.Since(started)
 	if took < 2*genPoll {
 		t.Fatalf("led after %s: the wedged leader was not given two polls", took)
@@ -220,16 +258,16 @@ func TestNoGenerationIsTheElectionAsItWas(t *testing.T) {
 	defer cancel()
 	pool := testDB(t, ctx)
 	resetBilling()
-	t.Setenv("K_REVISION", "")
+	noAmbientGeneration(t)
 
 	first, stopFirst := startGen(t, ctx, pool, 0, "", true)
 	waitFor(t, ctx, "the first instance leads", first.Leading)
 	second, _ := startGen(t, ctx, pool, 0, "", false)
-	newer, _ := startGen(t, ctx, pool, 21, "billing-00021-xyz", false)
+	newer, _ := startGen(t, ctx, pool, genLater, "billing-00355-7rg", false)
 	end := time.Now().Add(15 * genPoll)
 	for time.Now().Before(end) {
 		if !first.Leading() || second.Leading() || newer.Leading() {
-			t.Fatalf("the lease moved from a leader with no generation: first %v, second %v, 21 %v",
+			t.Fatalf("the lease moved from a leader with no generation: first %v, second %v, 355 %v",
 				first.Leading(), second.Leading(), newer.Leading())
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -252,10 +290,75 @@ func TestNoGenerationIsTheElectionAsItWas(t *testing.T) {
 	pool2 := testDB(t, ctx)
 	migrate(t, ctx, pool2)
 	unnamed := holdLease(t, ctx, pool2, "billing-00019-old")
-	newer2, _ := startGen(t, ctx, pool2, 0, "billing-00021-xyz", false)
+	newer2, _ := startGen(t, ctx, pool2, genLater, "billing-00355-7rg", false)
 	neverLeads(t, newer2, 15*genPoll, "a newer generation, over a leader that names none,")
 	if err := unnamed.Ping(ctx); err != nil {
 		t.Fatalf("the unnamed leader's session was ended: %v", err)
+	}
+}
+
+// TestTheFirstDeployOntoThisLoom is the rollout from loom v0.85.0: its
+// leader names a bare revision sequence (380) on its lease and yields to
+// a bare number larger than its own. The first instance of this build
+// with a deploy generation asks it in those terms, it yields, and the new
+// build leads at once; a v0.85.0 leader that does not answer is ended
+// after two polls, as a wedged one is.
+func TestTheFirstDeployOntoThisLoom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool := testDB(t, ctx)
+	resetBilling()
+	noAmbientGeneration(t)
+	migrate(t, ctx, pool)
+
+	// a v0.85.0 leader of revision 380, which answers as v0.85.0 does
+	v085 := holdLease(t, ctx, pool, "loom lease 380 billing-00380-xih")
+	if _, err := v085.Exec(ctx, `LISTEN "loom.process_lease"`); err != nil {
+		t.Fatal(err)
+	}
+	asked := make(chan string, 1)
+	go func() {
+		for {
+			n, err := v085.WaitForNotification(ctx)
+			if err != nil {
+				return
+			}
+			svc, num, _ := strings.Cut(n.Payload, " ")
+			gen, err := strconv.ParseInt(num, 10, 64)
+			if svc != "billing" || err != nil || gen <= 380 {
+				continue
+			}
+			_, _ = v085.Exec(ctx, `SELECT set_config('application_name', 'loom lease 380 yielding billing-00380-xih', false)`)
+			_, _ = v085.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('loom_processes_billing'))`)
+			asked <- n.Payload
+			return
+		}
+	}()
+	started := time.Now()
+	newer, _ := startGen(t, ctx, pool, genLater, "billing-00355-7rg", false)
+	waitFor(t, ctx, "revision 355 leads", newer.Leading)
+	took := time.Since(started)
+	select {
+	case p := <-asked:
+		t.Logf("v0.85.0 leader asked %q, hand-over in %s", p, took)
+	default:
+		t.Fatal("the v0.85.0 leader was not asked in its own terms")
+	}
+	if took >= 2*genPoll {
+		t.Fatalf("led after %s: the v0.85.0 leader did not hand over cooperatively", took)
+	}
+	if err := v085.Ping(ctx); err != nil {
+		t.Fatalf("the v0.85.0 leader's session was ended though it yielded: %v", err)
+	}
+
+	// a v0.85.0 leader that does not answer
+	pool2 := testDB(t, ctx)
+	migrate(t, ctx, pool2)
+	deaf := holdLease(t, ctx, pool2, "loom lease 380 billing-00380-xih")
+	newer2, _ := startGen(t, ctx, pool2, genLater, "billing-00355-7rg", false)
+	waitFor(t, ctx, "revision 355 leads over a deaf v0.85.0 leader", newer2.Leading)
+	if err := deaf.Ping(ctx); err == nil {
+		t.Fatal("the deaf v0.85.0 leader's session is still alive")
 	}
 }
 

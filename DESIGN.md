@@ -197,8 +197,10 @@ generated switches, folds from generated assignments.
   through it doubled every process step's connection use and starved
   projections and Dispatch (measured: projection lag ×3). A lease costs
   one connection, only while leading; hand-over is at-least-once. A
-  strictly newer generation (`Config.Generation`, default K_REVISION's
-  sequence) takes the lease: the leader yields between events, or has its
+  strictly newer generation (`Config.Generation`, else the deploy's
+  `LOOM_GENERATION`, else the Cloud Run revision's createTime; never the
+  revision name's number, which Cloud Run does not assign in deploy order)
+  takes the lease: the leader yields between events, or has its
   session ended if it does not answer (ADR 0010).
 - **One connection per caller.** Nothing waits for a pooled connection
   while it holds one: rows are read in full and closed before the
