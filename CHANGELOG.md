@@ -12,6 +12,23 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Added
+
+- **A series compresses and rolls up on TimescaleDB.** `@compress(30d)`
+  enables compression (segmented by namespace, ordered by the dims then
+  time) with a policy Migrate keeps at the declared age. `@rollup(hour,
+  day)` keeps a real-time continuous aggregate per unit, and
+  `QuerySeriesBuckets` reads the coarsest one that answers exactly,
+  otherwise the raw table. `SeriesBucketQuery.Raw` forces raw. Both
+  directives do nothing on plain Postgres ([ADR 0011](docs/adr/0011-a-series-compresses-and-rolls-up-on-timescaledb.md)).
+
+### Changed
+
+- **A bucket's `Last` breaks ties on the dims.** When several rows share
+  the newest instant, `Last` is the first of them by the dims in
+  declared order, on the raw path and from a rollup. Before, it was
+  whichever row Postgres returned first.
+
 ### Fixed
 
 - **A generation comes from the deploy, not the revision name.** v0.85.0

@@ -91,8 +91,9 @@ parked in favor of ten99).
   POST /projections/{name}/rebuild + a console button.
 - Foreign-event projections (would collapse ten99's RecipientMirror
   aggregate+process into a plain projection).
-- Series follow-ons: `@rollup` (continuous aggregates on TimescaleDB,
-  scheduled rollup tables elsewhere), `@compress`, a console tab (row
+- Series follow-ons: rollup tables on plain Postgres (TimescaleDB's
+  `@rollup` and `@compress` landed in ADR 0011), `@chunk` (chunk
+  interval), a console tab (row
   counts + latest observation per series), gateway list subscriptions
   if a UI ever wants live ticks. `@retain` (day partitions on plain
   Postgres / retention policy on Timescale) and bucket percentiles +

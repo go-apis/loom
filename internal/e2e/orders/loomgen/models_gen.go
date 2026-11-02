@@ -137,3 +137,14 @@ type SkuPrice struct {
 }
 
 func (*SkuPrice) LoomSeries() string { return "SkuPrice" }
+
+type SkuQuote struct {
+	Note       string    `json:"note"`
+	ObservedAt time.Time `json:"observed_at"`
+	PriceCents int64     `json:"price_cents"`
+	Qty        float64   `json:"qty"`
+	Sku        string    `json:"sku"`
+	Source     string    `json:"source"`
+}
+
+func (*SkuQuote) LoomSeries() string { return "SkuQuote" }

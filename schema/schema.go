@@ -6,6 +6,7 @@ package schema
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,17 +172,41 @@ type Series struct {
 	// 0 keeps forever. A retained series is range-partitioned by day on
 	// plain Postgres (expired partitions are dropped, never DELETEd) and
 	// gets a retention policy on TimescaleDB.
-	RetainDays int      `yaml:"retain_days,omitempty" json:"retain_days,omitempty"`
-	State      *Payload `yaml:"state" json:"state"`
+	RetainDays int `yaml:"retain_days,omitempty" json:"retain_days,omitempty"`
+	// CompressDays (@compress) is the age, in whole days, past which a
+	// TimescaleDB chunk is compressed (columnstore), segmented by the
+	// dims; 0 never compresses. Plain Postgres has no compression and
+	// ignores it. Must be under RetainDays when both are set.
+	CompressDays int `yaml:"compress_days,omitempty" json:"compress_days,omitempty"`
+	// Rollups (@rollup) are the bucket units ("hour", "day") kept
+	// pre-aggregated on TimescaleDB as continuous aggregates grouped by
+	// every dim; QuerySeriesBuckets reads the coarsest one that can
+	// answer a query exactly and the raw table otherwise. Plain Postgres
+	// ignores them: every bucket query reads the raw table there.
+	Rollups []string `yaml:"rollups,omitempty" json:"rollups,omitempty"`
+	State   *Payload `yaml:"state" json:"state"`
 }
+
+// SeriesRollupUnits are the units @rollup accepts, finest first: each is
+// a fixed width (time_bucket needs one) that nests exactly in every
+// coarser date_trunc unit QuerySeriesBuckets serves.
+var SeriesRollupUnits = []string{"hour", "day"}
 
 // ParseRetain reads a @retain duration: a whole number of days ("90d"),
 // weeks ("2w"), or hours ("36h", rounded up to days — partitions are
 // daily), or a bare day count.
-func ParseRetain(s string) (int, error) {
+func ParseRetain(s string) (int, error) { return parseDays("retain", s) }
+
+// ParseCompress reads a @compress age, in the same forms as @retain.
+func ParseCompress(s string) (int, error) { return parseDays("compress", s) }
+
+func parseDays(dir, s string) (int, error) {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "" {
-		return 0, fmt.Errorf("@retain wants a duration like 90d")
+		return 0, fmt.Errorf("@%s wants a duration like 90d", dir)
+	}
+	bad := func() (int, error) {
+		return 0, fmt.Errorf("@%s: bad duration %q (want e.g. 90d, 2w, 36h)", dir, s)
 	}
 	unit := s[len(s)-1]
 	num := s
@@ -192,16 +217,15 @@ func ParseRetain(s string) (int, error) {
 	case 'w':
 		num, mult = s[:len(s)-1], 7
 	case 'h':
-		num = s[:len(s)-1]
-		n, err := strconv.Atoi(num)
+		n, err := strconv.Atoi(s[:len(s)-1])
 		if err != nil || n < 1 {
-			return 0, fmt.Errorf("@retain: bad duration %q (want e.g. 90d, 2w, 36h)", s)
+			return bad()
 		}
 		return (n + 23) / 24, nil
 	}
 	n, err := strconv.Atoi(num)
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("@retain: bad duration %q (want e.g. 90d, 2w, 36h)", s)
+		return bad()
 	}
 	return n * mult, nil
 }
@@ -929,6 +953,19 @@ func (s *Schema) Validate() error {
 		}
 		checkIdent("dim", sr.Dims)
 		checkIdent("key", sr.Keys)
+		if sr.CompressDays > 0 && sr.RetainDays > 0 && sr.CompressDays >= sr.RetainDays {
+			fail("series %s: @compress(%dd) must be under @retain(%dd) — a chunk would be dropped before it is compressed", sr.Name, sr.CompressDays, sr.RetainDays)
+		}
+		seenUnit := map[string]bool{}
+		for _, u := range sr.Rollups {
+			if !slices.Contains(SeriesRollupUnits, u) {
+				fail("series %s: @rollup(%s) is not a rollup unit (%s)", sr.Name, u, strings.Join(SeriesRollupUnits, ", "))
+			}
+			if seenUnit[u] {
+				fail("series %s: @rollup names %s twice", sr.Name, u)
+			}
+			seenUnit[u] = true
+		}
 	}
 
 	for _, e := range s.Entities {

@@ -898,6 +898,12 @@ func (g *generator) tablesSQL() string {
 			b.WriteString(g.seriesDDLForm(sr, true))
 			b.WriteString("\n\n")
 		}
+		if sr.CompressDays > 0 {
+			fmt.Fprintf(&b, "-- @compress(%dd): on TimescaleDB Migrate enables compression segmented by the dims and adds a compression policy;\n-- plain Postgres has no compression.\n\n", sr.CompressDays)
+		}
+		if len(sr.Rollups) > 0 {
+			fmt.Fprintf(&b, "-- @rollup(%s): on TimescaleDB Migrate keeps one continuous aggregate per unit, grouped by every dim;\n-- on plain Postgres bucket queries read this table.\n\n", strings.Join(sr.Rollups, ", "))
+		}
 	}
 	return b.String()
 }
@@ -1269,6 +1275,12 @@ func (g *generator) seriesDefs(b *strings.Builder) {
 		}
 		if sr.RetainDays > 0 {
 			fmt.Fprintf(b, "\t\t\t\tRetainDays: %d,\n\t\t\t\tPartitionDDL: `%s`,\n", sr.RetainDays, g.seriesDDLForm(sr, true))
+		}
+		if sr.CompressDays > 0 {
+			fmt.Fprintf(b, "\t\t\t\tCompressDays: %d,\n", sr.CompressDays)
+		}
+		if len(sr.Rollups) > 0 {
+			fmt.Fprintf(b, "\t\t\t\tRollups: %s,\n", stringSlice(sr.Rollups))
 		}
 		b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
 		for _, col := range g.tableColumns(sr.State) {

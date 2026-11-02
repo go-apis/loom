@@ -105,6 +105,9 @@ func (c *Client) migrateSeries(ctx context.Context) error {
 					return fmt.Errorf("loom: retention policy %s: %w", def.Table, err)
 				}
 			}
+			if err := c.migrateSeriesTimescale(ctx, def); err != nil {
+				return err
+			}
 		} else {
 			if _, err := c.db.Exec(ctx, fmt.Sprintf(
 				`CREATE INDEX IF NOT EXISTS %s_brin ON %s USING brin (%s)`,
@@ -142,6 +145,7 @@ func (c *Client) migrateSeries(ctx context.Context) error {
 			return err
 		}
 	}
+	c.forgetRollups()
 	if len(drift) > 0 {
 		return fmt.Errorf(
 			"loom: incompatible series drift (series data is NOT rebuildable — migrate the column by hand):\n  - %s",
@@ -645,8 +649,12 @@ type SeriesBucketQuery struct {
 	Limit        int // default 500, max 10000
 	// Percentiles asks for percentile_cont of Value per bucket, as
 	// percentages: 50, 95, 99.9. Results land in SeriesBucket.Percentiles
-	// keyed "p50", "p95", "p99.9".
+	// keyed "p50", "p95", "p99.9". A query with percentiles always reads
+	// the raw table: a rollup keeps no distribution.
 	Percentiles []float64
+	// Raw reads the raw table even when a @rollup could answer: the
+	// answer is the same, so this is for proving that, not for use.
+	Raw bool
 }
 
 // SeriesBucket is one aggregated bucket. Last is the value of the most
@@ -710,18 +718,39 @@ func (c *Client) QuerySeriesBuckets(ctx context.Context, series string, q Series
 		fractions = append(fractions, p/100)
 	}
 
+	// A @rollup answers the query exactly when one fits (seriestimescale.go):
+	// the same columns from the continuous aggregate, ranged on its bucket.
+	from := ss.def.Table
+	views, err := c.rollupViews(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("loom: rollups: %w", err)
+	}
+	view := pickRollup(ss.def, q, views)
+
 	val, tcol := quoteIdent(q.Value), quoteIdent(ss.def.Time)
 	var b strings.Builder
-	if q.Bucket == "all" {
-		fmt.Fprintf(&b, "SELECT min(%s) AS bt", tcol)
+	if view != "" {
+		from, tcol = view, rollupBucket
+		b.WriteString(rollupBucketSelect(ss.def, q))
 	} else {
-		fmt.Fprintf(&b, "SELECT date_trunc('%s', %s) AS bt", q.Bucket, tcol)
+		if q.Bucket == "all" {
+			fmt.Fprintf(&b, "SELECT min(%s) AS bt", tcol)
+		} else {
+			fmt.Fprintf(&b, "SELECT date_trunc('%s', %s) AS bt", q.Bucket, tcol)
+		}
+		for _, by := range q.By {
+			fmt.Fprintf(&b, ", %s::text", quoteIdent(by))
+		}
+		// Last is the newest row's value; rows of one instant tie-break
+		// on the dims in order, so the answer is the same on every read
+		// and from a rollup.
+		order := tcol + " DESC"
+		for _, d := range ss.def.Dims {
+			order += ", " + quoteIdent(d)
+		}
+		fmt.Fprintf(&b, ", count(*), avg(%s)::float8, min(%s)::float8, max(%s)::float8, (array_agg(%s ORDER BY %s))[1]::float8",
+			val, val, val, val, order)
 	}
-	for _, by := range q.By {
-		fmt.Fprintf(&b, ", %s::text", quoteIdent(by))
-	}
-	fmt.Fprintf(&b, ", count(*), avg(%s)::float8, min(%s)::float8, max(%s)::float8, (array_agg(%s ORDER BY %s DESC))[1]::float8",
-		val, val, val, val, tcol)
 	var args []any
 	if q.AllNamespaces {
 		args = []any{c.reg.Service}
@@ -733,9 +762,9 @@ func (c *Client) QuerySeriesBuckets(ctx context.Context, series string, q Series
 		fmt.Fprintf(&b, ", (percentile_cont($%d::float8[]) WITHIN GROUP (ORDER BY %s))::float8[]", len(args), val)
 	}
 	if q.AllNamespaces {
-		fmt.Fprintf(&b, " FROM %s WHERE service=$1", ss.def.Table)
+		fmt.Fprintf(&b, " FROM %s WHERE service=$1", from)
 	} else {
-		fmt.Fprintf(&b, " FROM %s WHERE service=$1 AND namespace=$2", ss.def.Table)
+		fmt.Fprintf(&b, " FROM %s WHERE service=$1 AND namespace=$2", from)
 	}
 	if err := seriesFilters(&b, &args, ss, q.Filters); err != nil {
 		return nil, err

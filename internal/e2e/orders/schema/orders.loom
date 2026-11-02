@@ -144,6 +144,17 @@ series SkuPrice @time(observed_at) @dim(sku, source) {
   note:        string
 }
 
+// Quotes compressed after a week and kept rolled up by hour and day on
+// TimescaleDB (ADR 0011); plain Postgres ignores both directives.
+series SkuQuote @time(observed_at) @dim(sku, source) @compress(7d) @rollup(hour, day) {
+  sku:         string!
+  source:      string!
+  observed_at: timestamp!
+  price_cents: int!
+  qty:         float
+  note:        string
+}
+
 // Request latency samples: high volume, worthless after a month.
 // @retain makes the table day-partitioned on plain Postgres (expired
 // partitions dropped by the runner) and a retention policy on TimescaleDB.
