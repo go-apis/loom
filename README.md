@@ -451,6 +451,31 @@ creates and expires partitions through those — Postgres refuses even
 `CREATE TABLE IF NOT EXISTS` on an existing partition to a role without
 CREATE on the schema.
 
+On TimescaleDB a series can also compress and keep rollups
+([ADR 0011](docs/adr/0011-a-series-compresses-and-rolls-up-on-timescaledb.md));
+plain Postgres ignores both directives, so the declaration still runs
+on Cloud SQL:
+
+```
+series PricePoint @time(recorded_at) @dim(product_id, grade) @compress(30d) @rollup(hour, day) {
+  ...
+}
+```
+
+- `@compress(30d)` compresses chunks older than 30 days, segmented by
+  namespace and ordered by the dims then time, so one dim's rows sit
+  together in each compressed batch. Migrate keeps the policy at the
+  declared age. It must be under `@retain`. Appends into compressed
+  chunks still converge, but cost more: measure a backfilling crawler
+  before you turn it on.
+- `@rollup(hour, day)` keeps a real-time continuous aggregate per unit,
+  grouped by every dim. `QuerySeriesBuckets` reads the coarsest one that
+  gives the raw table's exact answer, and the raw table otherwise:
+  percentiles, a filter on a non-dim column, a range off the unit's
+  boundaries, a `@key` series, or a non-UTC session.
+  `SeriesBucketQuery.Raw` forces the raw read. A rollup can be rebuilt,
+  so Migrate replaces one whose definition changed.
+
 The gateway serves each series as `{name}s` (range query),
 `{name}Buckets` (aggregation, with `percentiles` and `ALL`), and an
 `append{Name}s` mutation, under the same namespace authorization as

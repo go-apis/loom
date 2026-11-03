@@ -120,9 +120,10 @@ type Client struct {
 
 	reconcile map[string]ReconcileFunc // Config.Reconcile, by effect name
 
-	seriesAhead int           // Config.SeriesPartitionAhead
-	logLockWait time.Duration // Config.LogLockWait
-	seriesFuncs atomic.Bool   // the series partition functions exist (seriesfuncs.go)
+	seriesAhead   int               // Config.SeriesPartitionAhead
+	logLockWait   time.Duration     // Config.LogLockWait
+	seriesFuncs   atomic.Bool       // the series partition functions exist (seriesfuncs.go)
+	seriesRollups seriesRollupState // which @rollup views exist (seriestimescale.go)
 }
 
 func New(cfg Config) (*Client, error) {

@@ -146,6 +146,46 @@ func NewRegistry(impl Impl) *loom.Registry {
 					}
 				},
 			},
+			{
+				Name:  "SkuQuote",
+				Table: "loom_s_orders_sku_quote",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_sku_quote (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"note" text,
+	"observed_at" timestamptz NOT NULL,
+	"price_cents" bigint,
+	"qty" double precision,
+	"sku" text NOT NULL,
+	"source" text NOT NULL,
+	PRIMARY KEY (service, namespace, "sku", "source", "observed_at")
+);`,
+				Time:         "observed_at",
+				Dims:         []string{"sku", "source"},
+				CompressDays: 7,
+				Rollups:      []string{"hour", "day"},
+				Columns: []loom.TableColumn{
+					{Name: "note", Type: "text"},
+					{Name: "observed_at", Type: "timestamptz"},
+					{Name: "price_cents", Type: "bigint"},
+					{Name: "qty", Type: "double precision"},
+					{Name: "sku", Type: "text"},
+					{Name: "source", Type: "text"},
+				},
+				Required: []string{"observed_at", "price_cents", "sku", "source"},
+				New:      func() loom.SeriesRow { return &SkuQuote{} },
+				Values: func(row loom.SeriesRow) []any {
+					e := row.(*SkuQuote)
+					return []any{
+						e.Note,
+						e.ObservedAt,
+						e.PriceCents,
+						e.Qty,
+						e.Sku,
+						e.Source,
+					}
+				},
+			},
 		},
 		Events: []*loom.EventDef{
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},

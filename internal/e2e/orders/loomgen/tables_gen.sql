@@ -59,3 +59,21 @@ CREATE TABLE IF NOT EXISTS loom_s_orders_sku_price (
 	PRIMARY KEY (service, namespace, "sku", "source", "observed_at")
 );
 
+CREATE TABLE IF NOT EXISTS loom_s_orders_sku_quote (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"note" text,
+	"observed_at" timestamptz NOT NULL,
+	"price_cents" bigint,
+	"qty" double precision,
+	"sku" text NOT NULL,
+	"source" text NOT NULL,
+	PRIMARY KEY (service, namespace, "sku", "source", "observed_at")
+);
+
+-- @compress(7d): on TimescaleDB Migrate enables compression segmented by the dims and adds a compression policy;
+-- plain Postgres has no compression.
+
+-- @rollup(hour, day): on TimescaleDB Migrate keeps one continuous aggregate per unit, grouped by every dim;
+-- on plain Postgres bucket queries read this table.
+

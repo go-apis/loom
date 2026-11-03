@@ -261,6 +261,12 @@ type SeriesDef struct {
 	Keys []string
 	// RetainDays (@retain) is how long rows are kept; 0 is forever.
 	RetainDays int
+	// CompressDays (@compress) is the chunk age past which TimescaleDB
+	// compresses the series; 0 never. Ignored on plain Postgres.
+	CompressDays int
+	// Rollups (@rollup) are the bucket units ("hour", "day") kept as
+	// continuous aggregates on TimescaleDB. Ignored on plain Postgres.
+	Rollups []string
 	// PartitionDDL is the CREATE TABLE in its range-partitioned form,
 	// the one Migrate uses on plain Postgres when RetainDays > 0.
 	PartitionDDL string

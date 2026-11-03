@@ -581,7 +581,9 @@ func (p *parser) entity() error {
 // series parses an append-only time-series declaration — observations,
 // not decisions. @time names the timestamp field, @dim the dimension
 // fields (identity + group axes, in order), @key optionally overrides
-// row identity when the dims don't identify a row:
+// row identity when the dims don't identify a row, @retain bounds how
+// long rows live, @compress says when TimescaleDB compresses a chunk and
+// @rollup which bucket units it keeps pre-aggregated:
 //
 //	series PricePoint @time(recorded_at) @dim(product_id, grade) {
 //	  product_id:  uuid!
@@ -601,9 +603,27 @@ func (p *parser) series() error {
 	}
 	sr := &schema.Series{Name: name}
 	for d := range dirs {
-		if d != "time" && d != "dim" && d != "key" && d != "retain" {
-			return fmt.Errorf("series %s: unknown directive @%s (series take @time, @dim, @key, @retain)", name, d)
+		switch d {
+		case "time", "dim", "key", "retain", "compress", "rollup":
+		default:
+			return fmt.Errorf("series %s: unknown directive @%s (series take @time, @dim, @key, @retain, @compress, @rollup)", name, d)
 		}
+	}
+	if args, ok := dirs["compress"]; ok {
+		if len(args) != 1 {
+			return fmt.Errorf("series %s: @compress wants one age, e.g. @compress(7d)", name)
+		}
+		days, err := schema.ParseCompress(args[0])
+		if err != nil {
+			return fmt.Errorf("series %s: %w", name, err)
+		}
+		sr.CompressDays = days
+	}
+	if args, ok := dirs["rollup"]; ok {
+		if len(args) == 0 {
+			return fmt.Errorf("series %s: @rollup wants at least one unit, e.g. @rollup(day)", name)
+		}
+		sr.Rollups = args
 	}
 	if args, ok := dirs["retain"]; ok {
 		if len(args) != 1 {
