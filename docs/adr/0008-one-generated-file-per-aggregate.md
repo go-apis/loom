@@ -104,7 +104,8 @@ holds.
 - **File names never collide.** An owner whose snake name is already taken
   gets its kind appended: `models` and `registry` are taken by the shared
   files, and two declared names can snake alike (`ABc`, `Abc`). So
-  `aggregate Registry` is written to `registry_aggregate_gen.go`. If that
+  an `aggregate Registry` would be written to `registry_aggregate_gen.go`.
+  If that
   name is taken too, a number is appended. Names are assigned in schema
   order, aggregates first, then records.
 - **Determinism.** Rendering must return identical bytes for identical
