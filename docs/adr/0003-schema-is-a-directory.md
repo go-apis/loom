@@ -44,8 +44,8 @@ If each feature adds a new file instead, the conflict goes away.
   readable on its own, or leave the header out. A later file that names a
   different service is refused at its `path:line`. `service` is only a header
   at the top of a file. Anywhere else it is an unexpected token.
-  "First" is by path, not by intent: `billing/invoice.loom` sorts before
-  `orders.loom`, so a layout that puts the header only in a "home" file
+  "First" is by path, not by intent: `billing/schema/billing.loom` sorts before
+  `orders/schema/orders.loom`, so a layout that puts the header only in a "home" file
   breaks as soon as another file sorts ahead of it. The recommended layout
   opens every file with the same `service X`.
 - **A declaration ends in the file it starts in.** The streams are joined,
