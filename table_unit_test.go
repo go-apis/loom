@@ -26,9 +26,12 @@ func TestListSQLOmitsUnaskedColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantWhole := `SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM loom_t_svc_thing t WHERE service=$1 AND namespace=$2 AND "total_cents" >= $3 ORDER BY "total_cents" DESC NULLS LAST LIMIT 20 OFFSET 0`
+	wantWhole := `SELECT id, namespace, updated_at, to_jsonb(t) - 'service' - 'namespace' - 'id' - 'updated_at' FROM loom_t_svc_thing t WHERE service=$1 AND namespace=$2 AND "total_cents" >= $3 ORDER BY "total_cents" DESC NULLS LAST, id DESC LIMIT 20`
 	if whole != wantWhole {
 		t.Fatalf("whole-row SQL changed:\n got %s\nwant %s", whole, wantWhole)
+	}
+	if strings.Contains(whole, "OFFSET") {
+		t.Fatalf("OFFSET in emitted SQL: %s", whole)
 	}
 	if len(args) != 3 || args[0] != "svc" || args[1] != "default" || args[2] != "10" {
 		t.Fatalf("args: %v", args)
@@ -76,7 +79,7 @@ func TestListSQLOmitsUnaskedColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDocs := `SELECT id, namespace, updated_at, data FROM loom_entities WHERE service=$1 AND namespace=$2 AND entity_type=$3 ORDER BY updated_at DESC NULLS LAST LIMIT 100 OFFSET 0`
+	wantDocs := `SELECT id, namespace, updated_at, data FROM loom_entities WHERE service=$1 AND namespace=$2 AND entity_type=$3 ORDER BY updated_at DESC NULLS LAST, id DESC LIMIT 100`
 	if docs != wantDocs {
 		t.Fatalf("whole-doc SQL changed:\n got %s\nwant %s", docs, wantDocs)
 	}
@@ -98,5 +101,95 @@ func TestListSQLOmitsUnaskedColumns(t *testing.T) {
 	}
 	if got := buildObjectSQL(pairs); strings.Count(got, "jsonb_build_object(") != 2 || !strings.Contains(got, ") || jsonb_build_object(") {
 		t.Fatalf("chunking: %s", got)
+	}
+}
+
+// TestListSQLKeysetPagesByCursor covers the shape ADR 0012 introduced:
+// no OFFSET ever, ORDER BY always tie-broken by id, and a keyset WHERE
+// predicate appears only once Query.After is set — built from the
+// boundary row's Cursor, carrying both the order value and its id.
+func TestListSQLKeysetPagesByCursor(t *testing.T) {
+	def := &TableDef{
+		Name: "loom_t_svc_thing",
+		Columns: []TableColumn{
+			{Name: "total_cents", Type: "bigint"},
+		},
+	}
+
+	// no After: no keyset predicate, no OFFSET, still tie-broken by id
+	bare, _, err := tableListSQL(def, "svc", Query{Namespace: "default", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(bare, `ORDER BY updated_at DESC NULLS LAST, id DESC LIMIT 10`) {
+		t.Fatalf("missing id tie-break: %s", bare)
+	}
+	if strings.Contains(bare, "OFFSET") {
+		t.Fatalf("OFFSET in emitted SQL: %s", bare)
+	}
+
+	// After set: a keyset WHERE predicate names the order column and id,
+	// bound by position — not OFFSET
+	after := Query{Namespace: "default", Limit: 10, After: &Cursor{Value: "2026-01-01T00:00:00Z", ID: "row-1"}}
+	withAfter, args, err := tableListSQL(def, "svc", after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(withAfter, "OFFSET") {
+		t.Fatalf("OFFSET in emitted SQL: %s", withAfter)
+	}
+	if !strings.Contains(withAfter, "updated_at IS NULL OR updated_at <") || !strings.Contains(withAfter, "AND id <") {
+		t.Fatalf("missing keyset predicate: %s", withAfter)
+	}
+	foundValue, foundID := false, false
+	for _, a := range args {
+		if a == "2026-01-01T00:00:00Z" {
+			foundValue = true
+		}
+		if a == "row-1" {
+			foundID = true
+		}
+	}
+	if !foundValue || !foundID {
+		t.Fatalf("cursor value/id not bound as args: %v", args)
+	}
+
+	// a NULL-valued cursor compares only the id, within the NULL group
+	nullAfter := Query{Namespace: "default", Limit: 10, After: &Cursor{Null: true, ID: "row-2"}}
+	withNullAfter, _, err := tableListSQL(def, "svc", nullAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(withNullAfter, "updated_at IS NULL AND id <") {
+		t.Fatalf("missing null-cursor predicate: %s", withNullAfter)
+	}
+
+	// an ascending OrderBy flips both comparisons to >
+	asc := Query{Namespace: "default", Limit: 10, OrderBy: "total_cents", After: &Cursor{Value: "5", ID: "row-3"}}
+	ascSQL, _, err := tableListSQL(def, "svc", asc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ascSQL, `"total_cents" > `) || !strings.Contains(ascSQL, "AND id > ") {
+		t.Fatalf("ascending keyset predicate wrong direction: %s", ascSQL)
+	}
+	if !strings.HasSuffix(ascSQL, `ORDER BY "total_cents" ASC, id ASC LIMIT 10`) {
+		t.Fatalf("ascending ORDER BY wrong: %s", ascSQL)
+	}
+
+	// same shape on the jsonb-document path
+	docsAfter, _, err := docsListSQL("loom_entities", "entity_type", "Thing", "svc",
+		Query{Namespace: "default", After: &Cursor{Value: "2026-01-01T00:00:00Z", ID: "row-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(docsAfter, "OFFSET") {
+		t.Fatalf("OFFSET in emitted SQL: %s", docsAfter)
+	}
+	if !strings.Contains(docsAfter, "updated_at IS NULL OR updated_at <") {
+		t.Fatalf("missing keyset predicate: %s", docsAfter)
+	}
+	if !strings.HasSuffix(docsAfter, ", id DESC LIMIT 100") {
+		t.Fatalf("missing id tie-break: %s", docsAfter)
 	}
 }
