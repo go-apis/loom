@@ -12,6 +12,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Added
+
+- **The gateway serves agents over MCP.** `mcp.New(mcp.Config{Gateway: h})`
+  mounts five tools over the handler `graphql.New` returned: `search`,
+  `describe`, `dispatch`, `get` and `list`. They are the same for every
+  schema, so a service with hundreds of commands gives an agent five
+  tools, and they reach every command and read the composed schema has,
+  hand-written `Field`s included. Each call is one GraphQL operation run
+  in-process through the new `graphql.Executor` (`graphql.AsExecutor`),
+  so it meets the gateway's `Auth`, `Policy`, `@role` gates, depth limit
+  and redaction as an HTTP caller's does; the package holds no rules of
+  its own. Streamable HTTP, stateless.
+
 ### Fixed
 
 - **A generation comes from the deploy, not the revision name.** v0.85.0

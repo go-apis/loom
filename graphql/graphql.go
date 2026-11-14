@@ -1303,15 +1303,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// resolve access before anything executes (the static playground page
 	// above is exempt — its queries land back here and are enforced); a
 	// context Access set by the deployment's own middleware wins
-	if _, ok := AccessFrom(r.Context()); !ok && h.auth != nil {
-		access, err := h.auth(r)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"errors":[{"message":"unauthenticated"}]}`))
-			return
-		}
-		r = r.WithContext(WithAccess(r.Context(), access))
+	r, err := h.Authenticate(r)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"unauthenticated"}]}`))
+		return
 	}
 	if h.policy != nil {
 		r = r.WithContext(withPolicy(r.Context(), h.policy))
