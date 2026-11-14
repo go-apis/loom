@@ -253,6 +253,14 @@ generated switches, folds from generated assignments.
   held elsewhere, a starved pool). Processes keep their own policy:
   retry, then park and move on. The four columns are additive; a
   consumer upgrading runs `Migrate` before the new runners start.
+- **Idle runners back off** (`Config.RunnerIdlePoll`, distinct from the
+  stalled-runner backoff above — this one backs off a runner with
+  nothing to do, not a failing one). A runner that had work or an error
+  steps again after `Start`'s poll; `idleWait` doubles that on each
+  idle round, up to `RunnerIdlePoll`. Zero (the default) keeps every
+  round at the poll, as before. New events still wake a runner at once
+  through the log fan-out, so the unwoken step backed off here is only
+  the safety net for a wake it missed, not the common path.
 - **Outbox relay**: the one component ported by design from the old
   runtime: advisory-lock election, SKIP LOCKED claims, insert-order drain,
   per-aggregate ordering keys.

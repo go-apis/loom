@@ -75,6 +75,15 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   for what needs attention), to All access under `DefaultPolicy`, and
   so to the MCP tools. `GET /runners` is the same read and gains
   `behind_since`.
+- **Idle runners back off: `Config.RunnerIdlePoll`.** A projection or
+  process runner with nothing to do stepped every `Start` poll, and
+  each idle step is a transaction. Runners are woken at once by new
+  events through the log fan-out, so the unwoken step is a safety net:
+  with `RunnerIdlePoll` set it stays at the poll after a round with
+  work or an error and doubles on each idle round up to
+  `RunnerIdlePoll`. Zero (the default) keeps today's behaviour.
+  runsheet's e2e rig measured one settled rig at 1,277 transactions/s
+  before and 202 after (5s, poll 200ms).
 
 ### Changed
 
