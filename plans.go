@@ -197,9 +197,21 @@ func (c *Client) RunPlan(ctx context.Context, namespace string, id uuid.UUID) er
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	if MetaFrom(ctx) == (Metadata{}) {
-		ctx = WithMeta(ctx, meta)
+	// the run is the runner's act and the planner's intent: whoever
+	// runs it is the actor, where it names one, and the plan it came
+	// from is the cause; the correlation is the planner's unless the
+	// run brings its own
+	now := MetaFrom(ctx)
+	if now.Actor == "" {
+		now.Actor = meta.Actor
 	}
+	if now.CorrelationID == "" {
+		now.CorrelationID = meta.CorrelationID
+	}
+	if now.CausationID == "" {
+		now.CausationID = "plan:" + id.String()
+	}
+	ctx = WithMeta(ctx, now)
 	return c.Dispatch(context.WithValue(ctx, plannedKey{}, planned{cmd: cmd, version: version}), cmd)
 }
 
