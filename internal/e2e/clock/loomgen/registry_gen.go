@@ -20,7 +20,17 @@ func loomErrNilEvent(eventType string) error {
 	return fmt.Errorf("nil payload for event %s", eventType)
 }
 
+type CoolAnvilReactions interface {
+	OnAnvilStruck(ctx context.Context, evt *loom.Event, data *AnvilStruck) ([]loom.Command, error)
+}
+
+type ImpatientReactions interface {
+	OnAnvilStruck(ctx context.Context, evt *loom.Event, data *AnvilStruck) ([]loom.Command, error)
+}
+
 type Impl struct {
+	CoolAnvil CoolAnvilReactions
+	Impatient ImpatientReactions
 
 	// handlers holds what the aggregates' and records' binding methods set,
 	// by name.
@@ -34,7 +44,45 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Records:    []*loom.RecordDef{},
 		Events:     []*loom.EventDef{},
 		Policies:   []*loom.ReactorDef{},
-		Processes:  []*loom.ReactorDef{},
+		Processes: []*loom.ReactorDef{
+			{
+				Name:   "coolAnvil",
+				Events: []string{"AnvilStruck"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "AnvilStruck", Dispatches: []string{"RecordAnvilCool"}},
+				},
+				Retry: &loom.RetryPolicy{Max: 4, Min: 100000000, MaxBackoff: 200000000}, // @retry(4, 100ms..200ms)
+				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+					switch data := evt.Data.(type) {
+					case *AnvilStruck:
+						cmds, err := impl.CoolAnvil.OnAnvilStruck(ctx, evt, data)
+						if err != nil {
+							return nil, err
+						}
+						return cmds, checkDispatches("coolAnvil", "AnvilStruck", []string{"RecordAnvilCool"}, cmds)
+					}
+					return nil, fmt.Errorf("unroutable event %s", evt.Type)
+				},
+			},
+			{
+				Name:   "impatient",
+				Events: []string{"AnvilStruck"},
+				Subs: []loom.SubscriptionDef{
+					{Event: "AnvilStruck", Dispatches: nil},
+				},
+				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
+					switch data := evt.Data.(type) {
+					case *AnvilStruck:
+						cmds, err := impl.Impatient.OnAnvilStruck(ctx, evt, data)
+						if err != nil {
+							return nil, err
+						}
+						return cmds, checkDispatches("impatient", "AnvilStruck", nil, cmds)
+					}
+					return nil, fmt.Errorf("unroutable event %s", evt.Type)
+				},
+			},
+		},
 		Schedules: []*loom.ScheduleDef{
 			{
 				Name:    "bell",

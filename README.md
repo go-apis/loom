@@ -515,6 +515,88 @@ Commands declare what they emit (`-> OrderPlaced`) and reactions declare
 what they dispatch — both are runtime-enforced contracts, so the schema can
 never lie about the topology.
 
+### Schedules: a command on an interval
+
+A timer fires once. For work that recurs — a watchdog's look, a sweep,
+a reconcile — declare a schedule and loom owns the clock:
+
+```
+/// Looks at every project's flow.
+schedule flowWatch every 5m -> TickFlowWatch @in(platform)
+```
+
+The command is dispatched at the deploy and every interval after (`30s`,
+`5m`, `1h`, `1d`), to one stream: `@in` names its namespace, and its id
+is `@id("uuid")` or, without one, derived from the service and the
+schedule's name — the same on every build. A scheduled command carries
+no payload, so it may declare no required field.
+
+The difference from a command that re-arms itself with `loom.After` is
+what happens when a tick goes wrong. A self-re-arming chain ends the
+first time its reaction fails, is not deployed, or is refused, and then
+nothing ticks until someone notices. A schedule's row is moved on after
+every tick, whatever came of it: a failed tick is logged and the next
+one is the retry. It fires on the newest generation alive, one instance
+at a time. Ticks missed while the service was down are not made up —
+it fires once when it can and every interval from there. A schedule the
+newest build no longer declares stops. `Status` lists each with its
+next time.
+
+### Looking again until it is done
+
+Some reactions have nothing to do yet: the deploy is still rolling out,
+the channel does not exist, the payment has not settled. Return
+`loom.NotYet` and the process's `@retry` looks again later:
+
+```go
+func (h *AwaitDeploy) OnDeployRequested(ctx context.Context, evt *loom.Event, d *DeployRequested) ([]loom.Command, error) {
+    run, err := h.Runs.Get(ctx, d.RunID)   // a read: call it directly
+    if err != nil {
+        return nil, err                    // a failure: the usual retries
+    }
+    if !run.Finished {
+        return nil, loom.NotYet("the deploy is still rolling out")
+    }
+    return []loom.Command{&RecordDeployOutcome{...}}, nil
+}
+```
+
+```
+process awaitDeploy @retry(40, 5s..5m) {
+  on DeployRequested -> RecordDeployOutcome
+}
+```
+
+`NotYet` is not a failure: the reaction is not tried three times at
+once, nothing is logged as failing, and the durable timer starts
+straight away, backing off between `@retry`'s bounds. When its attempts
+run out the event is parked, saying how many times it looked — a thing
+that never became ready is for a person. A process with no `@retry`
+that answers `NotYet` is parked at once, saying so. Make the look
+itself directly rather than through `loom.Once`: `Once` remembers a
+result, and a remembered "not ready" would be the answer every time.
+
+### Reacting again to what is already behind
+
+A process reacts to an event once, as it passes. `ReplayProcess` hands
+it events it has been past — for a process added after the things it
+is about exist, or whose outside call was down while they went by:
+
+```go
+// once for every project that exists, not once per thing that ever happened to it
+res, err := cli.ReplayProcess(ctx, "publishSection", loom.ReplayOptions{LatestPerAggregate: true})
+```
+
+Narrow it with `Types`, `Namespace` and `AggregateID`; `DryRun` counts
+first. The reaction is the same one, with the same retries, its commands
+dispatched and a failure parked (under `process:<name> (replay)`). Two
+things differ from the process's own pass: its checkpoint does not move,
+and its effects run again — they are journaled under the replay's id,
+so `loom.Once` does not answer them from the first pass. A reaction
+that converges replays safely; one that sends an email will send it
+again, so narrow the replay to what needs it. Also on the service's
+API: `POST /processes/{name}/replay`.
+
 ## Effects: calling the outside world
 
 Everything above is safe to retry — which is exactly what makes an external
@@ -969,6 +1051,19 @@ and inherits the checks by delegating to `DefaultPolicy`. Like `@role`,
 `@allow` gates only the gateway — and so the MCP tools — never
 in-process `Dispatch`.
 
+`loom access` prints all of this as one document — every command and
+generated read under the name the gateway serves, with its roles, its
+rules read aloud and whether it is planned first. Check it in, and
+`loom access --check` fails a build whose schema says otherwise, so a
+change to who may run what shows in the pull request that makes it.
+
+The gateway also records who ran a command. Set `Access.Actor` in your
+`Auth` hook (`user:<id>`, `session:<job>` — your ids) and it is stamped
+on the metadata of every command the request dispatches, over GraphQL
+and through the MCP tools, so the events say who caused them. A planned
+command's events name whoever ran the plan, with `plan:<id>` as their
+cause.
+
 Some commands should not be run on a caller's first word. Mark one
 `@plan` and the gateway holds it back:
 
@@ -1079,6 +1174,26 @@ so `Auth`, `Policy`, `@role`, the depth limit and `@secret` redaction
 apply exactly as they do over HTTP, and a hand-written `Field` is
 reachable like a generated one. `Config.Unauthenticated` lets a
 deployment name its OAuth resource metadata in the 401 it answers.
+
+A client with no token has to be told how to get one. Give the server
+a `SignIn` and mount it with `mcp.Mount`:
+
+```go
+err := mcp.Mount(mux, "/mcp", mcp.Config{
+    Gateway: gateway,
+    SignIn: &mcp.SignIn{
+        Resource:             "https://api.example.com/mcp",
+        AuthorizationServers: []string{"https://auth.example.com"},
+    },
+})
+```
+
+A request with no usable token is then answered 401 naming the sign-in
+document (`/.well-known/oauth-protected-resource/mcp`, RFC 9728), which
+names the authorization servers — the two reads the MCP authorization
+spec has a client make. loom only points: it issues no token, and the
+gateway's `Auth` hook still decides who a bearer is, including that the
+token was issued for this server.
 
 `search` and `describe` show a caller only what it could run. Each
 operation is put to the gateway's own `Policy` as a probe — a

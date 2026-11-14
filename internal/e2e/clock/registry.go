@@ -9,7 +9,8 @@ import (
 // NewRegistry wires implementations into the generated registry. Yours
 // to edit.
 func NewRegistry() *loom.Registry {
-	impl := loomgen.Impl{}
+	impl := loomgen.Impl{CoolAnvil: &CoolAnvil{}, Impatient: &Impatient{}}
 	impl.Bell(&Bell{})
+	impl.Anvil(&Anvil{})
 	return loomgen.NewRegistry(impl)
 }

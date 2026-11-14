@@ -62,13 +62,21 @@ func (r *RetryPolicy) backoff(n int) time.Duration {
 // it, or under @retry arm its durable retry.
 func (c *Client) exhausted(ctx context.Context, runner string, p *ReactorDef, evt *Event, cause error) error {
 	if p.Retry == nil {
+		if IsNotYet(cause) {
+			// loud, and once: there is nothing to look again with
+			cause = fmt.Errorf("process %s answered NotYet and declares no @retry to look again with: %w", p.Name, cause)
+		}
 		return c.park(ctx, runner, evt, cause)
 	}
 	rec, err := json.Marshal(retryRecord{Process: p.Name, LastError: cause.Error(), Event: c.sealedEnvelope(ctx, c.db, evt)})
 	if err != nil {
 		return err
 	}
-	c.log.WarnContext(ctx, "reaction failed; retrying durably", "runner", runner, "type", evt.Type, "error", cause)
+	if IsNotYet(cause) {
+		c.log.InfoContext(ctx, "reaction not ready; looking again later", "runner", runner, "type", evt.Type, "reason", cause.Error())
+	} else {
+		c.log.WarnContext(ctx, "reaction failed; retrying durably", "runner", runner, "type", evt.Type, "error", cause)
+	}
 	// DO NOTHING: an existing row is the same retry, further along
 	_, err = c.db.Exec(ctx, `
 		INSERT INTO loom_timers (service, namespace, key, command_type, command, meta, fire_at)
@@ -141,6 +149,9 @@ func (c *Client) fireRetry(ctx context.Context, d dueTimer) (retErr error) {
 	rec.LastError = cause.Error()
 	// a policy removed or tightened since the row was armed still ends
 	if p.Retry == nil || rec.Attempts >= p.Retry.Max {
+		if IsNotYet(cause) {
+			cause = fmt.Errorf("still not ready after looking %d more times: %w", rec.Attempts, cause)
+		}
 		if err := c.parkOn(ctx, tx, runner, evt, cause, processRetries+rec.Attempts); err != nil {
 			return err
 		}
@@ -149,8 +160,13 @@ func (c *Client) fireRetry(ctx context.Context, d dueTimer) (retErr error) {
 		}
 		return tx.Commit(ctx)
 	}
-	c.log.WarnContext(ctx, "durable retry failed; re-arming", "runner", runner, "type", evt.Type,
-		"attempt", rec.Attempts, "max", p.Retry.Max, "error", cause)
+	if IsNotYet(cause) {
+		c.log.InfoContext(ctx, "reaction still not ready; looking again later", "runner", runner, "type", evt.Type,
+			"attempt", rec.Attempts, "max", p.Retry.Max, "reason", cause.Error())
+	} else {
+		c.log.WarnContext(ctx, "durable retry failed; re-arming", "runner", runner, "type", evt.Type,
+			"attempt", rec.Attempts, "max", p.Retry.Max, "error", cause)
+	}
 	next, err := json.Marshal(rec)
 	if err != nil {
 		return err

@@ -21,3 +21,34 @@ schedule bell every 1s -> RingBell @in(tower)
 
 /// Rings the same bell's neighbour, at a stream the schema names.
 schedule chime every 1h -> RingBell @in(tower) @id("11111111-2222-4333-8444-555555555555")
+
+/// An anvil, struck hot and left to cool.
+aggregate Anvil {
+  state {
+    cool: bool
+  }
+
+  /// Strike the anvil.
+  command StrikeAnvil -> AnvilStruck
+
+  /// Record that the anvil has cooled.
+  command RecordAnvilCool -> AnvilCooled
+
+  event AnvilStruck {
+    cool: bool!
+  }
+
+  event AnvilCooled {
+    cool: bool!
+  }
+}
+
+// looks at the anvil until it has cooled: the fixture for loom.NotYet
+process coolAnvil @retry(4, 100ms..200ms) {
+  on AnvilStruck -> RecordAnvilCool
+}
+
+// the same look with nothing to look again with
+process impatient {
+  on AnvilStruck
+}

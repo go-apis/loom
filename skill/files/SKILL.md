@@ -151,6 +151,20 @@ plan of what it would emit and runs nothing; `runPlan` with the plan's
 id runs it, once, while its target is unchanged. Handlers need nothing
 special: the plan is the handler's own decision, not yet written.
 
+## Work that recurs is a schedule
+
+A look, a sweep or a reconcile that runs every so often is declared
+`schedule <name> every 5m -> <Command> @in(<namespace>)`. Do not write a
+command that re-arms itself with `loom.After`: its chain ends the first
+time a tick fails. A schedule ticks whatever came of the last one.
+
+## Waiting for something is NotYet
+
+A reaction that has nothing to do yet returns `loom.NotYet("what it is
+waiting for")` and its process declares `@retry(max, min..max)`. Do not
+schedule your own timer to look again. Make the look directly, not
+through `loom.Once`.
+
 ## Reading
 
 - `cli.Load(ctx, "Aggregate", ns, id)` reads an aggregate's state from
