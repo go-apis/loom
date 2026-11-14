@@ -1130,8 +1130,13 @@ planned, since the plan's id is all it takes:
   may run.
 
 A command its handler refuses is refused at planning, with the
-handler's error. A plan shows what the command emits, not what reacts
-to it: processes and policies are not run to find out. `@plan` holds
+handler's error. Beside each event it would emit, a plan names what the
+schema says reacts to it: policies with the commands they may dispatch,
+processes with the outside calls they declare, projections with the
+read model they update, other services' processes on the same gateway
+that consume it, and whether it goes to the bus at all. That is who
+reacts, read from the schema — not what each would decide, which is
+not known until it runs, and no reaction is run to find out. `@plan` holds
 back only the gateway, and so the MCP tools; in-process `Dispatch`
 (processes, timers, your own code) runs the command as any other, and
 `Client.Plan` / `Client.RunPlan` are there to call directly.

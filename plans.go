@@ -34,8 +34,9 @@ type Plan struct {
 	TargetID uuid.UUID `json:"target_id"`
 	Version  int       `json:"version"`
 	// Events is what the command's handler decided it would emit, in
-	// order. Nothing was written, and no reaction to them was run: what
-	// processes and policies would then do is not part of a plan.
+	// order, each with what the schema says reacts to it. Nothing was
+	// written and no reaction was run: a plan names who reacts and what
+	// each is declared to dispatch and call, not what it would decide.
 	Events    []PlannedEvent `json:"events"`
 	ExpiresAt time.Time      `json:"expires_at"`
 }
@@ -44,6 +45,12 @@ type Plan struct {
 type PlannedEvent struct {
 	Type string `json:"type"`
 	Data any    `json:"data"`
+	// Published is whether the event goes to the bus: other services
+	// may consume it, and this service's schema cannot say which.
+	Published bool `json:"published"`
+	// Reactions is what this service's schema says reacts to the event
+	// (Client.Reactions): who, not what they would decide.
+	Reactions []PlannedReaction `json:"reactions"`
 }
 
 // ErrNoPlan is a plan id that names nothing runnable here: never made,
@@ -94,7 +101,8 @@ func (c *Client) Plan(ctx context.Context, cmd Command, ttl time.Duration) (*Pla
 		if !contains(emits, evt) {
 			return nil, &ContractError{Command: name, Emitted: evt}
 		}
-		plan.Events = append(plan.Events, PlannedEvent{Type: evt, Data: payload})
+		def := c.reg.eventDef(evt)
+		plan.Events = append(plan.Events, PlannedEvent{Type: evt, Data: payload, Published: def != nil && def.Publish, Reactions: c.Reactions(evt)})
 	}
 
 	raw, err := json.Marshal(cmd)
