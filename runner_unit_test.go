@@ -33,3 +33,28 @@ func TestLogLimiter(t *testing.T) {
 		t.Fatalf("after a minute: %d %v", n, ok)
 	}
 }
+
+func TestIdleWaitBacksOffOnlyWhileIdle(t *testing.T) {
+	poll, max := 200*time.Millisecond, 5*time.Second
+	if got := idleWait(poll, poll, 0, false); got != poll {
+		t.Fatalf("no knob: an idle round sleeps poll, got %s", got)
+	}
+	if got := idleWait(poll, poll, poll/2, false); got != poll {
+		t.Fatalf("a knob under poll: poll, got %s", got)
+	}
+	w := poll
+	var seen []time.Duration
+	for i := 0; i < 8; i++ {
+		w = idleWait(w, poll, max, false)
+		seen = append(seen, w)
+	}
+	want := []time.Duration{400 * time.Millisecond, 800 * time.Millisecond, 1600 * time.Millisecond, 3200 * time.Millisecond, max, max, max, max}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("idle rounds sleep %v, want %v", seen, want)
+		}
+	}
+	if got := idleWait(max, poll, max, true); got != poll {
+		t.Fatalf("a round with work goes back to poll, got %s", got)
+	}
+}

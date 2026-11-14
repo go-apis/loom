@@ -44,6 +44,15 @@ type Config struct {
 	// dispatches always find headroom regardless of pool size.
 	StepConcurrency int
 
+	// RunnerIdlePoll is how long a projection or process runner with
+	// nothing to do may sleep before it steps unwoken. New events wake a
+	// runner at once through the log fan-out (NOTIFY), so the unwoken
+	// step is only a safety net for a wake it missed. A runner that had
+	// work or an error steps again after Start's poll; each idle round
+	// doubles that, up to RunnerIdlePoll. Zero (the default) keeps every
+	// runner on Start's poll, as before.
+	RunnerIdlePoll time.Duration
+
 	// Reconcile maps a declared effect name (the part of a Once key before
 	// any "/suffix") to a hook Once consults before declaring that effect
 	// in doubt. Optional; an effect with no hook (and not @idempotent)
@@ -100,6 +109,7 @@ type Client struct {
 	relayNudge      chan struct{} // outbox rows written: wake the relay
 	batchNudge      chan struct{} // batch enqueued: wake the batch runner
 	stepSem         chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
+	runnerIdlePoll  time.Duration // Config.RunnerIdlePoll
 	leader          leaderFlag    // this instance holds the service's process lease (election.go)
 	gen             generation    // Config.Generation, Config.Revision as the election orders them
 	procSteps       atomic.Int64  // process runner steps in flight (a yielding leader drains them)
@@ -156,26 +166,27 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 	c := &Client{
-		db:          cfg.DB,
-		bus:         cfg.Bus,
-		reg:         cfg.Registry,
-		log:         cfg.Logger.With("service", cfg.Registry.Service),
-		readerNudge: make(chan struct{}, 1),
-		fan:         &logFanout{},
-		relayNudge:  make(chan struct{}, 1),
-		batchNudge:  make(chan struct{}, 1),
-		stepSem:     make(chan struct{}, cfg.StepConcurrency),
-		watchers:    map[chan struct{}]bool{},
-		keys:        cfg.Keys,
-		blobs:       cfg.Blobs,
-		deks:        map[string][]byte{},
-		tables:      buildTables(cfg.Registry),
-		series:      buildSeries(cfg.Registry),
-		tel:         newTelemetry(cfg.Registry.Service),
-		retries:     cfg.ConflictRetries,
-		reconcile:   cfg.Reconcile,
-		seriesAhead: cfg.SeriesPartitionAhead,
-		gen:         generationFrom(cfg.Generation, cfg.Revision),
+		db:             cfg.DB,
+		bus:            cfg.Bus,
+		reg:            cfg.Registry,
+		log:            cfg.Logger.With("service", cfg.Registry.Service),
+		readerNudge:    make(chan struct{}, 1),
+		fan:            &logFanout{},
+		relayNudge:     make(chan struct{}, 1),
+		batchNudge:     make(chan struct{}, 1),
+		stepSem:        make(chan struct{}, cfg.StepConcurrency),
+		runnerIdlePoll: cfg.RunnerIdlePoll,
+		watchers:       map[chan struct{}]bool{},
+		keys:           cfg.Keys,
+		blobs:          cfg.Blobs,
+		deks:           map[string][]byte{},
+		tables:         buildTables(cfg.Registry),
+		series:         buildSeries(cfg.Registry),
+		tel:            newTelemetry(cfg.Registry.Service),
+		retries:        cfg.ConflictRetries,
+		reconcile:      cfg.Reconcile,
+		seriesAhead:    cfg.SeriesPartitionAhead,
+		gen:            generationFrom(cfg.Generation, cfg.Revision),
 	}
 	if c.seriesAhead <= 0 {
 		c.seriesAhead = defaultSeriesPartitionAhead
