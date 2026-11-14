@@ -116,6 +116,7 @@ func New(cfg Config) (http.Handler, error) {
 		muts:    gql.Fields{},
 		subs:    gql.Fields{},
 	}
+	b.services = cfg.Services
 	for _, cli := range cfg.Services {
 		if err := b.service(cli); err != nil {
 			return nil, err
@@ -294,6 +295,9 @@ type builder struct {
 	// fieldRules is each type's per-field @allow rules, by type and then
 	// by snake-case field (fields.go).
 	fieldRules map[string]map[string][]loom.Rule
+	// services is every composed service: a plan asks the others what
+	// they do with its events (plan.go).
+	services []*loom.Client
 	// planned is every @plan command, by command name (plan.go).
 	planned map[string]plannedOp
 }
@@ -1263,7 +1267,7 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 				if err != nil {
 					return nil, err
 				}
-				return planDoc(held)
+				return planDoc(held, b.consumedBy(cli))
 			}
 			if err := cli.Dispatch(p.Context, cmd); err != nil {
 				return nil, err

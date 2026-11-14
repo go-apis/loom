@@ -21,12 +21,26 @@ import (
 // Policy can let one caller plan what only another may run.
 
 var (
+	plannedReaction = gql.NewObject(gql.ObjectConfig{
+		Name:        "PlannedReaction",
+		Description: "One thing the schema says reacts to a planned event. It says who reacts and what each is declared to dispatch and call — not what it would decide when it runs.",
+		Fields: gql.Fields{
+			"kind":       {Type: gql.NewNonNull(gql.String), Description: "policy (in the event's own transaction), process (afterwards) or projection (a read model)."},
+			"name":       {Type: gql.NewNonNull(gql.String)},
+			"service":    {Type: gql.String, Description: "The reactor's service, when it is another service's process consuming the event."},
+			"dispatches": {Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String))), Description: "Commands it may dispatch in answer. It may dispatch any of them, or none."},
+			"effects":    {Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String))), Description: "Outside calls a process declares. They are the process's, not this event's alone."},
+			"entity":     {Type: gql.String, Description: "The read model a projection updates."},
+		},
+	})
 	plannedEvent = gql.NewObject(gql.ObjectConfig{
 		Name:        "PlannedEvent",
 		Description: "One event a planned command would emit.",
 		Fields: gql.Fields{
-			"type": {Type: gql.NewNonNull(gql.String)},
-			"data": {Type: scalarMap},
+			"type":      {Type: gql.NewNonNull(gql.String)},
+			"data":      {Type: scalarMap},
+			"published": {Type: gql.NewNonNull(gql.Boolean), Description: "Whether it goes to the bus, where services outside this gateway may react to it."},
+			"reactions": {Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(plannedReaction))), Description: "What reacts to it, by the schema: this service's policies, processes and projections, then other services' processes on this gateway."},
 		},
 	})
 	planObject = gql.NewObject(gql.ObjectConfig{
@@ -53,7 +67,10 @@ type plannedOp struct {
 	stored stateLoader
 }
 
-func planDoc(p *loom.Plan) (map[string]any, error) {
+// planDoc renders a plan. consumed answers, for one of its event types,
+// the reactions of the gateway's other services: their processes that
+// consume the event off the bus.
+func planDoc(p *loom.Plan, consumed func(eventType string) []loom.PlannedReaction) (map[string]any, error) {
 	events := make([]any, len(p.Events))
 	for i, e := range p.Events {
 		raw, err := json.Marshal(e.Data)
@@ -62,13 +79,46 @@ func planDoc(p *loom.Plan) (map[string]any, error) {
 		}
 		data := map[string]any{}
 		_ = json.Unmarshal(raw, &data)
-		events[i] = map[string]any{"type": e.Type, "data": data}
+		reactions := []any{}
+		for _, r := range append(append([]loom.PlannedReaction(nil), e.Reactions...), consumed(e.Type)...) {
+			doc := map[string]any{"kind": r.Kind, "name": r.Name, "dispatches": orEmpty(r.Dispatches), "effects": orEmpty(r.Effects)}
+			if r.Service != "" {
+				doc["service"] = r.Service
+			}
+			if r.Entity != "" {
+				doc["entity"] = r.Entity
+			}
+			reactions = append(reactions, doc)
+		}
+		events[i] = map[string]any{"type": e.Type, "data": data, "published": e.Published, "reactions": reactions}
 	}
 	return map[string]any{
 		"id": p.ID.String(), "command": p.Command, "namespace": p.Namespace,
 		"targetId": p.TargetID.String(), "version": p.Version,
 		"events": events, "expiresAt": p.ExpiresAt,
 	}, nil
+}
+
+func orEmpty(list []string) []any {
+	out := make([]any, len(list))
+	for i, s := range list {
+		out[i] = s
+	}
+	return out
+}
+
+// consumedBy answers what the gateway's other services declare they do
+// with one of cli's events.
+func (b *builder) consumedBy(cli *loom.Client) func(eventType string) []loom.PlannedReaction {
+	return func(eventType string) []loom.PlannedReaction {
+		var out []loom.PlannedReaction
+		for _, other := range b.services {
+			if other != cli {
+				out = append(out, other.ConsumedReactions(cli.Registry().Service, eventType)...)
+			}
+		}
+		return out
+	}
 }
 
 // runPlanMutation adds `runPlan` once any composed service has a @plan

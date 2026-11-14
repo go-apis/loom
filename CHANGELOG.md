@@ -14,6 +14,16 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A plan names what reacts.** Each event of a `Plan` now carries
+  `Reactions`: this service's policies with the commands they may
+  dispatch, its processes with the outside calls they declare, its
+  projections with the read model they update — and `Published`, for
+  an event that goes to the bus. Through a gateway, the other composed
+  services' processes that consume the event are listed too, by
+  service. It is read from the schema and nothing is run: a plan says
+  who reacts, not what each would decide. `Client.Reactions` and
+  `Client.ConsumedReactions` answer the same for any event.
+
 - **`@allow` on a field: who is shown it.** A state or entity field
   takes `@allow(kind: admin)`. A caller no rule holds for still reads
   the record; that field resolves to null, and the response carries an
