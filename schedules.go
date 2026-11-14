@@ -3,6 +3,7 @@ package loom
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -30,9 +31,47 @@ const scheduleKeyPrefix = "loom:schedule:"
 // registry's schedules into the timer table.
 const scheduleEnsure = time.Minute
 
+// tickType is the command_type of a row that calls a function (Every)
+// rather than dispatching a command. No command type can carry a ':'.
+const tickType = "loom:tick"
+
+// Every calls fn every interval for as long as the service runs: the
+// schedule for recurring work that is not a command — a sweep of an
+// outside system, a report, a cache another service reads. It is called
+// on one instance at a time, of the newest generation alive, and like a
+// schedule's command it is called again at the next interval whatever
+// came of the last call: an error is logged, and the next call is the
+// retry.
+//
+// It is for work the service does once, wherever it runs. A cache each
+// instance keeps in its own memory is not that: every instance must
+// refresh its own, and a plain ticker in the instance is the right tool.
+//
+// Call Every before Start. name is the schedule's, unique among the
+// service's schedules and the schema's; it is how the work is told
+// apart in Status and the timer table, so keep it across builds.
+func (c *Client) Every(name string, interval time.Duration, fn func(ctx context.Context) error) error {
+	if name == "" || interval <= 0 || fn == nil {
+		return fmt.Errorf("loom: Every wants a name, a positive interval and a function")
+	}
+	for _, s := range c.allSchedules() {
+		if s.Name == name {
+			return fmt.Errorf("loom: a schedule named %q is already declared", name)
+		}
+	}
+	c.every = append(c.every, &ScheduleDef{Name: name, Every: interval, Run: fn})
+	return nil
+}
+
+// allSchedules is the schema's schedules and the functions added with
+// Every.
+func (c *Client) allSchedules() []*ScheduleDef {
+	return append(append([]*ScheduleDef(nil), c.reg.Schedules...), c.every...)
+}
+
 func (c *Client) scheduleDef(key string) *ScheduleDef {
 	name := strings.TrimPrefix(key, scheduleKeyPrefix)
-	for _, s := range c.reg.Schedules {
+	for _, s := range c.allSchedules() {
 		if s.Name == name {
 			return s
 		}
@@ -48,17 +87,23 @@ func (c *Client) scheduleDef(key string) *ScheduleDef {
 // schema no longer declares loses its row. Only the newest generation
 // alive does this: an older build's registry is not the schedule.
 func (c *Client) ensureSchedules(ctx context.Context) error {
-	keys := make([]string, 0, len(c.reg.Schedules))
-	for _, s := range c.reg.Schedules {
-		cmd := s.New()
-		raw, err := json.Marshal(cmd)
-		if err != nil {
-			return err
+	keys := make([]string, 0, len(c.reg.Schedules)+len(c.every))
+	for _, s := range c.allSchedules() {
+		// a function's row holds nothing to dispatch: the function is in
+		// the build, and the row is only its clock
+		ns, cmdType, raw := "", tickType, []byte("{}")
+		if s.Run == nil {
+			cmd := s.New()
+			var err error
+			if raw, err = json.Marshal(cmd); err != nil {
+				return err
+			}
+			ns, _ = cmd.CommandTarget()
+			cmdType = cmd.LoomCommand()
 		}
-		ns, _ := cmd.CommandTarget()
 		key := scheduleKeyPrefix + s.Name
 		keys = append(keys, key)
-		_, err = c.db.Exec(ctx, `
+		_, err := c.db.Exec(ctx, `
 			INSERT INTO loom_timers (service, namespace, key, command_type, command, meta, fire_at)
 			VALUES ($1,$2,$3,$4,$5,'{}', now())
 			ON CONFLICT (service, key) DO UPDATE SET
@@ -66,7 +111,7 @@ func (c *Client) ensureSchedules(ctx context.Context) error {
 				command_type = EXCLUDED.command_type,
 				command = EXCLUDED.command,
 				fire_at = LEAST(loom_timers.fire_at, now() + make_interval(secs => $6))`,
-			c.reg.Service, ns, key, cmd.LoomCommand(), raw, (s.Every + timerLease).Seconds())
+			c.reg.Service, ns, key, cmdType, raw, (s.Every + timerLease).Seconds())
 		if err != nil {
 			return err
 		}
@@ -88,26 +133,44 @@ func (c *Client) fireSchedule(ctx context.Context, d dueTimer) error {
 		// not in this build's schema: ensureSchedules removes it
 		return nil
 	}
-	meta, _ := json.Marshal(Metadata{Actor: "schedule:" + def.Name})
-	if err := c.fireTimer(ctx, d.key, d.cmdType, d.cmd, meta); err != nil {
+	var err error
+	if def.Run != nil {
+		err = c.runTick(WithMeta(ctx, Metadata{Actor: "schedule:" + def.Name}), def)
+	} else {
+		meta, _ := json.Marshal(Metadata{Actor: "schedule:" + def.Name})
+		err = c.fireTimer(ctx, d.key, d.cmdType, d.cmd, meta)
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		c.log.ErrorContext(ctx, "scheduled command failed; the next tick tries again",
+		c.log.ErrorContext(ctx, "scheduled work failed; the next tick tries again",
 			"schedule", def.Name, "command", d.cmdType, "every", def.Every.String(), "error", err)
 	}
 	// only if it is still the row the claim leased: ensureSchedules may
 	// have pulled it in meanwhile, and that time stands
-	_, err := c.db.Exec(ctx, `
+	_, err = c.db.Exec(ctx, `
 		UPDATE loom_timers SET fire_at = now() + make_interval(secs => $4)
 		WHERE service=$1 AND key=$2 AND fire_at=$3`,
 		c.reg.Service, d.key, d.leasedAt, def.Every.Seconds())
 	return err
 }
 
+// runTick calls a schedule's function. A panic in it is the tick's
+// failure, not the timer runner's end.
+func (c *Client) runTick(ctx context.Context, def *ScheduleDef) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return def.Run(ctx)
+}
+
 // ScheduleStatus is one schedule and when it next fires.
 type ScheduleStatus struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// Command is the command dispatched; empty for a function (Every).
 	Command string `json:"command"`
 	// Every is the interval, in seconds.
 	Every float64 `json:"every_seconds"`
@@ -119,7 +182,7 @@ type ScheduleStatus struct {
 
 func (c *Client) schedules(ctx context.Context) ([]ScheduleStatus, error) {
 	out := []ScheduleStatus{}
-	if len(c.reg.Schedules) == 0 {
+	if len(c.allSchedules()) == 0 {
 		return out, nil
 	}
 	next := map[string]time.Time{}
@@ -140,7 +203,7 @@ func (c *Client) schedules(ctx context.Context) ([]ScheduleStatus, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for _, s := range c.reg.Schedules {
+	for _, s := range c.allSchedules() {
 		st := ScheduleStatus{Name: s.Name, Command: s.Command, Every: s.Every.Seconds()}
 		if at, ok := next[s.Name]; ok {
 			st.NextAt = &at

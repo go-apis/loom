@@ -104,19 +104,20 @@ type Client struct {
 	bus             Bus
 	reg             *Registry
 	log             *slog.Logger
-	readerNudge     chan struct{} // log advanced: wake the fan-out reader (runReader)
-	fan             *logFanout    // shared log tail + typed runner wake-ups
-	relayNudge      chan struct{} // outbox rows written: wake the relay
-	batchNudge      chan struct{} // batch enqueued: wake the batch runner
-	stepSem         chan struct{} // bounds concurrent runner steps (see Config.StepConcurrency)
-	runnerIdlePoll  time.Duration // Config.RunnerIdlePoll
-	leader          leaderFlag    // this instance holds the service's process lease (election.go)
-	gen             generation    // Config.Generation, Config.Revision as the election orders them
-	genOnce         sync.Once     // the generation is resolved once, by whichever runner needs it first
-	superseded      atomic.Bool   // a newer generation is alive: this instance leaves the service's work to it (instances.go)
-	beaten          chan struct{} // closed after the instance's first beat; nil until Start
-	beatNudge       chan struct{} // another instance announced itself: beat now (instances.go)
-	procSteps       atomic.Int64  // process runner steps in flight (a yielding leader drains them)
+	readerNudge     chan struct{}  // log advanced: wake the fan-out reader (runReader)
+	fan             *logFanout     // shared log tail + typed runner wake-ups
+	relayNudge      chan struct{}  // outbox rows written: wake the relay
+	batchNudge      chan struct{}  // batch enqueued: wake the batch runner
+	stepSem         chan struct{}  // bounds concurrent runner steps (see Config.StepConcurrency)
+	runnerIdlePoll  time.Duration  // Config.RunnerIdlePoll
+	leader          leaderFlag     // this instance holds the service's process lease (election.go)
+	gen             generation     // Config.Generation, Config.Revision as the election orders them
+	genOnce         sync.Once      // the generation is resolved once, by whichever runner needs it first
+	superseded      atomic.Bool    // a newer generation is alive: this instance leaves the service's work to it (instances.go)
+	beaten          chan struct{}  // closed after the instance's first beat; nil until Start
+	beatNudge       chan struct{}  // another instance announced itself: beat now (instances.go)
+	every           []*ScheduleDef // recurring functions added with Every (schedules.go)
+	procSteps       atomic.Int64   // process runner steps in flight (a yielding leader drains them)
 
 	watchMu  sync.Mutex
 	watchers map[chan struct{}]bool // SSE streams awaiting log advances
