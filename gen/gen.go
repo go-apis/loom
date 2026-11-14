@@ -41,6 +41,10 @@ type Config struct {
 	// aggregates/, records/, policies/, processes/ — with registry.go at
 	// the root wiring them.
 	Layout string
+	// Wire, when set, is the directory under Dir of a generated package
+	// that wires implementations into the registry by convention, one
+	// file per declaration (wire.go). It needs Layout "folders".
+	Wire string
 }
 
 type Result struct {
@@ -69,11 +73,18 @@ func prepare(s *schema.Schema, cfg Config) (*generator, error) {
 
 // render returns the regenerated loomgen files (path -> final bytes, gofmt
 // applied). Stubs are not included: they belong to the user.
-func (g *generator) render() map[string][]byte {
+func (g *generator) render() (map[string][]byte, error) {
 	genDir := filepath.Join(g.cfg.Dir, g.cfg.GenDir)
 	files := map[string]string{
 		filepath.Join(genDir, "models_gen.go"):   g.models(),
 		filepath.Join(genDir, "registry_gen.go"): g.registry(),
+	}
+	wired, err := g.wireFiles()
+	if err != nil {
+		return nil, err
+	}
+	for path, content := range wired {
+		files[path] = content
 	}
 	for _, o := range g.owners() {
 		files[filepath.Join(genDir, o.file)] = g.ownerFile(o)
@@ -89,7 +100,17 @@ func (g *generator) render() map[string][]byte {
 			out[path] = []byte(content)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// genDirs is the directories loom owns generated files in: the
+// generated package, and the wire package when wiring is on.
+func (g *generator) genDirs() []string {
+	dirs := []string{filepath.Join(g.cfg.Dir, g.cfg.GenDir)}
+	if g.cfg.Wire != "" {
+		dirs = append(dirs, filepath.Join(g.cfg.Dir, g.cfg.Wire))
+	}
+	return dirs
 }
 
 // Render returns the regenerated loomgen files (path -> final bytes) without
@@ -99,7 +120,7 @@ func Render(s *schema.Schema, cfg Config) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return g.render(), nil
+	return g.render()
 }
 
 // Check renders the regenerated files in memory and compares them to disk
@@ -112,7 +133,10 @@ func Check(s *schema.Schema, cfg Config) (stale, missing []string, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	files := g.render()
+	files, err := g.render()
+	if err != nil {
+		return nil, nil, err
+	}
 	for path, want := range files {
 		got, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
@@ -123,11 +147,13 @@ func Check(s *schema.Schema, cfg Config) (stale, missing []string, err error) {
 			stale = append(stale, path)
 		}
 	}
-	orphans, err := orphanGenFiles(filepath.Join(g.cfg.Dir, g.cfg.GenDir), files)
-	if err != nil {
-		return nil, nil, err
+	for _, dir := range g.genDirs() {
+		orphans, err := orphanGenFiles(dir, files)
+		if err != nil {
+			return nil, nil, err
+		}
+		stale = append(stale, orphans...)
 	}
-	stale = append(stale, orphans...)
 	sort.Strings(stale)
 	sort.Strings(missing)
 	return stale, missing, nil
@@ -190,23 +216,31 @@ func Generate(s *schema.Schema, cfg Config) (*Result, error) {
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return nil, err
 	}
-	files := g.render()
+	files, err := g.render()
+	if err != nil {
+		return nil, err
+	}
 	for path, out := range files {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
+		}
 		if err := os.WriteFile(path, out, 0o644); err != nil {
 			return nil, err
 		}
 		res.Written = append(res.Written, path)
 	}
 
-	orphans, err := orphanGenFiles(genDir, files)
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range orphans {
-		if err := os.Remove(path); err != nil {
+	for _, dir := range g.genDirs() {
+		orphans, err := orphanGenFiles(dir, files)
+		if err != nil {
 			return nil, err
 		}
-		res.Removed = append(res.Removed, path)
+		for _, path := range orphans {
+			if err := os.Remove(path); err != nil {
+				return nil, err
+			}
+			res.Removed = append(res.Removed, path)
+		}
 	}
 
 	for name, content := range g.stubs() {
@@ -1531,6 +1565,22 @@ func (g *generator) stubs() map[string]string {
 			fmt.Fprintf(&b, "// %s lifts %s v%d → v%d.\nfunc (u *Upcasts) %s(data []byte) ([]byte, error) {\n\tpanic(\"not implemented\")\n}\n\n", u.method, u.event.Name, u.from, u.from+1, u.method)
 		}
 		out["upcasts.go"] = b.String()
+	}
+
+	// with wire on, the convention does the listing: registry.go only
+	// builds the registry from it, and no declaration ever edits it
+	if g.cfg.Wire != "" {
+		var b strings.Builder
+		wirePkg := identLower(filepath.Base(g.cfg.Wire))
+		fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"github.com/go-apis/loom\"\n\n\t%q\n\t%q\n)\n\n", g.cfg.Package, genImport, g.cfg.Module+"/"+filepath.ToSlash(g.cfg.Wire))
+		fmt.Fprintf(&b, "// NewRegistry builds the registry from the implementations %s/ wires by\n// convention: a new aggregate, policy, process or projection edits\n// nothing here. What a convention cannot say goes in a %s.Configure, or\n// below, on the Impl or the registry it becomes. Yours to edit.\n", g.cfg.Wire, wirePkg)
+		fmt.Fprintf(&b, "func NewRegistry(deps %s.Deps) *loom.Registry {\n\timpl := %s.Impl(deps)\n", wirePkg, wirePkg)
+		if len(g.upcastHops()) > 0 {
+			b.WriteString("\timpl.Upcasts = &Upcasts{}\n")
+		}
+		fmt.Fprintf(&b, "\treturn %s.NewRegistry(impl)\n}\n", g.genPkg)
+		out["registry.go"] = b.String()
+		return out
 	}
 
 	// wiring, generated once so additions appear as compile errors on Impl
