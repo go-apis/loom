@@ -76,6 +76,21 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   so to the MCP tools. `GET /runners` is the same read and gains
   `behind_since`.
 
+### Changed
+
+- **Timers fire on the newest generation alive.** They fired on every
+  instance, so after a deploy the previous revision's instances — idled
+  with CPU allocated, kept for a traffic tag — went on firing timers
+  and running the commands they hold with the old code. Every instance
+  with a generation now keeps a row in `loom_instances`, refreshed each
+  beat (the poll interval, between 0.1 s and 5 s), and fires timers
+  only while no instance seen in the last four beats is of a newer
+  generation. It is liveness, not a high-water mark: shift traffic back
+  to an older revision and, once the newer one's instances are gone,
+  the older ones fire again. `Status.Instances` (`serviceStatus {
+  instances }`) lists the live builds. With no generation nothing
+  changes: every instance fires.
+
 ### Fixed
 
 - **A generation comes from the deploy, not the revision name.** v0.85.0

@@ -19,6 +19,10 @@ type Status struct {
 	Latest int64 `json:"latest"`
 	// Lease is the instance running the service's processes.
 	Lease LeaseStatus `json:"lease"`
+	// Instances is the builds with a live instance, newest first: after
+	// a deploy, the old revision's line is how long it lingers. Only
+	// the newest fires timers. Empty for a service with no generation.
+	Instances []InstanceStatus `json:"instances"`
 	// Runners is every projection and process with its position.
 	Runners []RunnerStatus `json:"runners"`
 	// Behind counts the runners with events still to handle, and Stalled
@@ -105,6 +109,9 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	st := &Status{Service: c.reg.Service, Latest: latest, Runners: runners}
+	if st.Instances, err = c.instances(ctx); err != nil {
+		return nil, err
+	}
 	for _, r := range runners {
 		if r.Lag > 0 {
 			st.Behind++
