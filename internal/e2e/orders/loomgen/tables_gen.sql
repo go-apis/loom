@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS loom_t_orders_parcel (
 	id         uuid NOT NULL,
 	"depot_id" uuid,
 	"discarded" boolean,
+	"insured_cents" bigint,
 	"label" text,
 	"photo" jsonb,
 	updated_at timestamptz NOT NULL DEFAULT now(),

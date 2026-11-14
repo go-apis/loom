@@ -1042,6 +1042,40 @@ comparing:
 - **A list**, and its subscription, is narrowed to the caller's rows
   whatever else it filters by.
 
+A field can be for fewer callers than the record it is on:
+
+```
+aggregate Project @allow(kind: admin) @allow(kind: session, id: caller.project) {
+  state {
+    name: string
+    billing_email: string @allow(kind: admin)
+  }
+}
+```
+
+A session reads its project and is not shown `billing_email`. It is
+not handed an empty one either: the field resolves to null and the
+response says why, at the field's path and under a code a client can
+test —
+
+```json
+{ "data": { "project": { "name": "Foghorn", "billingEmail": null } },
+  "errors": [{ "message": "hidden: Project.billingEmail is shown when kind is admin",
+               "path": ["project", "billingEmail"],
+               "extensions": { "code": "FIELD_HIDDEN" } }] }
+```
+
+— so a page written once for every caller still loads for the ones a
+field is not for. A caller may not filter or order a list by a field
+hidden from it, which would read the value back a comparison at a
+time. A field's rule compares the caller alone (`attr: value`); whose
+record it is stays a rule on the record. That makes what is hidden the
+same on every record a caller reads, so the MCP tools can say it
+before the caller asks: `describe` marks the field, a default `get` or
+`list` leaves it out and says so beside the data, and asking for it by
+name is refused. This is the one case in which the gateway answers in
+part: a `Policy` that forbids a field still denies the whole operation.
+
 An upload answers to the same gates. Opening one asks for its commands
 to be run — by the store, when the bytes land — so `create<Name>Upload`
 is decided against each of those commands' `@role` and `@allow`, for

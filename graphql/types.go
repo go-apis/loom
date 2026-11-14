@@ -116,7 +116,8 @@ func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {
 		// nullable (the DSL has no `!` in state or entity blocks), and a
 		// column added by migration is NULL for rows written before it
 		// existed — a NonNull here made those rows unreadable.
-		gqlFields[f.camel] = &gql.Field{Type: out, Resolve: mapField(f.snake), Description: b.docs[name+"."+f.snake]}
+		gqlFields[f.camel] = &gql.Field{Type: out, Description: b.docs[name+"."+f.snake],
+			Resolve: guarded(name, f.camel, b.fieldRules[name][f.snake], mapField(f.snake))}
 	}
 	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields, Description: b.docs[name]})
 	b.types[name] = &typeEntry{obj: obj, fields: sig}

@@ -48,13 +48,42 @@ entity ParcelRow @allow(depot_id: caller.depot) { depot_id: uuid }
 			}
 		}
 	}
+	// on a field: who is shown it, by what the caller is
+	fs, err := Parse(`service shop
+aggregate Project {
+  state {
+    name: string
+    billing_email: string @allow(kind: admin) @allow(kind: staff)
+  }
+}
+entity ProjectRow { budget_cents: int @allow(kind: admin) }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	state := fs.Aggregates[0].State.Properties
+	if got := state["billing_email"].Allow; len(got) != 2 || got[0].Caller["kind"] != "admin" || got[1].Caller["kind"] != "staff" || state["name"].Allow != nil {
+		t.Errorf("field rules = %+v, name's %+v", got, state["name"].Allow)
+	}
+	if got := fs.Entities[0].State.Properties["budget_cents"].Allow; len(got) != 1 {
+		t.Errorf("entity field rules = %+v", got)
+	}
+
 	if got := s.Entities[0].ReadAllow; len(got) != 1 || got[0].Own["depot_id"] != "depot" {
 		t.Errorf("entity rules = %+v", got)
 	}
 
 	for src, wantErr := range map[string]string{
 		`service s
-aggregate A { state { x: string @allow(kind: admin) } }`: "unknown directive @allow",
+aggregate A { state { x: string } command C { y: string @allow(kind: admin) } -> E event E }`: "it does nothing here",
+		`service s
+aggregate A { state { x: string @allow(owner_id: caller.me) } }`: "compares the caller alone",
+		`service s
+type T { y: string @allow(kind: admin) }
+aggregate A { state { x: string } }`: "it does nothing here",
 		`service s
 aggregate A @allow(kind) { state { x: string } }`: `expected ":"`,
 		`service s

@@ -809,10 +809,11 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 			return nil, err
 		}
 		for d := range dirs {
-			if d != "pii" && d != "secret" {
-				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii, @secret)", name, d)
+			if d != "pii" && d != "secret" && d != "allow" {
+				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii, @secret, @allow)", name, d)
 			}
 		}
+		ft.Allow = p.allows
 		if _, ok := dirs["pii"]; ok {
 			ft.PII = true
 		}
@@ -1312,10 +1313,11 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 			return nil, err
 		}
 		for d := range dirs {
-			if d != "pii" && d != "secret" {
-				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii, @secret)", name, d)
+			if d != "pii" && d != "secret" && d != "allow" {
+				return nil, fmt.Errorf("field %s: unknown directive @%s (fields take @pii, @secret, @allow)", name, d)
 			}
 		}
+		ft.Allow = p.allows
 		if _, ok := dirs["pii"]; ok {
 			ft.PII = true
 		}

@@ -14,6 +14,20 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`@allow` on a field: who is shown it.** A state or entity field
+  takes `@allow(kind: admin)`. A caller no rule holds for still reads
+  the record; that field resolves to null, and the response carries an
+  error at the field's path with `extensions.code` `FIELD_HIDDEN`, so
+  "hidden from you" is never read as "not set". The caller may not
+  filter or order a list by a field hidden from it. A field's rule
+  compares the caller alone, so what is hidden is the same on every
+  record: the MCP tools mark it in `describe`, leave it out of a
+  default `get` and `list` with a note beside the data saying so, and
+  refuse it by name. `graphql.Executor.Hidden` answers a type's hidden
+  fields for a caller. This is the one case in which the gateway
+  answers in part; a `Policy` that forbids a field still denies the
+  operation. **Migration:** regenerate `loomgen/`.
+
 - **`PreviewDeleteStream`: what a stream delete would remove.** The
   same counts `DeleteStream` reports — events, snapshots, outbox rows,
   read-model rows, the projections left to rebuild — with nothing

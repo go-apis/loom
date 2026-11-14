@@ -172,7 +172,7 @@ func (c *catalogue) search(query, kind string, limit int, visible func(*operatio
 // describeType is a type as a caller fills it in or reads it: an input
 // object's fields nest (to depth, since inputs may nest inputs), an
 // enum lists its values, an object lists its fields by reference.
-func (c *catalogue) describeType(name string, depth int) map[string]any {
+func (c *catalogue) describeType(name string, depth int, hidden map[string]string) map[string]any {
 	td := c.types[name]
 	if td == nil {
 		return nil
@@ -185,15 +185,20 @@ func (c *catalogue) describeType(name string, depth int) map[string]any {
 		out["values"] = td.values
 	}
 	if len(td.fields) > 0 {
-		out["fields"] = c.describeFields(td.fields, td.kind == "INPUT_OBJECT", depth)
+		out["fields"] = c.describeFields(td.fields, td.kind == "INPUT_OBJECT", depth, hidden)
 	}
 	return out
 }
 
-func (c *catalogue) describeFields(fields []field, nest bool, depth int) []map[string]any {
+// hidden names the fields hidden from the caller, each with what a
+// caller must be to be shown it: they are listed, and marked.
+func (c *catalogue) describeFields(fields []field, nest bool, depth int, hidden map[string]string) []map[string]any {
 	out := make([]map[string]any, 0, len(fields))
 	for _, f := range fields {
 		d := map[string]any{"name": f.name, "type": f.typ.text}
+		if when := hidden[f.name]; when != "" {
+			d["hidden"] = "hidden from you: shown when " + when
+		}
 		if f.desc != "" {
 			d["description"] = f.desc
 		}
@@ -202,7 +207,7 @@ func (c *catalogue) describeFields(fields []field, nest bool, depth int) []map[s
 			case td.kind == "ENUM":
 				d["values"] = td.values
 			case td.kind == "INPUT_OBJECT" && nest && depth > 0:
-				d["fields"] = c.describeFields(td.fields, true, depth-1)
+				d["fields"] = c.describeFields(td.fields, true, depth-1, nil)
 			}
 		}
 		out = append(out, d)
@@ -220,7 +225,11 @@ func (c *catalogue) describeFields(fields []field, nest bool, depth int) []map[s
 // themselves: zero for a read, whose rows stay flat unless asked, and
 // more for a command, whose whole answer (a plan and its events) is
 // what the caller came for.
-func (c *catalogue) selection(t typeRef, paths []string, deep int) (string, error) {
+//
+// A field hidden from the caller (see hides) is left out of the default
+// and noted in v.left, and asking for one by name is refused: the
+// caller is told a field is not for it, never handed an empty one.
+func (c *catalogue) selection(t typeRef, paths []string, deep int, v *view) (string, error) {
 	if c.leaf(t) {
 		if len(paths) > 0 {
 			return "", fmt.Errorf("%s has no fields to choose", t.name)
@@ -230,13 +239,16 @@ func (c *catalogue) selection(t typeRef, paths []string, deep int) (string, erro
 	td := c.types[t.name]
 	if len(paths) == 0 {
 		var names []string
+		hidden := v.hides(td.name)
 		for _, f := range td.fields {
 			switch {
 			case needsArgs(f):
+			case hidden[f.name] != "":
+				v.leave(td.name, f.name, hidden[f.name])
 			case c.leaf(f.typ):
 				names = append(names, f.name)
 			case deep > 0:
-				sub, err := c.selection(f.typ, nil, deep-1)
+				sub, err := c.selection(f.typ, nil, deep-1, v)
 				if err != nil {
 					return "", err
 				}
@@ -279,7 +291,10 @@ func (c *catalogue) selection(t typeRef, paths []string, deep int) (string, erro
 		if needsArgs(*f) {
 			return "", fmt.Errorf("%s.%s takes arguments and cannot be chosen here", td.name, name)
 		}
-		sub, err := c.selection(f.typ, rest[name], deep)
+		if when := v.hides(td.name)[name]; when != "" {
+			return "", fmt.Errorf("%s.%s is hidden from you: it is shown when %s. Leave it out", td.name, name, when)
+		}
+		sub, err := c.selection(f.typ, rest[name], deep, v)
 		if err != nil {
 			return "", err
 		}
@@ -287,6 +302,36 @@ func (c *catalogue) selection(t typeRef, paths []string, deep int) (string, erro
 	}
 	b.WriteString(" }")
 	return b.String(), nil
+}
+
+// view is one caller's sight of the schema while a document is built:
+// which fields of a type are hidden from it, and which the default
+// selection left out because of that.
+type view struct {
+	// hidden answers a type's fields hidden from the caller, each with
+	// what a caller must be to be shown it. Nil hides nothing.
+	hidden func(typ string) map[string]string
+	left   []string
+	seen   map[string]bool
+}
+
+func (v *view) hides(typ string) map[string]string {
+	if v == nil || v.hidden == nil {
+		return nil
+	}
+	return v.hidden(typ)
+}
+
+func (v *view) leave(typ, field, when string) {
+	key := typ + "." + field
+	if v.seen[key] {
+		return
+	}
+	if v.seen == nil {
+		v.seen = map[string]bool{}
+	}
+	v.seen[key] = true
+	v.left = append(v.left, fmt.Sprintf("%s (shown when %s)", key, when))
 }
 
 func needsArgs(f field) bool {
@@ -301,12 +346,12 @@ func needsArgs(f field) bool {
 // document writes the one-operation GraphQL document that calls op with
 // the arguments given, each as a typed variable. Argument names come
 // from the catalogue, never from the caller's text.
-func (c *catalogue) document(op *operation, args map[string]any, paths []string) (string, error) {
+func (c *catalogue) document(op *operation, args map[string]any, paths []string, v *view) (string, error) {
 	deep := 0
 	if op.kind == kindCommand {
 		deep = 3
 	}
-	sel, err := c.selection(op.typ, paths, deep)
+	sel, err := c.selection(op.typ, paths, deep, v)
 	if err != nil {
 		return "", err
 	}

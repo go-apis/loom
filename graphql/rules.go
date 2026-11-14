@@ -15,6 +15,10 @@ import (
 type gate struct {
 	roles []string
 	rules []loom.Rule
+	// fields is the per-field @allow rules of what a read returns, by
+	// snake-case field: a list may not filter or order by a field
+	// hidden from its caller (fields.go).
+	fields map[string][]loom.Rule
 }
 
 // rootGate is a root field as a probe needs it: whether it is a query

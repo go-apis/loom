@@ -344,6 +344,10 @@ type AggregateDef struct {
 	ReadRoles []string
 	// ReadAllow (@allow on the block) gates the same reads by rule.
 	ReadAllow []Rule
+	// FieldAllow (@allow on a state field) says which callers are shown
+	// each field named, by snake-case name; a field not named is shown
+	// to whoever reads the record.
+	FieldAllow map[string][]Rule
 	// Doc is the `///` doc comment written directly above the
 	// declaration in the schema, and FieldDocs the doc comments above
 	// its state fields (snake case names). The gateway serves them as
@@ -399,6 +403,8 @@ type RecordDef struct {
 	ReadRoles []string
 	// ReadAllow — see AggregateDef.ReadAllow.
 	ReadAllow []Rule
+	// FieldAllow — see AggregateDef.FieldAllow.
+	FieldAllow map[string][]Rule
 	// Doc and FieldDocs — see AggregateDef.Doc.
 	Doc       string
 	FieldDocs map[string]string
@@ -551,6 +557,8 @@ type ProjectionDef struct {
 	// EntityReadAllow (@allow on the entity block) gates the same reads
 	// by rule.
 	EntityReadAllow []Rule
+	// EntityFieldAllow — see AggregateDef.FieldAllow.
+	EntityFieldAllow map[string][]Rule
 	// EntityDoc and EntityFieldDocs are the entity's doc and its state
 	// fields' docs, denormalized like EntityReadRoles — see
 	// AggregateDef.Doc.

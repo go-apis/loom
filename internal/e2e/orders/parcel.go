@@ -14,7 +14,7 @@ import (
 type Parcel struct{}
 
 func (h *Parcel) RegisterParcel(ctx context.Context, state *loomgen.Parcel, cmd *loomgen.RegisterParcel) ([]loom.DomainEvent, error) {
-	return []loom.DomainEvent{&loomgen.ParcelRegistered{DepotId: cmd.DepotId, Label: cmd.Label}}, nil
+	return []loom.DomainEvent{&loomgen.ParcelRegistered{DepotId: cmd.DepotId, Label: cmd.Label, InsuredCents: cmd.InsuredCents}}, nil
 }
 
 func (h *Parcel) RelabelParcel(ctx context.Context, state *loomgen.Parcel, cmd *loomgen.RelabelParcel) ([]loom.DomainEvent, error) {

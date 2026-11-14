@@ -176,12 +176,17 @@ aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: call
     label: string
     discarded: bool
     photo: file?
+    /// What the parcel is insured for.
+    // shown to admins alone: a courier reads the parcel and is told
+    // this field is hidden from it, not handed an empty one
+    insured_cents: int @allow(kind: admin)
   }
 
   /// Register a parcel at a depot.
   command RegisterParcel @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
     depot_id: uuid!
     label: string!
+    insured_cents: int
   } -> ParcelRegistered
 
   /// Change what a parcel's label says.
@@ -192,6 +197,7 @@ aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: call
   event ParcelRegistered {
     depot_id: uuid!
     label: string!
+    insured_cents: int!
   }
 
   /// Throw a parcel away. It cannot be brought back.

@@ -475,6 +475,7 @@ var (
 		ownerDoc, readAllow = o.rec.Doc, o.rec.ReadAllow
 	}
 	writeRules(&b, "\t\t", "ReadAllow", readAllow)
+	writeFieldRules(&b, "\t\t", "FieldAllow", state)
 	writeDocs(&b, "\t\t", "Doc", ownerDoc, "FieldDocs", state)
 	fmt.Fprintf(&b, "\t\tNewState: func() %s { return &%s{} },\n", stateType, o.name)
 	fmt.Fprintf(&b, "\t\tCommands: []*loom.%s{\n", cmdType)
@@ -1143,6 +1144,7 @@ func loomErrNilEvent(eventType string) error {
 				fmt.Fprintf(&b, "\t\t\t\tEntityReadRoles: %s,\n", stringSlice(ent.ReadRoles))
 			}
 			writeRules(&b, "\t\t\t\t", "EntityReadAllow", ent.ReadAllow)
+			writeFieldRules(&b, "\t\t\t\t", "EntityFieldAllow", ent.State)
 			writeDocs(&b, "\t\t\t\t", "EntityDoc", ent.Doc, "EntityFieldDocs", ent.State)
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
@@ -1632,6 +1634,32 @@ func writeDocs(b *strings.Builder, indent, docKey, doc, fieldsKey string, pl *sc
 	fmt.Fprintf(b, "%s%s: map[string]string{\n", indent, fieldsKey)
 	for _, name := range names {
 		fmt.Fprintf(b, "%s\t%q: %q,\n", indent, name, docs[name])
+	}
+	fmt.Fprintf(b, "%s},\n", indent)
+}
+
+// writeFieldRules writes a state's per-field @allow rules, fields in
+// name order; nothing when no field declares one.
+func writeFieldRules(b *strings.Builder, indent, key string, pl *schema.Payload) {
+	if pl == nil {
+		return
+	}
+	var fields []string
+	for name, f := range pl.Properties {
+		if len(f.Allow) > 0 {
+			fields = append(fields, name)
+		}
+	}
+	if len(fields) == 0 {
+		return
+	}
+	sort.Strings(fields)
+	fmt.Fprintf(b, "%s%s: map[string][]loom.Rule{\n", indent, key)
+	for _, name := range fields {
+		var inner strings.Builder
+		writeRules(&inner, indent+"\t", "X", pl.Properties[name].Allow)
+		body := strings.TrimPrefix(inner.String(), indent+"\tX: []loom.Rule")
+		fmt.Fprintf(b, "%s\t%q: %s", indent, name, body)
 	}
 	fmt.Fprintf(b, "%s},\n", indent)
 }

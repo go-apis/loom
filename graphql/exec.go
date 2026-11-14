@@ -39,6 +39,11 @@ type Executor interface {
 	// that decide what it may do. It is a listing aid, not a grant: the
 	// call itself is decided again with its arguments.
 	Allowed(ctx context.Context, field string) bool
+	// Hidden names the fields of the type named that are hidden from
+	// the caller on ctx, each with what a caller must be to be shown it.
+	// It follows the schema's per-field @allow rules, which compare the
+	// caller alone, so it is the same for every record of the type.
+	Hidden(ctx context.Context, typ string) map[string]string
 	// Introspect is the schema's shape — every type, field and argument
 	// with its description. It runs no resolver and reads no data.
 	Introspect() (map[string]any, error)
