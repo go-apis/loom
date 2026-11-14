@@ -99,10 +99,15 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
   that handles the tick (`loom.After`), never synchronously inside the
   timer's dispatch.
 - A `@table` list read that filters and sorts the same way on every
-  page gets an index in the schema, not by hand:
-  `index (service, namespace, org_id, updated_at desc nulls last)` inside
-  the entity block, columns in the filter-then-sort order. `Migrate`
-  builds it `CONCURRENTLY`; `Rebuild` keeps it.
+  page gets an index in the schema, not by hand — and not hand-derived
+  from the read either: declare the read itself with `query
+  (org_id, updated_at desc nulls last)` inside the entity block, filter
+  columns then the order column. `query` desugars into the index that
+  read needs, including the trailing `id` tie-breaker a paginated list
+  must have, so the direction is never worked out (or gotten wrong) by
+  hand. `index (col [desc] [nulls first|last], ...)` still exists for an
+  index that isn't backing one declared read. `Migrate` builds either
+  `CONCURRENTLY`; `Rebuild` keeps both.
 
 ## Calling the outside world: effects
 

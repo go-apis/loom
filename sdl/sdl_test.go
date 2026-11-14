@@ -753,3 +753,35 @@ entity WorkItem @table {
 		t.Fatalf("want error naming missing_col, got %v", err)
 	}
 }
+
+// TestParseQueryDeclaration: a `query (...)` line desugars into the exact
+// Index a hand-written `index (...)` line naming the same filter columns,
+// order column, and a trailing id tie-breaker would produce.
+func TestParseQueryDeclaration(t *testing.T) {
+	src := `
+service s
+
+entity WorkItem @table {
+  status: string
+  query (status, updated_at desc nulls last)
+}
+`
+	s, err := sdl.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ent := s.FindEntity("WorkItem")
+	if ent == nil || len(ent.Indexes) != 1 {
+		t.Fatalf("query misparsed: %+v", ent)
+	}
+	cols := ent.Indexes[0].Columns
+	if len(cols) != 3 ||
+		cols[0].Name != "status" || cols[0].Desc || cols[0].Nulls != "" ||
+		cols[1].Name != "updated_at" || !cols[1].Desc || cols[1].Nulls != "last" ||
+		cols[2].Name != "id" || !cols[2].Desc || cols[2].Nulls != "" {
+		t.Fatalf("query columns misparsed: %+v", cols)
+	}
+	if name := ent.Indexes[0].Name; name != "idx_work_item_status_updated_at_id" {
+		t.Fatalf("query index name misparsed: %q", name)
+	}
+}

@@ -94,6 +94,9 @@ entity OrderSummary @table {
   items: [OrderItem]
   // the customer's newest-first order list (TestMigrateCreatesDeclaredIndexes)
   index (service, namespace, customer_id, updated_at desc nulls last)
+  // the status list most dashboards page over, newest first
+  // (TestDeclaredQueryMigratesItsIndex)
+  query (status, updated_at desc nulls last)
 }
 
 projection orderSummary -> OrderSummary {

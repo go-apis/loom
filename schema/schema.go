@@ -173,10 +173,12 @@ type Entity struct {
 	// `join`); the runtime ignores them — only the GraphQL gateway wires
 	// them up, erroring at compose time if the target isn't mounted.
 	Joins []*Join `yaml:"joins,omitempty" json:"joins,omitempty"`
-	// Indexes are secondary indexes on a @table entity's columns (declared
-	// with `index`): state fields or the meta columns service, namespace,
-	// id, updated_at. Only meaningful alongside @table — the doc store has
-	// no real columns to index.
+	// Indexes are secondary indexes on a @table entity's columns: state
+	// fields or the meta columns service, namespace, id, updated_at.
+	// Declared directly with `index`, or desugared from a `query` line
+	// (ADR 0011) — by the time parsing is done, the two are
+	// indistinguishable. Only meaningful alongside @table — the doc store
+	// has no real columns to index.
 	Indexes []*Index `yaml:"indexes,omitempty" json:"indexes,omitempty"`
 	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the entity's
 	// generated get, list, and both Changed subscriptions.

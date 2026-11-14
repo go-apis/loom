@@ -267,6 +267,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 				Indexes: []loom.TableIndex{
 					{Name: "idx_order_summary_service_namespace_customer_id_updated_at", DDL: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_order_summary_service_namespace_customer_id_updated_at ON loom_t_orders_order_summary ("service", "namespace", "customer_id", "updated_at" DESC NULLS LAST);`},
+					{Name: "idx_order_summary_status_updated_at_id", DDL: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_order_summary_status_updated_at_id ON loom_t_orders_order_summary ("status", "updated_at" DESC NULLS LAST, "id" DESC);`},
 				},
 			},
 		},
