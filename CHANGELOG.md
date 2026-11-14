@@ -44,6 +44,12 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   the rows it does. Rules ride `Decision.Rules`, `Decision.List` and
   `Decision.Target`; `DefaultPolicy` enforces them, and a scoped caller
   with no `Attrs` meets no rule, so adding `@allow` fails closed.
+- **A caller is shown what it could run.** The MCP tools' `search` and
+  `describe` list an operation only when the caller could run it in
+  some namespace it has. Each is asked of the gateway's own Policy as a
+  probe (`Decision.Probe`, `graphql.Executor.Allowed`): no arguments,
+  no target, nothing run. It is a listing aid — the call itself is
+  decided again in full.
 
 ### Fixed
 

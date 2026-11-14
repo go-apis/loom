@@ -58,6 +58,9 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 		"owner":  {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "owner"}},
 		"member": {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "member"}},
 		"other":  {Namespaces: []string{"globex"}, Mutate: true, Roles: map[string]string{"globex": "owner"}},
+		"reader": {Namespaces: []string{"acme"}, Roles: map[string]string{"acme": "owner"}},
+		"courier": {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "member"},
+			Attrs: map[string]string{"kind": "courier", "depot": uuid.NewString()}},
 	}
 	gateway, err := loomgql.New(loomgql.Config{
 		Services: []*loom.Client{cli},
@@ -181,6 +184,47 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 	}
 	if text, _ = call(owner, "describe", map[string]any{"name": "shipOrder"}); strings.Contains(text, "description") {
 		t.Errorf("a plain comment reached a caller: %s", text)
+	}
+
+	// each caller is shown what it could run, by the gateway's own
+	// rules: the role a command asks for, the attributes an @allow rule
+	// asks for, and whether the caller may change anything at all
+	found := func(token, query string) string {
+		t.Helper()
+		text, refused := call(session(token), "search", map[string]any{"query": query, "limit": 100})
+		if refused {
+			t.Fatalf("search as %s: %s", token, text)
+		}
+		var names []string
+		for _, op := range decode(text)["operations"].([]any) {
+			names = append(names, op.(map[string]any)["name"].(string))
+		}
+		return " " + strings.Join(names, " ") + " "
+	}
+	for _, c := range []struct {
+		token, query, op string
+		shown            bool
+	}{
+		{"owner", "ship", "shipOrder", true},
+		{"member", "ship", "shipOrder", false}, // @role(owner, shipper)
+		{"member", "place", "placeOrder", true},
+		{"reader", "place", "placeOrder", false}, // may change nothing
+		{"reader", "order", "orderSummarys", true},
+		{"member", "customer", "customerSpend", false}, // entity @role(owner)
+		{"owner", "customer", "customerSpend", true},
+		{"owner", "parcel", "registerParcel", false}, // @allow, and the owner has no attributes
+		{"owner", "parcel", "parcels", false},
+		{"courier", "parcel", "registerParcel", true},
+		{"courier", "parcel", "parcels", true},
+		{"courier", "ship", "shipOrder", false},
+	} {
+		if got := strings.Contains(found(c.token, c.query), " "+c.op+" "); got != c.shown {
+			t.Errorf("%s searching %q: %s shown = %v, want %v", c.token, c.query, c.op, got, c.shown)
+		}
+	}
+	// and what it is not shown, it cannot describe
+	if text, refused = call(session("member"), "describe", map[string]any{"name": "shipOrder"}); !refused || !strings.Contains(text, "no operation") {
+		t.Errorf("a member describing shipOrder = %s", text)
 	}
 
 	// run it

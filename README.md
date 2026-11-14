@@ -1027,6 +1027,15 @@ apply exactly as they do over HTTP, and a hand-written `Field` is
 reachable like a generated one. `Config.Unauthenticated` lets a
 deployment name its OAuth resource metadata in the 401 it answers.
 
+`search` and `describe` show a caller only what it could run. Each
+operation is put to the gateway's own `Policy` as a probe — a
+`Decision` with `Probe` set, the operation's `@role` and `@allow`
+contract, a namespace the caller has, and no arguments — so a member is
+not shown a command only an owner may run, and a read-only caller is
+shown no commands. A custom `Policy` that cannot tell without arguments
+should allow a probe: it decides only what is listed, and the call is
+decided again in full when it comes.
+
 What an agent reads about an operation is what the schema's doc
 comments say. A `///` block directly above an aggregate, record, entity,
 type, enum, command or field is its doc; the gateway serves it as the

@@ -126,7 +126,9 @@ func (c *catalogue) leaf(t typeRef) bool {
 
 // search ranks operations against the words of query: every word must
 // appear in the name or the description, a name match first.
-func (c *catalogue) search(query, kind string, limit int) []*operation {
+// Only operations visible reports true for are returned; it is asked
+// last, of matches only, and no more often than the limit needs.
+func (c *catalogue) search(query, kind string, limit int, visible func(*operation) bool) []*operation {
 	words := strings.Fields(strings.ToLower(query))
 	type hit struct {
 		op    *operation
@@ -155,12 +157,14 @@ func (c *catalogue) search(query, kind string, limit int) []*operation {
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
-	if len(hits) > limit {
-		hits = hits[:limit]
-	}
-	out := make([]*operation, len(hits))
-	for i, h := range hits {
-		out[i] = h.op
+	out := []*operation{}
+	for _, h := range hits {
+		if len(out) == limit {
+			break
+		}
+		if visible(h.op) {
+			out = append(out, h.op)
+		}
 	}
 	return out
 }

@@ -146,6 +146,14 @@ type Decision struct {
 	// where the state has none. It reads the database, so it is called
 	// only when a rule needs it. Nil when the operation has no rules.
 	Target func() (map[string]any, error)
+	// Probe marks a question, not an operation: could this caller ever
+	// run Field in Namespace? It carries no Args and no Target, and
+	// nothing runs on a yes. The catalogue a caller is shown
+	// (Executor.Allowed, behind the MCP tools' search and describe) is
+	// built from probes; the real operation is decided again, in full,
+	// when it is called. A Policy that cannot tell without arguments
+	// should allow a probe: it only decides what is listed.
+	Probe bool
 	// Access is what the Auth hook resolved; HasAccess false means an
 	// open mount (no Auth hook and no WithAccess middleware).
 	Access    Access
