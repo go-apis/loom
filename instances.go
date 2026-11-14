@@ -95,6 +95,9 @@ func (c *Client) runInstances(ctx context.Context, poll time.Duration, ready cha
 				append(c.genAttrs(), "newer_generation", newest)...)
 		case was && !now:
 			c.log.InfoContext(ctx, "no newer generation is alive: this instance takes timers, batches and projections up again", c.genAttrs()...)
+			// its projection runners may be asleep on a long idle poll
+			// (Config.RunnerIdlePoll): the work is theirs again now
+			c.fan.wakeAll()
 		}
 	}
 	beat()
