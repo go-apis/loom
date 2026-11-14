@@ -42,11 +42,13 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 		poll = 5 * time.Second
 	}
 	c.StartRelay(ctx, poll)
-	// timers wait for the instance's first beat: one superseded by a
-	// newer generation learns so before it fires anything
-	beaten := make(chan struct{})
-	go c.runInstances(ctx, poll, beaten)
-	c.startTimerRunner(ctx, poll, beaten)
+	// the work a build's code decides — timers, batches, projections —
+	// waits for the instance's first beat: one superseded by a newer
+	// generation learns so before it does any of it (instances.go)
+	c.beaten = make(chan struct{})
+	c.beatNudge = make(chan struct{}, 1)
+	go c.runInstances(ctx, poll, c.beaten)
+	c.startTimerRunner(ctx, poll)
 	c.startBatchRunner(ctx, poll)
 	go c.listenLoop(ctx)
 
@@ -326,6 +328,12 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 		}
 		defer tx.Rollback(ctx)
 
+		// a superseded build leaves the fold to the newest: it would
+		// step over events only the newer build's projection folds, and
+		// move the checkpoint past them for good
+		if !c.newest() {
+			return 0, nil
+		}
 		locked, err := c.tryRunnerLock(ctx, tx, runner)
 		if err != nil || !locked {
 			return 0, err

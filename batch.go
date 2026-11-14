@@ -176,7 +176,9 @@ func (c *Client) startBatchRunner(ctx context.Context, poll time.Duration) {
 		t := time.NewTicker(poll)
 		defer t.Stop()
 		for {
-			for {
+			// batch items hold commands, as timers do: the newest build
+			// alive runs them (instances.go)
+			for c.newest() {
 				n, err := c.batchStep(ctx)
 				if err != nil {
 					if ctx.Err() != nil {

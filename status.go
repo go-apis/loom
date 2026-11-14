@@ -23,6 +23,11 @@ type Status struct {
 	// a deploy, the old revision's line is how long it lingers. Only
 	// the newest fires timers. Empty for a service with no generation.
 	Instances []InstanceStatus `json:"instances"`
+	// HereNewest is whether the instance that answered is of the newest
+	// generation alive, as it last saw: false on an old revision's
+	// instance once it has learned of the deploy, and from then it
+	// leaves timers, batches and projections to the newer build.
+	HereNewest bool `json:"here_newest"`
 	// Runners is every projection and process with its position.
 	Runners []RunnerStatus `json:"runners"`
 	// Behind counts the runners with events still to handle, and Stalled
@@ -108,7 +113,7 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := &Status{Service: c.reg.Service, Latest: latest, Runners: runners}
+	st := &Status{Service: c.reg.Service, Latest: latest, Runners: runners, HereNewest: !c.superseded.Load()}
 	if st.Instances, err = c.instances(ctx); err != nil {
 		return nil, err
 	}

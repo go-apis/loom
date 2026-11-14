@@ -90,6 +90,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   the older ones fire again. `Status.Instances` (`serviceStatus {
   instances }`) lists the live builds. With no generation nothing
   changes: every instance fires.
+- **Batches and projections follow the same rule.** Batch items hold
+  commands, as timers do. A projection is folded by whichever instance
+  takes its step lock, and an instance of an older build stepped over
+  events only the newer build's projection subscribes to, moving the
+  checkpoint past them: the read model stayed short of those events
+  until rebuilt. Both now run only on the newest generation alive. A
+  new instance announces itself on the service's channel after its
+  first beat, so an older build stands down at once rather than at its
+  next beat. `Status.HereNewest` says whether the answering instance
+  is of the newest generation alive. Not covered: bus consumers, which
+  still run on every instance (see the pull request).
 
 ### Fixed
 
