@@ -187,7 +187,7 @@ func New(cfg Config) (http.Handler, error) {
 			b.gated("mutation", gate{}, true, name)
 		}
 	}
-	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth, gates: b.gates}, nil
+	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth, gates: b.gates, fieldRules: b.fieldRules}, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -291,6 +291,9 @@ type builder struct {
 	// gates is every root query and mutation's gate, by field name —
 	// what a probe decides over (handler.Allowed).
 	gates map[string]rootGate
+	// fieldRules is each type's per-field @allow rules, by type and then
+	// by snake-case field (fields.go).
+	fieldRules map[string]map[string][]loom.Rule
 	// planned is every @plan command, by command name (plan.go).
 	planned map[string]plannedOp
 }
@@ -397,13 +400,14 @@ func (b *builder) service(cli *loom.Client) error {
 	}
 	b.registerTypes(reg)
 	b.registerDocs(reg)
+	b.registerFieldRules(reg)
 
 	for _, agg := range reg.Aggregates {
 		obj, err := b.objectFor(agg.Name, agg.NewState())
 		if err != nil {
 			return err
 		}
-		aggGate := gate{roles: agg.ReadRoles, rules: agg.ReadAllow}
+		aggGate := gate{roles: agg.ReadRoles, rules: agg.ReadAllow, fields: agg.FieldAllow}
 		b.gated("query", aggGate, true, lowerFirst(agg.Name), lowerFirst(agg.Name)+"s")
 		if err := b.addQuery(lowerFirst(agg.Name), b.described(aggregateGet(cli, agg.Name, agg.StateSecret, aggGate, obj), "One "+agg.Name+" by id.", agg.Name)); err != nil {
 			return err
@@ -447,7 +451,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		recSecrets := rec.StateSecret
-		recGate := gate{roles: rec.ReadRoles, rules: rec.ReadAllow}
+		recGate := gate{roles: rec.ReadRoles, rules: rec.ReadAllow, fields: rec.FieldAllow}
 		b.gated("query", recGate, true, lowerFirst(rec.Name), lowerFirst(rec.Name)+"s")
 		if err := b.addQuery(lowerFirst(rec.Name), b.described(docGet(obj, recGate, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Record(ctx, rec.Name, ns, id)
@@ -493,7 +497,7 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
-		entGate := gate{roles: p.EntityReadRoles, rules: p.EntityReadAllow}
+		entGate := gate{roles: p.EntityReadRoles, rules: p.EntityReadAllow, fields: p.EntityFieldAllow}
 		b.gated("query", entGate, true, lowerFirst(entity), lowerFirst(entity)+"s")
 		if err := b.addQuery(lowerFirst(entity), b.described(docGet(obj, entGate, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
@@ -1048,6 +1052,11 @@ func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
 	}
 	q := loom.Query{Namespace: ns, AllNamespaces: ns == ""}
 	if order, ok := args["order"].(string); ok {
+		// ordering by a field it is not shown would read the field back
+		// through the order of the rows
+		if err := hiddenListField(p.Context, strings.TrimPrefix(order, "-"), g.fields, "order"); err != nil {
+			return loom.Query{}, err
+		}
 		q.OrderBy = order
 	}
 	if limit, ok := args["limit"].(int); ok {
@@ -1061,6 +1070,10 @@ func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
 			f, _ := w.(map[string]any)
 			if f == nil {
 				continue
+			}
+			// and filtering by one, a comparison at a time
+			if err := hiddenListField(p.Context, fmt.Sprint(f["field"]), g.fields, "filter"); err != nil {
+				return loom.Query{}, err
 			}
 			q.Filters = append(q.Filters, loom.Filter{
 				Field: fmt.Sprint(f["field"]),
@@ -1498,11 +1511,12 @@ func lowerFirst(s string) string {
 var playgroundHTML []byte
 
 type handler struct {
-	gates    map[string]rootGate
-	schema   gql.Schema
-	auth     Auth
-	policy   Policy
-	maxDepth int
+	fieldRules map[string]map[string][]loom.Rule
+	gates      map[string]rootGate
+	schema     gql.Schema
+	auth       Auth
+	policy     Policy
+	maxDepth   int
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

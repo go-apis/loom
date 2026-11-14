@@ -471,6 +471,17 @@ type Payload struct {
 	// see plaintext. For tenant-supplied credentials: SMTP passwords,
 	// API keys, webhook signing secrets. @secret implies @pii.
 	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
+	// Allow (@allow on a field) says which callers are shown the field
+	// when they read the aggregate, record or entity it belongs to:
+	//
+	//	billing_email: string @allow(kind: admin)
+	//
+	// A caller no rule holds for still reads the record; this field comes
+	// back empty, and the gateway says it was hidden rather than unset.
+	// Rules here compare the caller alone (attr: value): what is hidden
+	// is then the same on every record a caller reads, so it can be told
+	// before it asks. Whose record it is stays a rule on the record.
+	Allow []*Rule `yaml:"allow,omitempty" json:"allow,omitempty"`
 	// Doc is the `///` doc comment written directly above a field —
 	// see Aggregate.Doc.
 	Doc string `yaml:"doc,omitempty" json:"-"`
@@ -721,6 +732,51 @@ func (s *Schema) Validate() error {
 				}
 			}
 		}
+	}
+	// a field's @allow gates a read of the record the field is on: it
+	// belongs on a state or entity field, and compares the caller alone
+	checkFieldAllow := func(kind, name string, pl *Payload, readable bool) {
+		if pl == nil {
+			return
+		}
+		for field, f := range pl.Properties {
+			if len(f.Allow) == 0 {
+				continue
+			}
+			if !readable {
+				fail("%s %s: field %s takes @allow, which says who is shown a field of an aggregate's or record's state, or of an entity — it does nothing here", kind, name, field)
+				continue
+			}
+			for _, r := range f.Allow {
+				if len(r.Own) > 0 {
+					fail("%s %s: field %s's @allow compares a field of the record (caller.…): a field's rule compares the caller alone; put ownership on the %s", kind, name, field, kind)
+				}
+				if len(r.Caller) == 0 {
+					fail("%s %s: field %s declares an empty @allow", kind, name, field)
+				}
+			}
+		}
+	}
+	for _, a := range s.Aggregates {
+		checkFieldAllow("aggregate", a.Name, a.State, true)
+		for _, c := range a.Commands {
+			checkFieldAllow("command", c.Name, c.Payload, false)
+		}
+	}
+	for _, r := range s.Records {
+		checkFieldAllow("record", r.Name, r.State, true)
+		for _, c := range r.Commands {
+			checkFieldAllow("command", c.Name, c.Payload, false)
+		}
+	}
+	for _, e := range s.Entities {
+		checkFieldAllow("entity", e.Name, e.State, true)
+	}
+	for _, e := range s.Events {
+		checkFieldAllow("event", e.Name, e.Payload, false)
+	}
+	for _, t := range s.Types {
+		checkFieldAllow("type", t.Name, t.Payload, false)
 	}
 	checkReadRoles := func(kind, name string, roles []string) {
 		seen := map[string]bool{}

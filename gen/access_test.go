@@ -14,7 +14,7 @@ import (
 func TestAccessSaysWhoMayRunWhat(t *testing.T) {
 	const src = `service shop
 aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
-  state { depot_id: uuid }
+  state { depot_id: uuid  value: int @allow(kind: admin) @allow(kind: auditor) }
   command Zap @plan @role(owner) @allow(tier: gold, kind: courier, depot_id: caller.depot) -> Zapped
   command Add -> Zapped
   event Zapped
@@ -41,6 +41,8 @@ record Tally { state { n: int } }
 		"| `parcel` | Parcel | *any* | `kind` is `admin`; **or** `kind` is `courier` and its `depot_id` is the caller's `depot` |\n| `parcels` | Parcel |",
 		"| `row` | Row | owner, auditor | *any caller* |\n| `rows` | Row | owner, auditor | *any caller* |\n",
 		"| `tally` | Tally | *any* | *any caller* |\n| `tallys` | Tally |",
+		"## Fields shown to some callers\n",
+		"| Parcel | `value` | `kind` is `admin`; **or** `kind` is `auditor` |\n",
 	} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("the access table lacks %q:\n%s", want, doc)

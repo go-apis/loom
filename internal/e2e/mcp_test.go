@@ -110,8 +110,10 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tool, err)
 		}
-		if len(res.Content) != 1 {
-			t.Fatalf("%s: %d content parts", tool, len(res.Content))
+		// the answer is the first part; a note of what was left out
+		// because it is hidden from the caller may follow it
+		if len(res.Content) == 0 {
+			t.Fatalf("%s: no content", tool)
 		}
 		return res.Content[0].(*sdk.TextContent).Text, res.IsError
 	}

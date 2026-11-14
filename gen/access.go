@@ -87,6 +87,47 @@ func Access(s *schema.Schema) ([]byte, error) {
 			fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", r.name, r.of, accessRoles(r.roles), accessRules(r.rules))
 		}
 	}
+
+	// fields a caller may be shown or not on a record it can read
+	type shown struct {
+		of, field string
+		rules     []*schema.Rule
+	}
+	var fields []shown
+	add := func(of string, state *schema.Payload) {
+		if state == nil {
+			return
+		}
+		for name, f := range state.Properties {
+			if len(f.Allow) > 0 {
+				fields = append(fields, shown{of, name, f.Allow})
+			}
+		}
+	}
+	for _, a := range s.Aggregates {
+		add(a.Name, a.State)
+	}
+	for _, r := range s.Records {
+		add(r.Name, r.State)
+	}
+	for _, e := range s.Entities {
+		add(e.Name, e.State)
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].of != fields[j].of {
+			return fields[i].of < fields[j].of
+		}
+		return fields[i].field < fields[j].field
+	})
+	b.WriteString("\n## Fields shown to some callers\n\nA caller who may read the record and is not shown one of these gets it empty, marked hidden, and may not filter or order by it.\n\n")
+	if len(fields) == 0 {
+		b.WriteString("None: whoever may read a record is shown all of it.\n")
+	} else {
+		b.WriteString("| Of | Field | Shown when |\n|---|---|---|\n")
+		for _, f := range fields {
+			fmt.Fprintf(&b, "| %s | `%s` | %s |\n", f.of, f.field, accessRules(f.rules))
+		}
+	}
 	return []byte(b.String()), nil
 }
 

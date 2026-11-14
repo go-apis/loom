@@ -192,7 +192,7 @@ func (s *server) describe(ctx context.Context, in describeIn) *sdk.CallToolResul
 		return refused(fmt.Sprintf("no operation or type is named %q; search for it", in.Name))
 	}
 	if op == nil {
-		if t := s.cat.describeType(in.Name, 3); t != nil {
+		if t := s.cat.describeType(in.Name, 3, s.ex.Hidden(ctx, in.Name)); t != nil {
 			return answer(t)
 		}
 		return refused(fmt.Sprintf("no operation or type is named %q; search for it", in.Name))
@@ -201,10 +201,10 @@ func (s *server) describe(ctx context.Context, in describeIn) *sdk.CallToolResul
 	if op.desc != "" {
 		out["description"] = op.desc
 	}
-	out["args"] = s.cat.describeFields(op.args, true, 3)
+	out["args"] = s.cat.describeFields(op.args, true, 3, nil)
 	returns := map[string]any{"type": op.typ.text}
 	if td := s.cat.types[op.typ.name]; td != nil && !s.cat.leaf(op.typ) {
-		returns["fields"] = s.cat.describeFields(td.fields, false, 0)
+		returns["fields"] = s.cat.describeFields(td.fields, false, 0, s.ex.Hidden(ctx, td.name))
 	}
 	out["returns"] = returns
 	return answer(out)
@@ -230,7 +230,8 @@ func (s *server) call(ctx context.Context, in callIn, kind string, wantList bool
 	if tool := s.toolFor(op); op.kind != kind || (kind == kindRead && op.typ.list != wantList) {
 		return refused(fmt.Sprintf("%s is a %s: call it with the %s tool", op.name, op.kind, tool))
 	}
-	doc, err := s.cat.document(op, in.Args, in.Fields)
+	v := &view{hidden: func(typ string) map[string]string { return s.ex.Hidden(ctx, typ) }}
+	doc, err := s.cat.document(op, in.Args, in.Fields, v)
 	if err != nil {
 		return refused(err.Error())
 	}
@@ -238,7 +239,14 @@ func (s *server) call(ctx context.Context, in callIn, kind string, wantList bool
 	if len(res.Errors) > 0 {
 		return refused(strings.Join(res.Errors, "\n"))
 	}
-	return answer(res.Data[op.name])
+	out := answer(res.Data[op.name])
+	// the data is as asked; what was left out because it is not this
+	// caller's to see is said beside it, so an absent field is never
+	// read as an empty one
+	if len(v.left) > 0 && !out.IsError {
+		out.Content = append(out.Content, &sdk.TextContent{Text: "Left out because hidden from you: " + strings.Join(v.left, "; ")})
+	}
+	return out
 }
 
 func answer(v any) *sdk.CallToolResult {

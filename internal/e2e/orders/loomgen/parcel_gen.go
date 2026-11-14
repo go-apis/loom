@@ -35,8 +35,9 @@ func (*DiscardParcel) LoomCommand() string { return "DiscardParcel" }
 type RegisterParcel struct {
 	loom.CommandBase
 
-	DepotId uuid.UUID `json:"depot_id"`
-	Label   string    `json:"label"`
+	DepotId      uuid.UUID `json:"depot_id"`
+	InsuredCents int64     `json:"insured_cents"`
+	Label        string    `json:"label"`
 }
 
 func (*RegisterParcel) LoomCommand() string { return "RegisterParcel" }
@@ -62,8 +63,9 @@ type ParcelPhotoAttached struct {
 func (*ParcelPhotoAttached) LoomEvent() string { return "ParcelPhotoAttached" }
 
 type ParcelRegistered struct {
-	DepotId uuid.UUID `json:"depot_id"`
-	Label   string    `json:"label"`
+	DepotId      uuid.UUID `json:"depot_id"`
+	InsuredCents int64     `json:"insured_cents"`
+	Label        string    `json:"label"`
 }
 
 func (*ParcelRegistered) LoomEvent() string { return "ParcelRegistered" }
@@ -75,10 +77,11 @@ type ParcelRelabelled struct {
 func (*ParcelRelabelled) LoomEvent() string { return "ParcelRelabelled" }
 
 type Parcel struct {
-	DepotId   uuid.UUID     `json:"depot_id"`
-	Discarded bool          `json:"discarded"`
-	Label     string        `json:"label"`
-	Photo     *loom.FileRef `json:"photo"`
+	DepotId      uuid.UUID     `json:"depot_id"`
+	Discarded    bool          `json:"discarded"`
+	InsuredCents int64         `json:"insured_cents"`
+	Label        string        `json:"label"`
+	Photo        *loom.FileRef `json:"photo"`
 }
 
 func (s *Parcel) Fold(eventType string, data any) error {
@@ -90,6 +93,7 @@ func (s *Parcel) Fold(eventType string, data any) error {
 		s.Photo = &vPhoto
 	case *ParcelRegistered:
 		s.DepotId = e.DepotId
+		s.InsuredCents = e.InsuredCents
 		s.Label = e.Label
 	case *ParcelRelabelled:
 		s.Label = e.Label
@@ -114,6 +118,11 @@ func aggregateDefParcel(h ParcelHandlers) *loom.AggregateDef {
 		ReadAllow: []loom.Rule{
 			{Caller: map[string]string{"kind": "admin"}},
 			{Caller: map[string]string{"kind": "courier"}, Own: map[string]string{"depot_id": "depot"}},
+		},
+		FieldAllow: map[string][]loom.Rule{
+			"insured_cents": {
+				{Caller: map[string]string{"kind": "admin"}},
+			},
 		},
 		NewState: func() loom.AggregateState { return &Parcel{} },
 		Commands: []*loom.CommandDef{
@@ -206,6 +215,7 @@ func init() {
 	id         uuid NOT NULL,
 	"depot_id" uuid,
 	"discarded" boolean,
+	"insured_cents" bigint,
 	"label" text,
 	"photo" jsonb,
 	updated_at timestamptz NOT NULL DEFAULT now(),
@@ -214,6 +224,7 @@ func init() {
 				Columns: []loom.TableColumn{
 					{Name: "depot_id", Type: "uuid"},
 					{Name: "discarded", Type: "boolean"},
+					{Name: "insured_cents", Type: "bigint"},
 					{Name: "label", Type: "text"},
 					{Name: "photo", Type: "jsonb"},
 				},
@@ -222,6 +233,7 @@ func init() {
 					return []any{
 						e.DepotId,
 						e.Discarded,
+						e.InsuredCents,
 						e.Label,
 						loom.JSONValue(e.Photo),
 					}
