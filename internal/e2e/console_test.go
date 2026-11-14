@@ -74,7 +74,7 @@ func TestConsole(t *testing.T) {
 		} `json:"processes"`
 	}
 	getJSON(t, ctx, srv.URL+"/registry", &reg)
-	if reg.Service != "orders" || len(reg.Aggregates) != 1 || reg.Aggregates[0].Name != "Order" {
+	if reg.Service != "orders" || len(reg.Aggregates) != 2 || reg.Aggregates[0].Name != "Order" || reg.Aggregates[1].Name != "Parcel" {
 		t.Fatalf("registry doc: %+v", reg)
 	}
 	if len(reg.Processes) != 1 || reg.Processes[0].Subs[0].Event != "InvoicePaid" ||

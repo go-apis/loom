@@ -64,6 +64,12 @@ type parser struct {
 	out        *schema.Schema
 	events     map[string]*schema.Event
 	enumBlocks []*enumBlock // every enum block, home or extension, in source order
+	// allows is the @allow rules the last directives() call read, in
+	// source order. @allow repeats and takes pairs, which the name →
+	// args map directives() returns cannot hold; a site that takes
+	// @allow reads them here, and every other site refuses the
+	// directive by its name in the map, as it does any unknown one.
+	allows []*schema.Rule
 }
 
 func (p *parser) peek() token { return p.toks[p.pos] }
@@ -188,10 +194,20 @@ func (p *parser) laterService() error {
 
 func (p *parser) directives() (map[string][]string, error) {
 	out := map[string][]string{}
+	p.allows = nil
 	for p.accept("@") {
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
+		}
+		if name == "allow" {
+			rule, err := p.allowRule()
+			if err != nil {
+				return nil, err
+			}
+			p.allows = append(p.allows, rule)
+			out[name] = nil
+			continue
 		}
 		var args []string
 		if p.accept("(") {
@@ -225,6 +241,63 @@ func (p *parser) directives() (map[string][]string, error) {
 	return out, nil
 }
 
+// allowRule parses one @allow's pairs:
+//
+//	@allow(kind: session, job_kind: build, project_id: caller.project)
+//
+// `attr: value` says the caller's attribute must have that value;
+// `field: caller.attr` says the field of what is operated on must equal
+// the caller's attribute.
+func (p *parser) allowRule() (*schema.Rule, error) {
+	at := p.peek()
+	if err := p.expect("("); err != nil {
+		return nil, err
+	}
+	rule := &schema.Rule{}
+	for {
+		key, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect(":"); err != nil {
+			return nil, err
+		}
+		v := p.next()
+		switch {
+		case v.kind == tIdent && v.text == "caller" && p.peek().text == ".":
+			p.next()
+			attr, err := p.ident()
+			if err != nil {
+				return nil, err
+			}
+			if _, dup := rule.Own[key]; dup {
+				return nil, p.errf(v, "@allow names field %s twice", key)
+			}
+			if rule.Own == nil {
+				rule.Own = map[string]string{}
+			}
+			rule.Own[key] = attr
+		case v.kind == tIdent || v.kind == tString || v.kind == tNumber:
+			if _, dup := rule.Caller[key]; dup {
+				return nil, p.errf(v, "@allow names caller attribute %s twice", key)
+			}
+			if rule.Caller == nil {
+				rule.Caller = map[string]string{}
+			}
+			rule.Caller[key] = v.text
+		default:
+			return nil, p.errf(v, "bad @allow value %q (a value, or caller.<attribute>)", v.text)
+		}
+		if p.accept(")") {
+			break
+		}
+		if err := p.expect(","); err != nil {
+			return nil, p.errf(at, "@allow takes pairs: attribute: value, or field: caller.attribute")
+		}
+	}
+	return rule, nil
+}
+
 func (p *parser) aggregate() error {
 	doc := p.next().doc
 	name, err := p.ident()
@@ -235,9 +308,9 @@ func (p *parser) aggregate() error {
 	if err != nil {
 		return err
 	}
-	agg := &schema.Aggregate{Name: name, Doc: doc}
+	agg := &schema.Aggregate{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "snapshot" && d != "table" && d != "role" {
+		if d != "snapshot" && d != "table" && d != "role" && d != "allow" {
 			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role)", name, d)
 		}
 	}
@@ -309,9 +382,9 @@ func (p *parser) record() error {
 	if err != nil {
 		return err
 	}
-	rec := &schema.Record{Name: name, Doc: doc}
+	rec := &schema.Record{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "role" {
+		if d != "role" && d != "allow" {
 			return fmt.Errorf("record %s: unknown directive @%s (records take @role)", name, d)
 		}
 	}
@@ -418,10 +491,11 @@ func (p *parser) command() (*schema.Command, error) {
 		return nil, err
 	}
 	for d := range dirs {
-		if d != "role" {
-			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role)", name, d)
+		if d != "role" && d != "allow" {
+			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role, @allow)", name, d)
 		}
 	}
+	cmd.Allow = p.allows
 	if args, ok := dirs["role"]; ok {
 		if len(args) == 0 {
 			return nil, fmt.Errorf("command %s: @role wants at least one role name", name)
@@ -554,9 +628,9 @@ func (p *parser) entity() error {
 	if err != nil {
 		return err
 	}
-	ent := &schema.Entity{Name: name, Doc: doc}
+	ent := &schema.Entity{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "table" && d != "role" {
+		if d != "table" && d != "role" && d != "allow" {
 			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table, @role)", name, d)
 		}
 	}

@@ -51,6 +51,9 @@ type Aggregate struct {
 	// the caller must hold one of these roles in the target namespace.
 	// Commands carry their own per-command @role.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+	// ReadAllow (@allow) gates the same generated reads by rule — see
+	// Rule. A list read is narrowed to the rows the caller's rule owns.
+	ReadAllow []*Rule `yaml:"read_allow,omitempty" json:"read_allow,omitempty"`
 }
 
 // Upload declares a resumable file upload whose lifecycle dispatches the
@@ -58,6 +61,23 @@ type Aggregate struct {
 // session is created, OnUploaded (required) when storage reports the
 // object finalized. Each referenced command must have exactly one
 // payload field, required and typed `file`, which loom fills.
+// Rule is one @allow alternative: who may call an operation, in terms
+// of the caller's attributes and of what the operation touches.
+//
+//	command RenameProject @allow(kind: admin) @allow(kind: session, project_id: caller.project)
+//
+// Caller pairs an attribute of the caller with the value it must have
+// (kind: session). Own pairs a field of the thing operated on with the
+// caller attribute it must equal (project_id: caller.project) — the
+// field read from the stored state, and for a command from its payload
+// too. Every pair of a rule must hold; an operation with several rules
+// is allowed when any one holds. Attribute names and values are the
+// deployment's: loom compares strings, nothing more.
+type Rule struct {
+	Caller map[string]string `yaml:"caller,omitempty" json:"caller,omitempty"`
+	Own    map[string]string `yaml:"own,omitempty" json:"own,omitempty"`
+}
+
 type Upload struct {
 	Name       string `yaml:"name" json:"name"`
 	OnStarted  string `yaml:"on_started,omitempty" json:"on_started,omitempty"`
@@ -81,6 +101,9 @@ type Command struct {
 	// In-process Dispatch and the service's own HTTP API are not gated;
 	// they stay behind trusted middleware.
 	Roles []string `yaml:"roles,omitempty" json:"roles,omitempty"`
+	// Allow (@allow) gates the command at the gateway by rule — see
+	// Rule. Beside @role, both must pass.
+	Allow []*Rule `yaml:"allow,omitempty" json:"allow,omitempty"`
 }
 
 type Event struct {
@@ -121,6 +144,8 @@ type Record struct {
 	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the record's
 	// generated get, list, and list subscription.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+	// ReadAllow (@allow) — see Aggregate.ReadAllow.
+	ReadAllow []*Rule `yaml:"read_allow,omitempty" json:"read_allow,omitempty"`
 }
 
 // Entity is a read model maintained by a projection.
@@ -150,6 +175,8 @@ type Entity struct {
 	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the entity's
 	// generated get, list, and both Changed subscriptions.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+	// ReadAllow (@allow) — see Aggregate.ReadAllow.
+	ReadAllow []*Rule `yaml:"read_allow,omitempty" json:"read_allow,omitempty"`
 }
 
 // Index is a secondary index on a @table entity, declared in the SDL as
@@ -598,6 +625,25 @@ func (s *Schema) Validate() error {
 			seen[r] = true
 		}
 	}
+	// an @allow rule's own-fields must be fields the gateway can read:
+	// of the state, or for a command of its payload too
+	checkAllow := func(kind, name string, rules []*Rule, state, payload *Payload) {
+		for _, r := range rules {
+			if len(r.Caller) == 0 && len(r.Own) == 0 {
+				fail("%s %s declares an empty @allow", kind, name)
+			}
+			for f := range r.Own {
+				_, inState := state.Properties[f]
+				inPayload := false
+				if payload != nil {
+					_, inPayload = payload.Properties[f]
+				}
+				if !inState && !inPayload {
+					fail("%s %s: @allow names field %s, which is neither in its state nor in its payload", kind, name, f)
+				}
+			}
+		}
+	}
 	checkReadRoles := func(kind, name string, roles []string) {
 		seen := map[string]bool{}
 		for _, r := range roles {
@@ -613,6 +659,10 @@ func (s *Schema) Validate() error {
 			fail("aggregate %s has no state", a.Name)
 		}
 		checkReadRoles("aggregate", a.Name, a.ReadRoles)
+		checkAllow("aggregate", a.Name, a.ReadAllow, a.State, nil)
+		for _, c := range a.Commands {
+			checkAllow("command", c.Name, c.Allow, a.State, c.Payload)
+		}
 		for _, c := range a.Commands {
 			checkRoles(c)
 			if len(c.Emits) == 0 {
@@ -635,6 +685,10 @@ func (s *Schema) Validate() error {
 			fail("record %s has no state", r.Name)
 		}
 		checkReadRoles("record", r.Name, r.ReadRoles)
+		checkAllow("record", r.Name, r.ReadAllow, r.State, nil)
+		for _, c := range r.Commands {
+			checkAllow("command", c.Name, c.Allow, r.State, c.Payload)
+		}
 		for _, c := range r.Commands {
 			checkRoles(c)
 			// unlike aggregate commands, record commands may emit nothing:
@@ -800,6 +854,7 @@ func (s *Schema) Validate() error {
 	// column defeats both — keep PII entities in the doc store).
 	for _, e := range s.Entities {
 		checkReadRoles("entity", e.Name, e.ReadRoles)
+		checkAllow("entity", e.Name, e.ReadAllow, e.State, nil)
 		if !e.Table {
 			continue
 		}
