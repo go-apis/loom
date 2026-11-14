@@ -91,6 +91,11 @@ type Config struct {
 	// operation resolves to a Decision and this hook answers it (see
 	// auth.go). Delegate to DefaultPolicy for the stock rules.
 	Policy Policy
+	// Status adds the `serviceStatus` query: what each composed
+	// service's background work is doing (loom.Client.Status). It names
+	// no tenant, so under DefaultPolicy only All access reads it; a
+	// Policy lets operators in by its Field name.
+	Status bool
 	// MaxDepth bounds query nesting (fields, through fragments). Zero
 	// means DefaultMaxDepth; negative disables the check. Declared joins
 	// make the type graph cyclic, so an unbounded public gateway would
@@ -143,6 +148,11 @@ func New(cfg Config) (http.Handler, error) {
 		}
 	}
 	b.runPlanMutation()
+	if cfg.Status {
+		if err := b.statusQuery(cfg.Services); err != nil {
+			return nil, err
+		}
+	}
 	for _, f := range cfg.Fields {
 		if err := b.rootField(f); err != nil {
 			return nil, err
