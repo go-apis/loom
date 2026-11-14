@@ -1042,6 +1042,11 @@ comparing:
 - **A list**, and its subscription, is narrowed to the caller's rows
   whatever else it filters by.
 
+An upload answers to the same gates. Opening one asks for its commands
+to be run — by the store, when the bytes land — so `create<Name>Upload`
+is decided against each of those commands' `@role` and `@allow`, for
+the caller opening it.
+
 `@allow` sits beside `@role`: both must pass. Attribute names and
 values are yours. A scoped caller with no `Attrs` meets no rule, so
 adding `@allow` fails closed until `Auth` grants attributes; `All`

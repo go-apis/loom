@@ -816,6 +816,11 @@ func (s *Schema) Validate() error {
 				if cmd.FileField() == "" {
 					fail("upload %s: command %s must have exactly one payload field, required and typed file", u.Name, cmdName)
 				}
+				// the store dispatches it when the bytes land: there is
+				// no caller then to show a plan to, or to run one
+				if cmd.Plan {
+					fail("upload %s: command %s is @plan, and an upload's command cannot be planned", u.Name, cmdName)
+				}
 			}
 		}
 	}

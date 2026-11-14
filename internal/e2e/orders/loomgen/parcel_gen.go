@@ -18,6 +18,14 @@ var (
 	_ = uuid.UUID{}
 )
 
+type AttachParcelPhoto struct {
+	loom.CommandBase
+
+	Photo loom.FileRef `json:"photo"`
+}
+
+func (*AttachParcelPhoto) LoomCommand() string { return "AttachParcelPhoto" }
+
 type DiscardParcel struct {
 	loom.CommandBase
 }
@@ -47,6 +55,12 @@ type ParcelDiscarded struct {
 
 func (*ParcelDiscarded) LoomEvent() string { return "ParcelDiscarded" }
 
+type ParcelPhotoAttached struct {
+	Photo loom.FileRef `json:"photo"`
+}
+
+func (*ParcelPhotoAttached) LoomEvent() string { return "ParcelPhotoAttached" }
+
 type ParcelRegistered struct {
 	DepotId uuid.UUID `json:"depot_id"`
 	Label   string    `json:"label"`
@@ -61,15 +75,19 @@ type ParcelRelabelled struct {
 func (*ParcelRelabelled) LoomEvent() string { return "ParcelRelabelled" }
 
 type Parcel struct {
-	DepotId   uuid.UUID `json:"depot_id"`
-	Discarded bool      `json:"discarded"`
-	Label     string    `json:"label"`
+	DepotId   uuid.UUID     `json:"depot_id"`
+	Discarded bool          `json:"discarded"`
+	Label     string        `json:"label"`
+	Photo     *loom.FileRef `json:"photo"`
 }
 
 func (s *Parcel) Fold(eventType string, data any) error {
 	switch e := data.(type) {
 	case *ParcelDiscarded:
 		s.Discarded = e.Discarded
+	case *ParcelPhotoAttached:
+		vPhoto := e.Photo
+		s.Photo = &vPhoto
 	case *ParcelRegistered:
 		s.DepotId = e.DepotId
 		s.Label = e.Label
@@ -83,6 +101,7 @@ func (s *Parcel) Fold(eventType string, data any) error {
 }
 
 type ParcelHandlers interface {
+	AttachParcelPhoto(ctx context.Context, state *Parcel, cmd *AttachParcelPhoto) ([]loom.DomainEvent, error)
 	DiscardParcel(ctx context.Context, state *Parcel, cmd *DiscardParcel) ([]loom.DomainEvent, error)
 	RegisterParcel(ctx context.Context, state *Parcel, cmd *RegisterParcel) ([]loom.DomainEvent, error)
 	RelabelParcel(ctx context.Context, state *Parcel, cmd *RelabelParcel) ([]loom.DomainEvent, error)
@@ -98,6 +117,21 @@ func aggregateDefParcel(h ParcelHandlers) *loom.AggregateDef {
 		},
 		NewState: func() loom.AggregateState { return &Parcel{} },
 		Commands: []*loom.CommandDef{
+			{
+				Name:  "AttachParcelPhoto",
+				New:   func() loom.Command { return &AttachParcelPhoto{} },
+				Emits: []string{"ParcelPhotoAttached"},
+				Allow: []loom.Rule{
+					{Caller: map[string]string{"kind": "admin"}},
+					{Caller: map[string]string{"kind": "courier"}, Own: map[string]string{"depot_id": "depot"}},
+				},
+				Required: []string{"photo"},
+				Doc:      "Attach a photo of the parcel's label.",
+				Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
+					evts, err := h.AttachParcelPhoto(ctx, state.(*Parcel), cmd.(*AttachParcelPhoto))
+					return asAny(evts), err
+				},
+			},
 			{
 				Name:  "DiscardParcel",
 				New:   func() loom.Command { return &DiscardParcel{} },
@@ -155,8 +189,12 @@ func init() {
 		r.Aggregates = append(r.Aggregates, aggregateDefParcel(h.(ParcelHandlers)))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "ParcelDiscarded", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelDiscarded{} }},
+			&loom.EventDef{Name: "ParcelPhotoAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelPhotoAttached{} }},
 			&loom.EventDef{Name: "ParcelRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelRegistered{} }},
 			&loom.EventDef{Name: "ParcelRelabelled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelRelabelled{} }},
+		)
+		r.Uploads = append(r.Uploads,
+			&loom.UploadDef{Name: "ParcelPhoto", Owner: "Parcel", OnUploaded: "AttachParcelPhoto", UploadedField: "photo"},
 		)
 		r.Tables = append(r.Tables,
 			&loom.TableDef{
@@ -169,6 +207,7 @@ func init() {
 	"depot_id" uuid,
 	"discarded" boolean,
 	"label" text,
+	"photo" jsonb,
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, namespace, id)
 );`,
@@ -176,6 +215,7 @@ func init() {
 					{Name: "depot_id", Type: "uuid"},
 					{Name: "discarded", Type: "boolean"},
 					{Name: "label", Type: "text"},
+					{Name: "photo", Type: "jsonb"},
 				},
 				Values: func(state loom.EntityState) []any {
 					e := state.(*Parcel)
@@ -183,6 +223,7 @@ func init() {
 						e.DepotId,
 						e.Discarded,
 						e.Label,
+						loom.JSONValue(e.Photo),
 					}
 				},
 			},
