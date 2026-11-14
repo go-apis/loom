@@ -151,6 +151,38 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 		}
 	}
 
+	// what the schema's doc comments say reaches the agent: search
+	// matches on a word only the doc holds and shows its first line, and
+	// describe carries the docs of the command, its fields, a nested
+	// type's fields, an enum, and the fields of what a read returns. A
+	// plain `//` note in the schema (ShipOrder's) is never shown.
+	text, refused = call(owner, "search", map[string]any{"query": "nobody pays"})
+	if refused || !strings.Contains(text, `"name":"placeOrder"`) || !strings.Contains(text, `"summary":"Place a new order for a customer. The total is worked out from the items."`) {
+		t.Errorf("search by a doc's words = %s", text)
+	}
+	text, _ = call(owner, "describe", map[string]any{"name": "placeOrder"})
+	for _, want := range []string{
+		`"description":"Place a new order for a customer. The total is worked out from the items.\n\nAn order nobody pays for is cancelled on its own after a while."`,
+		`"description":"ISO 4217 code the prices are in, for example USD."`,
+		`"description":"The stock-keeping unit being bought."`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("describe placeOrder lacks %s: %s", want, text)
+		}
+	}
+	text, _ = call(owner, "describe", map[string]any{"name": "order"})
+	for _, want := range []string{`One Order by id. A customer's order, from placed to shipped or cancelled.`, `"description":"The sum of every item's price times its quantity."`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("describe order lacks %s: %s", want, text)
+		}
+	}
+	if text, _ = call(owner, "describe", map[string]any{"name": "Priority"}); !strings.Contains(text, `"description":"How soon an order ships."`) {
+		t.Errorf("describe Priority = %s", text)
+	}
+	if text, _ = call(owner, "describe", map[string]any{"name": "shipOrder"}); strings.Contains(text, "description") {
+		t.Errorf("a plain comment reached a caller: %s", text)
+	}
+
 	// run it
 	orderID := uuid.New()
 	place := map[string]any{"name": "placeOrder", "args": map[string]any{"input": map[string]any{

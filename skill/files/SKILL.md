@@ -129,6 +129,15 @@ id, err := loom.Once(ctx, "gateway_capture", func(ctx context.Context) (string, 
 - Make each retry its own key when a retry must really call again
   (`…/<attempt>`).
 
+## Doc comments are published
+
+A `///` block directly above an aggregate, record, entity, type, enum,
+command or field is its doc: the gateway serves it as the GraphQL
+description, and agents calling the service over MCP search it and read
+it. Write one on every command, in the caller's terms: what it does and
+when to use it. Keep reasons, history and implementation notes in plain
+`//` comments, which are never published.
+
 ## Reading
 
 - `cli.Load(ctx, "Aggregate", ns, id)` reads an aggregate's state from

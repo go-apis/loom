@@ -210,13 +210,20 @@ func NewRegistry(impl Impl) *loom.Registry {
 		},
 		Enums: []*loom.EnumDef{
 			{Name: "OrderStatus", Values: []string{"placed", "shipped", "cancelled"}},
-			{Name: "Priority", Values: []string{"standard", "rush"}},
+			{Name: "Priority", Values: []string{"standard", "rush"}, Doc: "How soon an order ships."},
 		},
 		Types: []*loom.TypeDef{
 			{Name: "Fulfilment", Required: []string{"windows"}},
 			{Name: "FulfilmentWindow", Required: []string{"starts_at"}},
 			{Name: "GiftNote", Required: []string{"text"}},
-			{Name: "OrderItem", Required: []string{"price_cents", "quantity", "sku"}},
+			{
+				Name:     "OrderItem",
+				Required: []string{"price_cents", "quantity", "sku"},
+				Doc:      "One line of an order.",
+				FieldDocs: map[string]string{
+					"sku": "The stock-keeping unit being bought.",
+				},
+			},
 		},
 		Joins: []*loom.JoinDef{
 			{OnEntity: "CustomerSpend", Field: "orders", Service: "", Entity: "OrderSummary", List: true, Via: "customer_id"},

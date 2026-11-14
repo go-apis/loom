@@ -30,7 +30,13 @@ type Schema struct {
 }
 
 type Aggregate struct {
-	Name     string `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc      string `yaml:"doc,omitempty" json:"-"`
 	Snapshot int    `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
 	// Table (@table) materializes the aggregate's state (minus @pii
 	// fields) into a typed per-aggregate table, written in the same
@@ -59,7 +65,13 @@ type Upload struct {
 }
 
 type Command struct {
-	Name    string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc     string   `yaml:"doc,omitempty" json:"-"`
 	Payload *Payload `yaml:"payload,omitempty" json:"payload,omitempty"`
 	// Emits is a contract: the only events the handler may return.
 	Emits []string `yaml:"emits" json:"emits"`
@@ -96,7 +108,13 @@ type Event struct {
 // balances): commands mutate state directly; emitted events are
 // announcements into the log, never a rebuild source.
 type Record struct {
-	Name     string     `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc      string     `yaml:"doc,omitempty" json:"-"`
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
@@ -108,6 +126,12 @@ type Record struct {
 // Entity is a read model maintained by a projection.
 type Entity struct {
 	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc string `yaml:"doc,omitempty" json:"-"`
 	// Table (@table) stores the entity in a typed per-entity table with a
 	// real column per state field, instead of the shared jsonb doc table —
 	// filters and ORDER BY hit real columns, and the table is plain SQL for
@@ -226,7 +250,13 @@ func (s *Series) IdentityFields() []string {
 // gets a named string type with constants and validation, the GraphQL
 // surfaces get real enum types, OpenAPI gets the value list.
 type Enum struct {
-	Name   string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc    string   `yaml:"doc,omitempty" json:"-"`
 	Values []string `yaml:"values" json:"values"`
 }
 
@@ -336,7 +366,13 @@ type ProjectionShot struct {
 }
 
 type NamedType struct {
-	Name    string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc     string   `yaml:"doc,omitempty" json:"-"`
 	Payload *Payload `yaml:"payload" json:"payload"`
 }
 
@@ -360,6 +396,9 @@ type Payload struct {
 	// see plaintext. For tenant-supplied credentials: SMTP passwords,
 	// API keys, webhook signing secrets. @secret implies @pii.
 	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
+	// Doc is the `///` doc comment written directly above a field —
+	// see Aggregate.Doc.
+	Doc string `yaml:"doc,omitempty" json:"-"`
 }
 
 // IsFile reports whether the payload is the builtin `file` type

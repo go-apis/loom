@@ -1,13 +1,16 @@
 service orders
 
 enum OrderStatus { placed shipped cancelled }
+/// How soon an order ships.
 enum Priority { standard rush }
 
+/// A customer's order, from placed to shipped or cancelled.
 aggregate Order @snapshot(5) {
   state {
     status: OrderStatus
     customer_id: uuid
     items: [OrderItem]
+    /// The sum of every item's price times its quantity.
     total_cents: int
     currency: string
     shipped_at: timestamp?
@@ -15,9 +18,14 @@ aggregate Order @snapshot(5) {
     contract: file?
   }
 
+  /// Place a new order for a customer. The total is worked out from
+  /// the items.
+  ///
+  /// An order nobody pays for is cancelled on its own after a while.
   command PlaceOrder {
     customer_id: uuid!
     items: [OrderItem]!
+    /// ISO 4217 code the prices are in, for example USD.
     currency: string!
     priority: Priority
     fulfilment: Fulfilment?
@@ -155,7 +163,9 @@ series ReqSample @time(at) @dim(route) @key(sample_id) @retain(30d) {
   status:      int
 }
 
+/// One line of an order.
 type OrderItem {
+  /// The stock-keeping unit being bought.
   sku: string!
   quantity: int!
   price_cents: int!

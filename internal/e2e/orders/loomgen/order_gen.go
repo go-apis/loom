@@ -151,7 +151,11 @@ func aggregateDefOrder(h OrderHandlers) *loom.AggregateDef {
 	return &loom.AggregateDef{
 		Name:          "Order",
 		SnapshotEvery: 5,
-		NewState:      func() loom.AggregateState { return &Order{} },
+		Doc:           "A customer's order, from placed to shipped or cancelled.",
+		FieldDocs: map[string]string{
+			"total_cents": "The sum of every item's price times its quantity.",
+		},
+		NewState: func() loom.AggregateState { return &Order{} },
 		Commands: []*loom.CommandDef{
 			{
 				Name:     "AttachContract",
@@ -177,6 +181,10 @@ func aggregateDefOrder(h OrderHandlers) *loom.AggregateDef {
 				New:      func() loom.Command { return &PlaceOrder{} },
 				Emits:    []string{"OrderPlaced"},
 				Required: []string{"currency", "customer_id", "items"},
+				Doc:      "Place a new order for a customer. The total is worked out from the items.\n\nAn order nobody pays for is cancelled on its own after a while.",
+				FieldDocs: map[string]string{
+					"currency": "ISO 4217 code the prices are in, for example USD.",
+				},
 				Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 					evts, err := h.PlaceOrder(ctx, state.(*Order), cmd.(*PlaceOrder))
 					return asAny(evts), err

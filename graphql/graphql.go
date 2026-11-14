@@ -262,6 +262,9 @@ type builder struct {
 	// typeRequired is each schema type's required field set (snake
 	// case), keyed by type name — the Go type name nestedInput sees.
 	typeRequired map[string]map[string]bool
+	// docs is what the schema's comments say, by declaration and by
+	// field (registerDocs).
+	docs map[string]string
 }
 
 // registerEnums turns the registry's EnumDefs into shared GraphQL enum
@@ -282,7 +285,7 @@ func (b *builder) registerEnums(reg *loom.Registry) error {
 		for _, v := range e.Values {
 			values[v] = &gql.EnumValueConfig{Value: v}
 		}
-		b.enums[e.Name] = gql.NewEnum(gql.EnumConfig{Name: e.Name, Values: values})
+		b.enums[e.Name] = gql.NewEnum(gql.EnumConfig{Name: e.Name, Values: values, Description: e.Doc})
 		b.enumVal[e.Name] = e.Values
 	}
 	return nil
@@ -290,6 +293,52 @@ func (b *builder) registerEnums(reg *loom.Registry) error {
 
 // registerTypes records each schema type's required list, so a nested
 // input's NonNull follows the schema as a command's top level does.
+// registerDocs gathers what the schema's comments say, keyed the way the
+// type builders look it up: "Order" for a declaration, "Order.status"
+// for a field (snake case, as the schema writes it). Commands share the
+// namespace — a command and a type are both Go types in one package.
+func (b *builder) registerDocs(reg *loom.Registry) {
+	if b.docs == nil {
+		b.docs = map[string]string{}
+	}
+	add := func(name, doc string, fields map[string]string) {
+		if doc != "" {
+			b.docs[name] = doc
+		}
+		for f, d := range fields {
+			b.docs[name+"."+f] = d
+		}
+	}
+	for _, a := range reg.Aggregates {
+		add(a.Name, a.Doc, a.FieldDocs)
+		for _, c := range a.Commands {
+			add(c.Name, c.Doc, c.FieldDocs)
+		}
+	}
+	for _, r := range reg.Records {
+		add(r.Name, r.Doc, r.FieldDocs)
+		for _, c := range r.Commands {
+			add(c.Name, c.Doc, c.FieldDocs)
+		}
+	}
+	for _, p := range reg.Projections {
+		add(p.Entity, p.EntityDoc, p.EntityFieldDocs)
+	}
+	for _, t := range reg.Types {
+		add(t.Name, t.Doc, t.FieldDocs)
+	}
+	for _, e := range reg.Enums {
+		add(e.Name, e.Doc, nil)
+	}
+}
+
+// described sets a root read's description: what the read is in the
+// gateway's terms, then what the schema says the thing is.
+func (b *builder) described(f *gql.Field, lead, name string) *gql.Field {
+	f.Description = strings.TrimSpace(lead + " " + b.docs[name])
+	return f
+}
+
 func (b *builder) registerTypes(reg *loom.Registry) {
 	if b.typeRequired == nil {
 		b.typeRequired = map[string]map[string]bool{}
@@ -309,13 +358,14 @@ func (b *builder) service(cli *loom.Client) error {
 		return err
 	}
 	b.registerTypes(reg)
+	b.registerDocs(reg)
 
 	for _, agg := range reg.Aggregates {
 		obj, err := b.objectFor(agg.Name, agg.NewState())
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, agg.StateSecret, agg.ReadRoles, obj)); err != nil {
+		if err := b.addQuery(lowerFirst(agg.Name), b.described(aggregateGet(cli, agg.Name, agg.StateSecret, agg.ReadRoles, obj), "One "+agg.Name+" by id.", agg.Name)); err != nil {
 			return err
 		}
 		name, secrets := agg.Name, agg.StateSecret
@@ -343,7 +393,7 @@ func (b *builder) service(cli *loom.Client) error {
 				return cli.QueryEntities(ctx, name, q)
 			}
 			narrow := b.narrower(name, td)
-			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery, narrow)); err != nil {
+			if err := b.addQuery(lowerFirst(name)+"s", b.described(docList(obj, agg.ReadRoles, aggQuery, narrow), "Every "+name+" matching a filter.", name)); err != nil {
 				return err
 			}
 			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery, narrow)); err != nil {
@@ -357,7 +407,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		recSecrets := rec.StateSecret
-		if err := b.addQuery(lowerFirst(rec.Name), docGet(obj, rec.ReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+		if err := b.addQuery(lowerFirst(rec.Name), b.described(docGet(obj, rec.ReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Record(ctx, rec.Name, ns, id)
 			if err != nil || state == nil {
 				return state, err
@@ -365,7 +415,7 @@ func (b *builder) service(cli *loom.Client) error {
 			// the write-only contract holds on the gateway exactly as it
 			// does on the HTTP API: @secret reads back as a fingerprint
 			return loom.RedactSecrets(state, recSecrets), nil
-		})); err != nil {
+		}), "One "+rec.Name+" by id.", rec.Name)); err != nil {
 			return err
 		}
 		recName := rec.Name
@@ -373,7 +423,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return cli.QueryRecords(ctx, recName, q)
 		}
 		recNarrow := b.narrower(rec.Name, nil)
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery, recNarrow)); err != nil {
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", b.described(docList(obj, rec.ReadRoles, recQuery, recNarrow), "Every "+rec.Name+" matching a filter.", rec.Name)); err != nil {
 			return err
 		}
 		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery, recNarrow)); err != nil {
@@ -401,13 +451,13 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(entity), docGet(obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+		if err := b.addQuery(lowerFirst(entity), b.described(docGet(obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
 			if state == nil {
 				return nil, err
 			}
 			return state, err
-		})); err != nil {
+		}), "One "+entity+" by id.", entity)); err != nil {
 			return err
 		}
 		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
@@ -420,7 +470,7 @@ func (b *builder) service(cli *loom.Client) error {
 			}
 		}
 		entityNarrow := b.narrower(entity, entityTable)
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery, entityNarrow)); err != nil {
+		if err := b.addQuery(lowerFirst(entity)+"s", b.described(docList(obj, p.EntityReadRoles, entityQuery, entityNarrow), "Every "+entity+" matching a filter.", entity)); err != nil {
 			return err
 		}
 		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery, entityNarrow)); err != nil {
@@ -1063,8 +1113,9 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 		return err
 	}
 	b.muts[field] = &gql.Field{
-		Type: gql.NewNonNull(dispatchResult),
-		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
+		Description: b.docs[name],
+		Type:        gql.NewNonNull(dispatchResult),
+		Args:        gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
