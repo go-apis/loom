@@ -119,6 +119,14 @@ CREATE TABLE IF NOT EXISTS loom_timers (
 );
 CREATE INDEX IF NOT EXISTS loom_timers_due ON loom_timers (service, fire_at);
 
+CREATE TABLE IF NOT EXISTS loom_idempotency (
+	service text NOT NULL,
+	key     text NOT NULL,
+	at      timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, key)
+);
+CREATE INDEX IF NOT EXISTS loom_idempotency_at ON loom_idempotency (service, at);
+
 CREATE TABLE IF NOT EXISTS loom_instances (
 	service    text NOT NULL,
 	instance   uuid NOT NULL,

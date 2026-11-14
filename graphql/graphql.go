@@ -1269,10 +1269,11 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 				}
 				return planDoc(held, b.consumedBy(cli))
 			}
-			if err := cli.Dispatch(p.Context, cmd); err != nil {
+			ctx, replayed := keyed(p.Context)
+			if err := cli.Dispatch(ctx, cmd); err != nil {
 				return nil, err
 			}
-			return map[string]any{"status": "ok"}, nil
+			return dispatched(replayed), nil
 		},
 	}
 	return nil

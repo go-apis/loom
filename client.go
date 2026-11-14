@@ -284,6 +284,12 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 	// (reader.go)
 	ctx = withTxReader(ctx, c, tx)
 
+	// a repeat of a dispatch that already committed under the caller's
+	// key does nothing (idempotency.go)
+	if run, err := c.claimIdempotency(ctx, tx, cmds); err != nil || !run {
+		return err
+	}
+
 	published := false
 	batched := false
 	type queued struct {
