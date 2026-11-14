@@ -156,83 +156,11 @@ func (c *Client) apiRegistry(w http.ResponseWriter, r *http.Request) {
 
 // --- /runners: checkpoint lag, the "is anything stuck" signal ---
 
-type runnerStatus struct {
-	Runner string `json:"runner"`
-	// Kind: projection | process | process(bus) — bus consumers have no
-	// checkpoint, they dedup instead.
-	Kind      string     `json:"kind"`
-	Seq       int64      `json:"seq"`
-	Latest    int64      `json:"latest"`
-	Lag       int64      `json:"lag"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
-	// Stalled: a projection halted on an event it cannot fold or write —
-	// FailingSeq is that event, LastError why, StalledSince the first
-	// failure. POST /runners/{name}/skip parks it and moves on.
-	Stalled      bool       `json:"stalled"`
-	FailingSeq   int64      `json:"failing_seq,omitempty"`
-	Attempts     int        `json:"attempts,omitempty"`
-	LastError    string     `json:"last_error,omitempty"`
-	StalledSince *time.Time `json:"stalled_since,omitempty"`
-}
-
 func (c *Client) apiRunners(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var latest int64
-	_ = c.db.QueryRow(ctx, `SELECT coalesce(max(global_seq),0) FROM loom_events WHERE service=$1`, c.reg.Service).Scan(&latest)
-
-	type cp struct {
-		seq        int64
-		at         time.Time
-		failingSeq int64
-		attempts   int
-		lastError  string
-		since      *time.Time
-	}
-	cps := map[string]cp{}
-	rows, err := c.db.Query(ctx, `
-		SELECT runner, global_seq, updated_at, failing_seq, attempts, last_error, stalled_since
-		FROM loom_checkpoints WHERE service=$1`, c.reg.Service)
+	latest, out, err := c.runners(r.Context())
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	for rows.Next() {
-		var name string
-		var v cp
-		if err := rows.Scan(&name, &v.seq, &v.at, &v.failingSeq, &v.attempts, &v.lastError, &v.since); err != nil {
-			rows.Close()
-			apiError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		cps[name] = v
-	}
-	rows.Close()
-
-	out := []runnerStatus{}
-	add := func(runner, kind string, checkpointed bool) {
-		st := runnerStatus{Runner: runner, Kind: kind, Latest: latest}
-		if v, ok := cps[runner]; ok {
-			at := v.at
-			st.Seq, st.UpdatedAt = v.seq, &at
-			st.Stalled = v.since != nil
-			st.FailingSeq, st.Attempts, st.LastError, st.StalledSince = v.failingSeq, v.attempts, v.lastError, v.since
-		}
-		if checkpointed {
-			st.Lag = latest - st.Seq
-		}
-		out = append(out, st)
-	}
-	for _, p := range c.reg.Projections {
-		add("projection:"+p.Name, "projection", true)
-	}
-	for _, p := range c.reg.Processes {
-		local, foreign := c.splitSubscriptions(p)
-		if len(local) > 0 {
-			add("process:"+p.Name, "process", true)
-		}
-		if len(foreign) > 0 {
-			add("process:"+p.Name+" (bus)", "process(bus)", false)
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"latest": latest, "runners": out})
 }

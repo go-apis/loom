@@ -129,6 +129,23 @@ id, err := loom.Once(ctx, "gateway_capture", func(ctx context.Context) (string, 
 - Make each retry its own key when a retry must really call again
   (`…/<attempt>`).
 
+## Doc comments are published
+
+A `///` block directly above an aggregate, record, entity, type, enum,
+command or field is its doc: the gateway serves it as the GraphQL
+description, and agents calling the service over MCP search it and read
+it. Write one on every command, in the caller's terms: what it does and
+when to use it. Keep reasons, history and implementation notes in plain
+`//` comments, which are never published.
+
+## Commands that cannot be undone take @plan
+
+A command that deletes, archives, revokes or otherwise cannot be taken
+back is declared `@plan`. At the gateway its mutation then answers a
+plan of what it would emit and runs nothing; `runPlan` with the plan's
+id runs it, once, while its target is unchanged. Handlers need nothing
+special: the plan is the handler's own decision, not yet written.
+
 ## Reading
 
 - `cli.Load(ctx, "Aggregate", ns, id)` reads an aggregate's state from

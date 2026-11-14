@@ -914,6 +914,74 @@ ship") stay in the command handler. `loom graphql` stamps the gate on
 the SDL artifact as a `@role(anyOf: [...])` field directive, so
 consumers can read the contract.
 
+A role says what a caller is in a namespace. `@allow` says what the
+caller is at all, and what it owns:
+
+```
+aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+  state { depot_id: uuid  label: string }
+  command RelabelParcel @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+    label: string!
+  } -> ParcelRelabelled
+}
+```
+
+Each `@allow` is one rule and any one may hold. `attr: value` compares
+an attribute your `Auth` hook put in `Access.Attrs` (`kind: courier`);
+`field: caller.attr` demands that a field of the thing operated on
+equals a caller attribute. On an aggregate, record or entity the rules
+gate its reads; on a command, the command. The gateway does the
+comparing:
+
+- **A command** is checked against the stored state. Its payload counts
+  only where the state has no value — a thing being created — so a
+  caller cannot claim another owner's thing by what it sends.
+- **A get** is refused unless the stored doc is the caller's.
+- **A list**, and its subscription, is narrowed to the caller's rows
+  whatever else it filters by.
+
+`@allow` sits beside `@role`: both must pass. Attribute names and
+values are yours. A scoped caller with no `Attrs` meets no rule, so
+adding `@allow` fails closed until `Auth` grants attributes; `All`
+access with no `Attrs` map keeps god-mode semantics. A custom `Policy`
+sees the rules as `Decision.Rules` (with `List` and a lazy `Target`)
+and inherits the checks by delegating to `DefaultPolicy`. Like `@role`,
+`@allow` gates only the gateway — and so the MCP tools — never
+in-process `Dispatch`.
+
+Some commands should not be run on a caller's first word. Mark one
+`@plan` and the gateway holds it back:
+
+```
+/// Throw a parcel away. It cannot be brought back.
+command DiscardParcel @plan -> ParcelDiscarded
+```
+
+Its mutation now runs nothing. It decides the command against the
+state as it stands and answers a `Plan`: the events the handler would
+emit, the target and its version, an expiry, and an id.
+`runPlan(namespace, id)` runs that plan — exactly the command that was
+planned, since the plan's id is all it takes:
+
+- **Once.** The plan is spent when it runs, whether or not the command
+  then succeeds.
+- **Only if nothing moved.** The command runs only while its target is
+  at the version it was planned against; otherwise the plan is stale,
+  and is planned again.
+- **For a while.** A plan expires (`loom.DefaultPlanTTL`, 15 minutes).
+- **By whoever may run the command.** Planning and running each answer
+  to the command's own `@role` and `@allow`, for the caller of that
+  step. Each is its own `Decision` — `Stage` is `StagePlan`, then
+  `StageRun` — so a `Policy` can let an agent plan what only a person
+  may run.
+
+A command its handler refuses is refused at planning, with the
+handler's error. A plan shows what the command emits, not what reacts
+to it: processes and policies are not run to find out. `@plan` holds
+back only the gateway, and so the MCP tools; in-process `Dispatch`
+(processes, timers, your own code) runs the command as any other, and
+`Client.Plan` / `Client.RunPlan` are there to call directly.
+
 When flat roles run out — "platform staff bypass everything", "this
 client must be tagged to the caller's org" — set a `Policy`: the OPA
 shape with Go as the rule language. Every operation (reads, lists,
@@ -970,6 +1038,89 @@ under `DefaultPolicy` their empty namespace passes only god access, so
 scoped callers reach one only when a policy explicitly allows it. They
 are composed at the deployment, so the emitted SDL artifact does not
 carry them.
+
+### Agents: the gateway over MCP
+
+`mcp.New` serves the same composed schema to agents over the Model
+Context Protocol:
+
+```go
+gateway, _ := graphql.New(graphql.Config{Services: services, Auth: auth, Policy: policy})
+agents, _ := mcp.New(mcp.Config{Gateway: gateway, Name: "orders"})
+mux.Handle("/graphql", gateway)
+mux.Handle("/mcp", agents)
+```
+
+An agent gets five tools whatever the schema holds: `search` finds a
+command or read by name, `describe` says what it takes and returns,
+`dispatch` runs a command, `get` reads one record and `list` reads many.
+Every call is one GraphQL operation run in-process through the gateway,
+so `Auth`, `Policy`, `@role`, the depth limit and `@secret` redaction
+apply exactly as they do over HTTP, and a hand-written `Field` is
+reachable like a generated one. `Config.Unauthenticated` lets a
+deployment name its OAuth resource metadata in the 401 it answers.
+
+`search` and `describe` show a caller only what it could run. Each
+operation is put to the gateway's own `Policy` as a probe — a
+`Decision` with `Probe` set, the operation's `@role` and `@allow`
+contract, a namespace the caller has, and no arguments — so a member is
+not shown a command only an owner may run, and a read-only caller is
+shown no commands. A custom `Policy` that cannot tell without arguments
+should allow a probe: it decides only what is listed, and the call is
+decided again in full when it comes.
+
+What an agent reads about an operation is what the schema's doc
+comments say. A `///` block directly above an aggregate, record, entity,
+type, enum, command or field is its doc; the gateway serves it as the
+GraphQL description, `search` matches on it and `describe` shows it:
+
+```
+/// Place a new order for a customer. The total is worked out from
+/// the items.
+command PlaceOrder {
+  /// ISO 4217 code the prices are in, for example USD.
+  currency: string!
+} -> OrderPlaced
+```
+
+Plain `//` comments stay notes for whoever reads the schema and are
+never published: a doc reaches every caller of the gateway, so writing
+one is deliberate. A schema with no `///` generates exactly what it did
+before.
+
+### What the background work is doing
+
+`Client.Status(ctx)` answers for the whole service from the database,
+whichever instance is asked:
+
+- **The lease:** whether the service needs a leader (it does when a
+  process reacts to its own events), whether one holds it, the leader's
+  generation and revision, whether it is yielding to a newer deploy, and
+  the answering instance's own build. A leader on an older generation
+  than the instance answering is a deploy whose hand-over has not
+  happened.
+- **Instances:** the builds with a live instance, newest first. More
+  than one line after a deploy is the old revision still running. Only
+  the newest generation alive fires timers, runs batches and folds
+  projections, so an old instance kept for a traffic tag never runs a
+  held command with old code and never steps a projection past events
+  only the new build folds. A new instance announces itself, so older
+  ones stand down at once; if the newer build's instances go away, the
+  older ones take the work up again within a few beats. `HereNewest`
+  says which kind answered.
+- **Runners:** every projection and process with its position, its
+  `Lag` in log positions, and `BehindSince` — when the oldest event it
+  has not handled was written. Lag says how far behind; `BehindSince`
+  says for how long.
+- **What is waiting:** timers pending and overdue, effects running and
+  failed, the outbox's depth and oldest row, dead letters, held plans.
+
+Set `graphql.Config.Status` and the gateway serves it as
+`serviceStatus`, one entry per composed service, with
+`runners(onlyBehind: true)` for what needs attention. It names no
+tenant, so under `DefaultPolicy` only `All` access reads it; let your
+operators in from your `Policy` by its field name. Through `mcp.New` an
+agent finds it with `search` and reads it with `list`.
 
 ## The console
 

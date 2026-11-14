@@ -112,6 +112,10 @@ type Client struct {
 	runnerIdlePoll  time.Duration // Config.RunnerIdlePoll
 	leader          leaderFlag    // this instance holds the service's process lease (election.go)
 	gen             generation    // Config.Generation, Config.Revision as the election orders them
+	genOnce         sync.Once     // the generation is resolved once, by whichever runner needs it first
+	superseded      atomic.Bool   // a newer generation is alive: this instance leaves the service's work to it (instances.go)
+	beaten          chan struct{} // closed after the instance's first beat; nil until Start
+	beatNudge       chan struct{} // another instance announced itself: beat now (instances.go)
 	procSteps       atomic.Int64  // process runner steps in flight (a yielding leader drains them)
 
 	watchMu  sync.Mutex
@@ -390,6 +394,9 @@ func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta
 	if err != nil {
 		return nil, err
 	}
+	if err := stalePlan(ctx, cmd, version); err != nil {
+		return nil, err
+	}
 
 	payloads, err := def.Handle(ctx, state, cmd)
 	if err != nil {
@@ -481,6 +488,9 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 		if err := json.Unmarshal(data, state); err != nil {
 			return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
 		}
+	}
+	if err := stalePlan(ctx, cmd, version); err != nil {
+		return nil, err
 	}
 
 	payloads, err := def.Handle(ctx, state, cmd)

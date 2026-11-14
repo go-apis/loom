@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"github.com/go-apis/loom"
+
 	"context"
 	"fmt"
 	"net/http"
@@ -52,6 +54,13 @@ type Access struct {
 	// refused, so adding @role to a schema fails closed until the Auth
 	// hook grants roles.
 	Roles map[string]string
+	// Attrs is what the caller is, as the deployment names it — kind:
+	// session, job_kind: build, project: <id> — for the schema's @allow
+	// rules to compare. A nil map opts out of the attribute model:
+	// @allow-gated operations then pass only for All (god) access, so
+	// adding @allow to a schema fails closed until the Auth hook grants
+	// attributes.
+	Attrs map[string]string
 	// Claims is an opaque slot for whatever the Auth hook parsed — its
 	// JWT claims, API-key record, session — carried untouched to the
 	// Policy hook's Decision. The built-in checks never read it.
@@ -125,11 +134,44 @@ type Decision struct {
 	// ungated operations. Advisory input: the policy decides what it
 	// means.
 	Roles []string
+	// Rules is the operation's @allow contract, nil for an operation
+	// with none. DefaultPolicy enforces it; a custom Policy that does
+	// not delegate decides what it means.
+	Rules []loom.Rule
+	// List marks a read of many rows: its rules hold on their Caller
+	// pairs, and their Own pairs narrow the rows returned.
+	List bool
+	// Target reads the values the rules' Own pairs compare — the stored
+	// state of what the operation touches, and for a command its payload
+	// where the state has none. It reads the database, so it is called
+	// only when a rule needs it. Nil when the operation has no rules.
+	Target func() (map[string]any, error)
+	// Stage is where a @plan command is: StagePlan when its mutation
+	// is asked for a plan, StageRun when runPlan is asked to run one.
+	// Empty for every other operation. Both stages carry the command's
+	// own Field, Roles and Rules, so a Policy that tells them apart can
+	// let one caller plan what only another may run. At StageRun, Args
+	// is the held command by its snake-case field names.
+	Stage string
+	// Probe marks a question, not an operation: could this caller ever
+	// run Field in Namespace? It carries no Args and no Target, and
+	// nothing runs on a yes. The catalogue a caller is shown
+	// (Executor.Allowed, behind the MCP tools' search and describe) is
+	// built from probes; the real operation is decided again, in full,
+	// when it is called. A Policy that cannot tell without arguments
+	// should allow a probe: it only decides what is listed.
+	Probe bool
 	// Access is what the Auth hook resolved; HasAccess false means an
 	// open mount (no Auth hook and no WithAccess middleware).
 	Access    Access
 	HasAccess bool
 }
+
+// The stages of a @plan command (Decision.Stage).
+const (
+	StagePlan = "plan"
+	StageRun  = "run"
+)
 
 // Policy replaces the built-in authorization when set on Config: every
 // operation — reads, lists, subscriptions, mutations, uploads, file
@@ -156,9 +198,18 @@ type Policy func(ctx context.Context, d Decision) error
 // open mounts allow everything; namespace "*" needs All; Namespaces
 // scope reads and writes; Mutate (narrowed by Mutations) gates
 // mutations; @role contracts demand a matching Roles grant in the
-// target namespace (All with no Roles map keeps god-mode semantics).
-// Custom policies call it to inherit these rules.
+// target namespace (All with no Roles map keeps god-mode semantics);
+// @allow rules demand that one of them holds for the caller's Attrs
+// (checkRules). Custom policies call it to inherit these rules.
 func DefaultPolicy(d Decision) error {
+	if err := baseline(d); err != nil {
+		return err
+	}
+	return checkRules(d)
+}
+
+// baseline is the rule set before @allow: namespaces, mutate, @role.
+func baseline(d Decision) error {
 	if !d.HasAccess {
 		return nil
 	}

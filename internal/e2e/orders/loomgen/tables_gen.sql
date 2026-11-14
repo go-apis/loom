@@ -24,6 +24,17 @@ CREATE TABLE IF NOT EXISTS loom_t_orders_order_summary (
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_order_summary_service_namespace_customer_id_updated_at ON loom_t_orders_order_summary ("service", "namespace", "customer_id", "updated_at" DESC NULLS LAST);
 
+CREATE TABLE IF NOT EXISTS loom_t_orders_parcel (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	id         uuid NOT NULL,
+	"depot_id" uuid,
+	"discarded" boolean,
+	"label" text,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, id)
+);
+
 CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
 	service    text NOT NULL,
 	namespace  text NOT NULL,

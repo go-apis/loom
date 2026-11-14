@@ -64,6 +64,12 @@ type parser struct {
 	out        *schema.Schema
 	events     map[string]*schema.Event
 	enumBlocks []*enumBlock // every enum block, home or extension, in source order
+	// allows is the @allow rules the last directives() call read, in
+	// source order. @allow repeats and takes pairs, which the name →
+	// args map directives() returns cannot hold; a site that takes
+	// @allow reads them here, and every other site refuses the
+	// directive by its name in the map, as it does any unknown one.
+	allows []*schema.Rule
 }
 
 func (p *parser) peek() token { return p.toks[p.pos] }
@@ -188,10 +194,20 @@ func (p *parser) laterService() error {
 
 func (p *parser) directives() (map[string][]string, error) {
 	out := map[string][]string{}
+	p.allows = nil
 	for p.accept("@") {
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
+		}
+		if name == "allow" {
+			rule, err := p.allowRule()
+			if err != nil {
+				return nil, err
+			}
+			p.allows = append(p.allows, rule)
+			out[name] = nil
+			continue
 		}
 		var args []string
 		if p.accept("(") {
@@ -225,8 +241,65 @@ func (p *parser) directives() (map[string][]string, error) {
 	return out, nil
 }
 
+// allowRule parses one @allow's pairs:
+//
+//	@allow(kind: session, job_kind: build, project_id: caller.project)
+//
+// `attr: value` says the caller's attribute must have that value;
+// `field: caller.attr` says the field of what is operated on must equal
+// the caller's attribute.
+func (p *parser) allowRule() (*schema.Rule, error) {
+	at := p.peek()
+	if err := p.expect("("); err != nil {
+		return nil, err
+	}
+	rule := &schema.Rule{}
+	for {
+		key, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect(":"); err != nil {
+			return nil, err
+		}
+		v := p.next()
+		switch {
+		case v.kind == tIdent && v.text == "caller" && p.peek().text == ".":
+			p.next()
+			attr, err := p.ident()
+			if err != nil {
+				return nil, err
+			}
+			if _, dup := rule.Own[key]; dup {
+				return nil, p.errf(v, "@allow names field %s twice", key)
+			}
+			if rule.Own == nil {
+				rule.Own = map[string]string{}
+			}
+			rule.Own[key] = attr
+		case v.kind == tIdent || v.kind == tString || v.kind == tNumber:
+			if _, dup := rule.Caller[key]; dup {
+				return nil, p.errf(v, "@allow names caller attribute %s twice", key)
+			}
+			if rule.Caller == nil {
+				rule.Caller = map[string]string{}
+			}
+			rule.Caller[key] = v.text
+		default:
+			return nil, p.errf(v, "bad @allow value %q (a value, or caller.<attribute>)", v.text)
+		}
+		if p.accept(")") {
+			break
+		}
+		if err := p.expect(","); err != nil {
+			return nil, p.errf(at, "@allow takes pairs: attribute: value, or field: caller.attribute")
+		}
+	}
+	return rule, nil
+}
+
 func (p *parser) aggregate() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -235,9 +308,9 @@ func (p *parser) aggregate() error {
 	if err != nil {
 		return err
 	}
-	agg := &schema.Aggregate{Name: name}
+	agg := &schema.Aggregate{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "snapshot" && d != "table" && d != "role" {
+		if d != "snapshot" && d != "table" && d != "role" && d != "allow" {
 			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role)", name, d)
 		}
 	}
@@ -300,7 +373,7 @@ func (p *parser) aggregate() error {
 // record parses state-of-record declarations: like an aggregate but with
 // no snapshot directive (the row is the source of truth).
 func (p *parser) record() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -309,9 +382,9 @@ func (p *parser) record() error {
 	if err != nil {
 		return err
 	}
-	rec := &schema.Record{Name: name}
+	rec := &schema.Record{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "role" {
+		if d != "role" && d != "allow" {
 			return fmt.Errorf("record %s: unknown directive @%s (records take @role)", name, d)
 		}
 	}
@@ -407,20 +480,27 @@ func (p *parser) upload() (*schema.Upload, error) {
 // command at the GraphQL gateway: only callers holding one of the named
 // roles in the target namespace may dispatch it.
 func (p *parser) command() (*schema.Command, error) {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return nil, err
 	}
-	cmd := &schema.Command{Name: name}
+	cmd := &schema.Command{Name: name, Doc: doc}
 	dirs, err := p.directives()
 	if err != nil {
 		return nil, err
 	}
 	for d := range dirs {
-		if d != "role" {
-			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role)", name, d)
+		if d != "role" && d != "allow" && d != "plan" {
+			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role, @allow, @plan)", name, d)
 		}
+	}
+	cmd.Allow = p.allows
+	if args, ok := dirs["plan"]; ok {
+		if len(args) > 0 {
+			return nil, fmt.Errorf("command %s: @plan takes no arguments", name)
+		}
+		cmd.Plan = true
 	}
 	if args, ok := dirs["role"]; ok {
 		if len(args) == 0 {
@@ -545,7 +625,7 @@ func (p *parser) upcast() error {
 }
 
 func (p *parser) entity() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -554,9 +634,9 @@ func (p *parser) entity() error {
 	if err != nil {
 		return err
 	}
-	ent := &schema.Entity{Name: name}
+	ent := &schema.Entity{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "table" && d != "role" {
+		if d != "table" && d != "role" && d != "allow" {
 			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table, @role)", name, d)
 		}
 	}
@@ -657,6 +737,7 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 			}
 			continue
 		}
+		doc := p.peek().doc
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -668,6 +749,7 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 		if err != nil {
 			return nil, err
 		}
+		ft.Doc = doc
 		if p.accept("!") {
 			out.Required = append(out.Required, name)
 		}
@@ -951,7 +1033,7 @@ func (p *parser) projection() error {
 }
 
 func (p *parser) typeDecl() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -960,7 +1042,7 @@ func (p *parser) typeDecl() error {
 	if err != nil {
 		return err
 	}
-	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, Payload: pl})
+	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, Doc: doc, Payload: pl})
 	return nil
 }
 
@@ -1044,7 +1126,7 @@ func (p *parser) mergeEnums() error {
 	for _, b := range ordered {
 		e := enums[b.name]
 		if e == nil {
-			e = &schema.Enum{Name: b.name}
+			e = &schema.Enum{Name: b.name, Doc: homes[b.name].at.doc}
 			enums[b.name] = e
 			seen[b.name] = map[string]where{}
 			p.out.Enums = append(p.out.Enums, e)
@@ -1116,6 +1198,7 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 	}
 	out := &schema.Payload{Type: "object", Properties: map[string]*schema.Payload{}}
 	for !p.accept("}") {
+		doc := p.peek().doc
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -1127,6 +1210,7 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 		if err != nil {
 			return nil, err
 		}
+		ft.Doc = doc
 		if p.accept("!") {
 			out.Required = append(out.Required, name)
 		}

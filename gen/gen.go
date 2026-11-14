@@ -468,6 +468,14 @@ var (
 	if len(readRoles) > 0 {
 		fmt.Fprintf(&b, "\t\tReadRoles: %s,\n", stringSlice(readRoles))
 	}
+	ownerDoc, readAllow := "", []*schema.Rule(nil)
+	if o.agg != nil {
+		ownerDoc, readAllow = o.agg.Doc, o.agg.ReadAllow
+	} else {
+		ownerDoc, readAllow = o.rec.Doc, o.rec.ReadAllow
+	}
+	writeRules(&b, "\t\t", "ReadAllow", readAllow)
+	writeDocs(&b, "\t\t", "Doc", ownerDoc, "FieldDocs", state)
 	fmt.Fprintf(&b, "\t\tNewState: func() %s { return &%s{} },\n", stateType, o.name)
 	fmt.Fprintf(&b, "\t\tCommands: []*loom.%s{\n", cmdType)
 	for _, c := range o.commands() {
@@ -478,9 +486,14 @@ var (
 		if len(c.Roles) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
 		}
+		writeRules(&b, "\t\t\t\t", "Allow", c.Allow)
+		if c.Plan {
+			b.WriteString("\t\t\t\tPlan: true,\n")
+		}
 		if req := requiredFields(c.Payload); len(req) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
 		}
+		writeDocs(&b, "\t\t\t\t", "Doc", c.Doc, "FieldDocs", c.Payload)
 		fmt.Fprintf(&b, "\t\t\t\tHandle: func(ctx context.Context, state %s, cmd loom.Command) ([]any, error) {\n", stateType)
 		fmt.Fprintf(&b, "\t\t\t\t\tevts, err := h.%s(ctx, state.(*%s), cmd.(*%s))\n", c.Name, o.name, c.Name)
 		b.WriteString("\t\t\t\t\treturn asAny(evts), err\n\t\t\t\t},\n\t\t\t},\n")
@@ -1055,6 +1068,10 @@ func loomErrNilEvent(eventType string) error {
 	if len(g.s.Enums) > 0 {
 		b.WriteString("\t\tEnums: []*loom.EnumDef{\n")
 		for _, e := range g.s.Enums {
+			if e.Doc != "" {
+				fmt.Fprintf(&b, "\t\t\t{Name: %q, Values: %s, Doc: %q},\n", e.Name, stringSlice(e.Values), e.Doc)
+				continue
+			}
 			fmt.Fprintf(&b, "\t\t\t{Name: %q, Values: %s},\n", e.Name, stringSlice(e.Values))
 		}
 		b.WriteString("\t\t},\n")
@@ -1067,6 +1084,15 @@ func loomErrNilEvent(eventType string) error {
 	sort.Slice(types, func(i, j int) bool { return types[i].Name < types[j].Name })
 	b.WriteString("\t\tTypes: []*loom.TypeDef{\n")
 	for _, t := range types {
+		if t.Doc != "" || len(fieldDocs(t.Payload)) > 0 {
+			fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n", t.Name)
+			if req := requiredFields(t.Payload); len(req) > 0 {
+				fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
+			}
+			writeDocs(&b, "\t\t\t\t", "Doc", t.Doc, "FieldDocs", t.Payload)
+			b.WriteString("\t\t\t},\n")
+			continue
+		}
 		if req := requiredFields(t.Payload); len(req) > 0 {
 			fmt.Fprintf(&b, "\t\t\t{Name: %q, Required: %s},\n", t.Name, stringSlice(req))
 		} else {
@@ -1102,6 +1128,8 @@ func loomErrNilEvent(eventType string) error {
 			if len(ent.ReadRoles) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\tEntityReadRoles: %s,\n", stringSlice(ent.ReadRoles))
 			}
+			writeRules(&b, "\t\t\t\t", "EntityReadAllow", ent.ReadAllow)
+			writeDocs(&b, "\t\t\t\t", "EntityDoc", ent.Doc, "EntityFieldDocs", ent.State)
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
 		keyed := false
@@ -1554,6 +1582,76 @@ func eventNames(p *schema.Projection) []string {
 		out = append(out, sub.Event)
 	}
 	return out
+}
+
+// fieldDocs is a payload's documented top-level fields: name → the
+// comment written above it.
+func fieldDocs(pl *schema.Payload) map[string]string {
+	if pl == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for name, f := range pl.Properties {
+		if f.Doc != "" {
+			out[name] = f.Doc
+		}
+	}
+	return out
+}
+
+// writeDocs writes a definition's doc and its fields' docs, each only
+// when the schema carries one: an undocumented schema generates exactly
+// what it did before docs existed.
+func writeDocs(b *strings.Builder, indent, docKey, doc, fieldsKey string, pl *schema.Payload) {
+	if doc != "" {
+		fmt.Fprintf(b, "%s%s: %q,\n", indent, docKey, doc)
+	}
+	docs := fieldDocs(pl)
+	if len(docs) == 0 {
+		return
+	}
+	names := make([]string, 0, len(docs))
+	for name := range docs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fmt.Fprintf(b, "%s%s: map[string]string{\n", indent, fieldsKey)
+	for _, name := range names {
+		fmt.Fprintf(b, "%s\t%q: %q,\n", indent, name, docs[name])
+	}
+	fmt.Fprintf(b, "%s},\n", indent)
+}
+
+// writeRules writes a definition's @allow rules, in declared order with
+// each rule's pairs sorted; nothing when the schema declares none.
+func writeRules(b *strings.Builder, indent, key string, rules []*schema.Rule) {
+	if len(rules) == 0 {
+		return
+	}
+	pairs := func(m map[string]string) string {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = fmt.Sprintf("%q: %q", k, m[k])
+		}
+		return "map[string]string{" + strings.Join(parts, ", ") + "}"
+	}
+	fmt.Fprintf(b, "%s%s: []loom.Rule{\n", indent, key)
+	for _, r := range rules {
+		var fields []string
+		if len(r.Caller) > 0 {
+			fields = append(fields, "Caller: "+pairs(r.Caller))
+		}
+		if len(r.Own) > 0 {
+			fields = append(fields, "Own: "+pairs(r.Own))
+		}
+		fmt.Fprintf(b, "%s\t{%s},\n", indent, strings.Join(fields, ", "))
+	}
+	fmt.Fprintf(b, "%s},\n", indent)
 }
 
 func stringSlice(list []string) string {

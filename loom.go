@@ -146,12 +146,26 @@ type Registry struct {
 	Types       []*TypeDef
 }
 
+// Rule is one @allow alternative from the schema: who may call an
+// operation at the gateway. Caller pairs a caller attribute with the
+// value it must have; Own pairs a field of the thing operated on (snake
+// case) with the caller attribute it must equal. Every pair must hold;
+// an operation with several rules is allowed when any one holds. The
+// runtime never reads rules — in-process Dispatch is not gated — and the
+// gateway enforces them (graphql.DefaultPolicy).
+type Rule struct {
+	Caller map[string]string
+	Own    map[string]string
+}
+
 // EnumDef mirrors a schema `enum`: the closed value set behind a
 // generated named string type. The gateway serves these as real GraphQL
 // enum types; the runtime treats the values as strings.
 type EnumDef struct {
 	Name   string
 	Values []string
+	// Doc is the `///` doc comment written above the enum in the schema.
+	Doc string
 }
 
 // TypeDef mirrors a schema `type`: a named struct reused inside commands,
@@ -163,6 +177,9 @@ type TypeDef struct {
 	// input, as CommandDef.Required does for a command's top level. Go
 	// value-ness can't say it: `[T]?` and `[T]` are both a plain slice.
 	Required []string
+	// Doc and FieldDocs — see AggregateDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
 }
 
 // JoinDef is a schema-declared gateway edge between entities (`join` in
@@ -298,6 +315,15 @@ type AggregateDef struct {
 	// ReadRoles (@role on the aggregate block) gates the generated
 	// GraphQL reads — the singular get and its Changed subscription.
 	ReadRoles []string
+	// ReadAllow (@allow on the block) gates the same reads by rule.
+	ReadAllow []Rule
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the schema, and FieldDocs the doc comments above
+	// its state fields (snake case names). The gateway serves them as
+	// descriptions, which is what its MCP tools search and show; the
+	// runtime never reads them.
+	Doc       string
+	FieldDocs map[string]string
 }
 
 type CommandDef struct {
@@ -311,12 +337,21 @@ type CommandDef struct {
 	// must hold one of these roles in the target namespace. In-process
 	// Dispatch and the service's own HTTP API are not gated.
 	Roles []string
+	// Allow (@allow) gates the command at the gateway by rule; beside
+	// Roles, both must pass.
+	Allow []Rule
+	// Plan (@plan): at the gateway the command is planned, not run —
+	// see Client.Plan. In-process Dispatch runs it as any other.
+	Plan bool
 	// Required names the schema-required payload fields (snake case) —
 	// the gateway serves exactly these as NonNull inputs, matching the
 	// emitted SDL. Go value-ness can't say it: optional strings and
 	// required strings are both plain `string`.
 	Required []string
-	Handle   func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
+	// Doc and FieldDocs (payload fields) — see AggregateDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
+	Handle    func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
 }
 
 // RecordDef backs state-of-record objects that are NOT event-sourced
@@ -335,6 +370,11 @@ type RecordDef struct {
 	// ReadRoles — see AggregateDef.ReadRoles; covers get, list, and the
 	// list subscription.
 	ReadRoles []string
+	// ReadAllow — see AggregateDef.ReadAllow.
+	ReadAllow []Rule
+	// Doc and FieldDocs — see AggregateDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
 }
 
 type RecordCommandDef struct {
@@ -344,9 +384,16 @@ type RecordCommandDef struct {
 	PII   []string
 	// Roles — see CommandDef.Roles.
 	Roles []string
+	// Allow — see CommandDef.Allow.
+	Allow []Rule
+	// Plan — see CommandDef.Plan.
+	Plan bool
 	// Required — see CommandDef.Required.
 	Required []string
-	Handle   func(ctx context.Context, state any, cmd Command) ([]any, error)
+	// Doc and FieldDocs — see CommandDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
+	Handle    func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 
 type EventDef struct {
@@ -474,6 +521,14 @@ type ProjectionDef struct {
 	// projection feeding it) gates the entity's generated GraphQL reads —
 	// get, list, and both Changed subscriptions.
 	EntityReadRoles []string
+	// EntityReadAllow (@allow on the entity block) gates the same reads
+	// by rule.
+	EntityReadAllow []Rule
+	// EntityDoc and EntityFieldDocs are the entity's doc and its state
+	// fields' docs, denormalized like EntityReadRoles — see
+	// AggregateDef.Doc.
+	EntityDoc       string
+	EntityFieldDocs map[string]string
 }
 
 func (r *Registry) aggregateDef(name string) *AggregateDef {

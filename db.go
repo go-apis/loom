@@ -119,6 +119,29 @@ CREATE TABLE IF NOT EXISTS loom_timers (
 );
 CREATE INDEX IF NOT EXISTS loom_timers_due ON loom_timers (service, fire_at);
 
+CREATE TABLE IF NOT EXISTS loom_instances (
+	service    text NOT NULL,
+	instance   uuid NOT NULL,
+	generation bigint NOT NULL,
+	revision   text NOT NULL DEFAULT '',
+	seen_at    timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, instance)
+);
+
+CREATE TABLE IF NOT EXISTS loom_plans (
+	service      text NOT NULL,
+	id           uuid NOT NULL,
+	namespace    text NOT NULL,
+	command_type text NOT NULL,
+	command      jsonb NOT NULL,
+	meta         jsonb NOT NULL,
+	target_id    uuid NOT NULL,
+	version      int NOT NULL,
+	expires_at   timestamptz NOT NULL,
+	created_at   timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, id)
+);
+
 CREATE TABLE IF NOT EXISTS loom_batches (
 	service    text NOT NULL,
 	namespace  text NOT NULL,

@@ -12,6 +12,96 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Added
+
+- **The gateway serves agents over MCP.** `mcp.New(mcp.Config{Gateway: h})`
+  mounts five tools over the handler `graphql.New` returned: `search`,
+  `describe`, `dispatch`, `get` and `list`. They are the same for every
+  schema, so a service with hundreds of commands gives an agent five
+  tools, and they reach every command and read the composed schema has,
+  hand-written `Field`s included. Each call is one GraphQL operation run
+  in-process through the new `graphql.Executor` (`graphql.AsExecutor`),
+  so it meets the gateway's `Auth`, `Policy`, `@role` gates, depth limit
+  and redaction as an HTTP caller's does; the package holds no rules of
+  its own. Streamable HTTP, stateless.
+- **Doc comments.** A `///` block directly above an aggregate, record,
+  entity, type, enum, command or field is its doc. The generator carries
+  it into the registry (`Doc`, `FieldDocs`, `EntityDoc`,
+  `EntityFieldDocs`), the gateway serves it as the GraphQL description,
+  and the MCP tools search and show it. Plain `//` comments are notes
+  and are never published. A schema with no `///` generates what it did
+  before; the JSON artifacts (`loom openapi`, `loom graphql`) do not
+  carry docs.
+- **`@allow`: rules by what the caller is.** Beside `@role`, an
+  aggregate, record, entity or command takes `@allow(...)` rules:
+  `@allow(kind: admin) @allow(kind: session, project_id: caller.project)`.
+  `attr: value` compares one of the caller's new `Access.Attrs`;
+  `field: caller.attr` demands that a field of the thing operated on
+  equals a caller attribute. The gateway checks the field against the
+  stored state (a command's payload counts only where the state has
+  none, so a caller cannot claim another owner's thing), refuses a get
+  the caller does not own, and narrows a list and its subscription to
+  the rows it does. Rules ride `Decision.Rules`, `Decision.List` and
+  `Decision.Target`; `DefaultPolicy` enforces them, and a scoped caller
+  with no `Attrs` meets no rule, so adding `@allow` fails closed.
+- **A caller is shown what it could run.** The MCP tools' `search` and
+  `describe` list an operation only when the caller could run it in
+  some namespace it has. Each is asked of the gateway's own Policy as a
+  probe (`Decision.Probe`, `graphql.Executor.Allowed`): no arguments,
+  no target, nothing run. It is a listing aid — the call itself is
+  decided again in full.
+- **`@plan`: see a command's effect before causing it.** A command
+  marked `@plan` is not run by its gateway mutation: the mutation
+  answers a `Plan` — the events the command's handler decided it would
+  emit, with nothing written — and `runPlan(namespace, id)` runs that
+  plan: the same command, once, and only while its target is at the
+  version it was planned against. A stale, spent or expired plan is
+  refused. Both steps answer to the command's own gate, each as its own
+  `Decision` (`Stage` plan, then run), so a `Policy` can let an agent
+  plan what only a person may run. In core: `Client.Plan`,
+  `Client.RunPlan`, `Client.PlannedCommand`, the `loom_plans` table
+  (created by `Migrate`). In-process `Dispatch` is never held back. The
+  MCP `dispatch` tool returns a command's whole answer, so a plan
+  arrives with its events.
+- **`Client.Status`: what the background work is doing.** One read of
+  which instance holds the process lease (its generation and revision,
+  whether it is yielding, whether the service needs a leader at all),
+  every projection and process with its lag and — new — `BehindSince`,
+  when the oldest event it has not handled was written, and what is
+  waiting: timers pending and overdue, effects running and failed, the
+  outbox, dead letters, held plans. It is read from the database, so
+  any instance answers for the whole service. `graphql.Config.Status`
+  serves it as the `serviceStatus` query (`runners(onlyBehind: true)`
+  for what needs attention), to All access under `DefaultPolicy`, and
+  so to the MCP tools. `GET /runners` is the same read and gains
+  `behind_since`.
+
+### Changed
+
+- **Timers fire on the newest generation alive.** They fired on every
+  instance, so after a deploy the previous revision's instances — idled
+  with CPU allocated, kept for a traffic tag — went on firing timers
+  and running the commands they hold with the old code. Every instance
+  with a generation now keeps a row in `loom_instances`, refreshed each
+  beat (the poll interval, between 0.1 s and 5 s), and fires timers
+  only while no instance seen in the last four beats is of a newer
+  generation. It is liveness, not a high-water mark: shift traffic back
+  to an older revision and, once the newer one's instances are gone,
+  the older ones fire again. `Status.Instances` (`serviceStatus {
+  instances }`) lists the live builds. With no generation nothing
+  changes: every instance fires.
+- **Batches and projections follow the same rule.** Batch items hold
+  commands, as timers do. A projection is folded by whichever instance
+  takes its step lock, and an instance of an older build stepped over
+  events only the newer build's projection subscribes to, moving the
+  checkpoint past them: the read model stayed short of those events
+  until rebuilt. Both now run only on the newest generation alive. A
+  new instance announces itself on the service's channel after its
+  first beat, so an older build stands down at once rather than at its
+  next beat. `Status.HereNewest` says whether the answering instance
+  is of the newest generation alive. Not covered: bus consumers, which
+  still run on every instance (see the pull request).
+
 ### Fixed
 
 - **A generation comes from the deploy, not the revision name.** v0.85.0

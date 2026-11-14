@@ -143,7 +143,7 @@ func TestGraphQLListSelectsOnlyAskedFields(t *testing.T) {
 
 	query := gql.NewObject(gql.ObjectConfig{
 		Name:   "Query",
-		Fields: gql.Fields{"orders": docList(order, nil, queryFn, func(f []string) []string { return f })},
+		Fields: gql.Fields{"orders": docList(order, gate{}, queryFn, func(f []string) []string { return f })},
 	})
 
 	schema, err := gql.NewSchema(gql.SchemaConfig{Query: query})

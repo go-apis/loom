@@ -17,5 +17,6 @@ func NewRegistry() *loom.Registry {
 		Upcasts:            &Upcasts{},
 	}
 	impl.Order(&Order{})
+	impl.Parcel(&Parcel{})
 	return loomgen.NewRegistry(impl)
 }

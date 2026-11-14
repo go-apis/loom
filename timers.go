@@ -102,14 +102,23 @@ func (c *Client) deleteTimer(ctx context.Context, tx pgx.Tx, ct *cancelTimer) er
 	return err
 }
 
-// startTimerRunner fires due timers until ctx ends. Runs on every instance;
-// SKIP LOCKED leases make concurrent runners safe.
+// startTimerRunner fires due timers until ctx ends. Runs on every
+// instance of the newest generation alive (every instance, with no
+// generations); SKIP LOCKED leases make concurrent runners safe.
 func (c *Client) startTimerRunner(ctx context.Context, poll time.Duration) {
 	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.beaten:
+		}
 		t := time.NewTicker(poll)
 		defer t.Stop()
 		for {
-			for {
+			// an instance a newer generation has superseded leaves the
+			// timers to it: they hold commands, and the newest build is
+			// the one to run them (instances.go)
+			for c.newest() {
 				n, err := c.fireDueTimers(ctx, 50)
 				if err != nil {
 					if ctx.Err() != nil {

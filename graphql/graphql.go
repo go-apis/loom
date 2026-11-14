@@ -91,6 +91,11 @@ type Config struct {
 	// operation resolves to a Decision and this hook answers it (see
 	// auth.go). Delegate to DefaultPolicy for the stock rules.
 	Policy Policy
+	// Status adds the `serviceStatus` query: what each composed
+	// service's background work is doing (loom.Client.Status). It names
+	// no tenant, so under DefaultPolicy only All access reads it; a
+	// Policy lets operators in by its Field name.
+	Status bool
 	// MaxDepth bounds query nesting (fields, through fragments). Zero
 	// means DefaultMaxDepth; negative disables the check. Declared joins
 	// make the type graph cyclic, so an unbounded public gateway would
@@ -142,6 +147,12 @@ func New(cfg Config) (http.Handler, error) {
 			return nil, err
 		}
 	}
+	b.runPlanMutation()
+	if cfg.Status {
+		if err := b.statusQuery(cfg.Services); err != nil {
+			return nil, err
+		}
+	}
 	for _, f := range cfg.Fields {
 		if err := b.rootField(f); err != nil {
 			return nil, err
@@ -164,7 +175,19 @@ func New(cfg Config) (http.Handler, error) {
 	if maxDepth == 0 {
 		maxDepth = DefaultMaxDepth
 	}
-	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth}, nil
+	// every root field can be probed: one whose builder declared no
+	// gate (series reads and writes) is gated by namespace alone
+	for name := range b.queries {
+		if _, ok := b.gates[name]; !ok {
+			b.gated("query", gate{}, true, name)
+		}
+	}
+	for name := range b.muts {
+		if _, ok := b.gates[name]; !ok {
+			b.gated("mutation", gate{}, true, name)
+		}
+	}
+	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth, gates: b.gates}, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -262,6 +285,24 @@ type builder struct {
 	// typeRequired is each schema type's required field set (snake
 	// case), keyed by type name — the Go type name nestedInput sees.
 	typeRequired map[string]map[string]bool
+	// docs is what the schema's comments say, by declaration and by
+	// field (registerDocs).
+	docs map[string]string
+	// gates is every root query and mutation's gate, by field name —
+	// what a probe decides over (handler.Allowed).
+	gates map[string]rootGate
+	// planned is every @plan command, by command name (plan.go).
+	planned map[string]plannedOp
+}
+
+// gated records root fields' gates for probes.
+func (b *builder) gated(kind string, g gate, namespaced bool, fields ...string) {
+	if b.gates == nil {
+		b.gates = map[string]rootGate{}
+	}
+	for _, f := range fields {
+		b.gates[f] = rootGate{gate: g, kind: kind, namespaced: namespaced}
+	}
 }
 
 // registerEnums turns the registry's EnumDefs into shared GraphQL enum
@@ -282,7 +323,7 @@ func (b *builder) registerEnums(reg *loom.Registry) error {
 		for _, v := range e.Values {
 			values[v] = &gql.EnumValueConfig{Value: v}
 		}
-		b.enums[e.Name] = gql.NewEnum(gql.EnumConfig{Name: e.Name, Values: values})
+		b.enums[e.Name] = gql.NewEnum(gql.EnumConfig{Name: e.Name, Values: values, Description: e.Doc})
 		b.enumVal[e.Name] = e.Values
 	}
 	return nil
@@ -290,6 +331,52 @@ func (b *builder) registerEnums(reg *loom.Registry) error {
 
 // registerTypes records each schema type's required list, so a nested
 // input's NonNull follows the schema as a command's top level does.
+// registerDocs gathers what the schema's comments say, keyed the way the
+// type builders look it up: "Order" for a declaration, "Order.status"
+// for a field (snake case, as the schema writes it). Commands share the
+// namespace — a command and a type are both Go types in one package.
+func (b *builder) registerDocs(reg *loom.Registry) {
+	if b.docs == nil {
+		b.docs = map[string]string{}
+	}
+	add := func(name, doc string, fields map[string]string) {
+		if doc != "" {
+			b.docs[name] = doc
+		}
+		for f, d := range fields {
+			b.docs[name+"."+f] = d
+		}
+	}
+	for _, a := range reg.Aggregates {
+		add(a.Name, a.Doc, a.FieldDocs)
+		for _, c := range a.Commands {
+			add(c.Name, c.Doc, c.FieldDocs)
+		}
+	}
+	for _, r := range reg.Records {
+		add(r.Name, r.Doc, r.FieldDocs)
+		for _, c := range r.Commands {
+			add(c.Name, c.Doc, c.FieldDocs)
+		}
+	}
+	for _, p := range reg.Projections {
+		add(p.Entity, p.EntityDoc, p.EntityFieldDocs)
+	}
+	for _, t := range reg.Types {
+		add(t.Name, t.Doc, t.FieldDocs)
+	}
+	for _, e := range reg.Enums {
+		add(e.Name, e.Doc, nil)
+	}
+}
+
+// described sets a root read's description: what the read is in the
+// gateway's terms, then what the schema says the thing is.
+func (b *builder) described(f *gql.Field, lead, name string) *gql.Field {
+	f.Description = strings.TrimSpace(lead + " " + b.docs[name])
+	return f
+}
+
 func (b *builder) registerTypes(reg *loom.Registry) {
 	if b.typeRequired == nil {
 		b.typeRequired = map[string]map[string]bool{}
@@ -309,17 +396,20 @@ func (b *builder) service(cli *loom.Client) error {
 		return err
 	}
 	b.registerTypes(reg)
+	b.registerDocs(reg)
 
 	for _, agg := range reg.Aggregates {
 		obj, err := b.objectFor(agg.Name, agg.NewState())
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(agg.Name), aggregateGet(cli, agg.Name, agg.StateSecret, agg.ReadRoles, obj)); err != nil {
+		aggGate := gate{roles: agg.ReadRoles, rules: agg.ReadAllow}
+		b.gated("query", aggGate, true, lowerFirst(agg.Name), lowerFirst(agg.Name)+"s")
+		if err := b.addQuery(lowerFirst(agg.Name), b.described(aggregateGet(cli, agg.Name, agg.StateSecret, aggGate, obj), "One "+agg.Name+" by id.", agg.Name)); err != nil {
 			return err
 		}
 		name, secrets := agg.Name, agg.StateSecret
-		if err := b.addSub(lowerFirst(agg.Name)+"Changed", docChanged(cli, obj, agg.ReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		if err := b.addSub(lowerFirst(agg.Name)+"Changed", docChanged(cli, obj, aggGate, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
 			state, version, err := cli.Load(ctx, name, ns, id)
 			if err != nil || version == 0 {
 				return nil, err
@@ -329,7 +419,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range agg.Commands {
-			if err := b.mutation(cli, def.Name, def.New, def.Roles, def.Required); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, gate{roles: def.Roles, rules: def.Allow}, def.Required, aggregateState(cli, agg.Name), def.Plan); err != nil {
 				return err
 			}
 		}
@@ -343,10 +433,10 @@ func (b *builder) service(cli *loom.Client) error {
 				return cli.QueryEntities(ctx, name, q)
 			}
 			narrow := b.narrower(name, td)
-			if err := b.addQuery(lowerFirst(name)+"s", docList(obj, agg.ReadRoles, aggQuery, narrow)); err != nil {
+			if err := b.addQuery(lowerFirst(name)+"s", b.described(docList(obj, aggGate, aggQuery, narrow), "Every "+name+" matching a filter.", name)); err != nil {
 				return err
 			}
-			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, agg.ReadRoles, aggQuery, narrow)); err != nil {
+			if err := b.addSub(lowerFirst(name)+"sChanged", listChanged(cli, obj, aggGate, aggQuery, narrow)); err != nil {
 				return err
 			}
 		}
@@ -357,7 +447,9 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		recSecrets := rec.StateSecret
-		if err := b.addQuery(lowerFirst(rec.Name), docGet(obj, rec.ReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+		recGate := gate{roles: rec.ReadRoles, rules: rec.ReadAllow}
+		b.gated("query", recGate, true, lowerFirst(rec.Name), lowerFirst(rec.Name)+"s")
+		if err := b.addQuery(lowerFirst(rec.Name), b.described(docGet(obj, recGate, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Record(ctx, rec.Name, ns, id)
 			if err != nil || state == nil {
 				return state, err
@@ -365,7 +457,7 @@ func (b *builder) service(cli *loom.Client) error {
 			// the write-only contract holds on the gateway exactly as it
 			// does on the HTTP API: @secret reads back as a fingerprint
 			return loom.RedactSecrets(state, recSecrets), nil
-		})); err != nil {
+		}), "One "+rec.Name+" by id.", rec.Name)); err != nil {
 			return err
 		}
 		recName := rec.Name
@@ -373,14 +465,14 @@ func (b *builder) service(cli *loom.Client) error {
 			return cli.QueryRecords(ctx, recName, q)
 		}
 		recNarrow := b.narrower(rec.Name, nil)
-		if err := b.addQuery(lowerFirst(rec.Name)+"s", docList(obj, rec.ReadRoles, recQuery, recNarrow)); err != nil {
+		if err := b.addQuery(lowerFirst(rec.Name)+"s", b.described(docList(obj, recGate, recQuery, recNarrow), "Every "+rec.Name+" matching a filter.", rec.Name)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, rec.ReadRoles, recQuery, recNarrow)); err != nil {
+		if err := b.addSub(lowerFirst(rec.Name)+"sChanged", listChanged(cli, obj, recGate, recQuery, recNarrow)); err != nil {
 			return err
 		}
 		for _, def := range rec.Commands {
-			if err := b.mutation(cli, def.Name, def.New, def.Roles, def.Required); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, gate{roles: def.Roles, rules: def.Allow}, def.Required, recordState(cli, rec.Name), def.Plan); err != nil {
 				return err
 			}
 		}
@@ -401,13 +493,15 @@ func (b *builder) service(cli *loom.Client) error {
 		if err != nil {
 			return err
 		}
-		if err := b.addQuery(lowerFirst(entity), docGet(obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
+		entGate := gate{roles: p.EntityReadRoles, rules: p.EntityReadAllow}
+		b.gated("query", entGate, true, lowerFirst(entity), lowerFirst(entity)+"s")
+		if err := b.addQuery(lowerFirst(entity), b.described(docGet(obj, entGate, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
 			if state == nil {
 				return nil, err
 			}
 			return state, err
-		})); err != nil {
+		}), "One "+entity+" by id.", entity)); err != nil {
 			return err
 		}
 		entityQuery := func(ctx context.Context, q loom.Query) ([]loom.Row, error) {
@@ -420,13 +514,13 @@ func (b *builder) service(cli *loom.Client) error {
 			}
 		}
 		entityNarrow := b.narrower(entity, entityTable)
-		if err := b.addQuery(lowerFirst(entity)+"s", docList(obj, p.EntityReadRoles, entityQuery, entityNarrow)); err != nil {
+		if err := b.addQuery(lowerFirst(entity)+"s", b.described(docList(obj, entGate, entityQuery, entityNarrow), "Every "+entity+" matching a filter.", entity)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, p.EntityReadRoles, entityQuery, entityNarrow)); err != nil {
+		if err := b.addSub(lowerFirst(entity)+"sChanged", listChanged(cli, obj, entGate, entityQuery, entityNarrow)); err != nil {
 			return err
 		}
-		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, p.EntityReadRoles, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		if err := b.addSub(lowerFirst(entity)+"Changed", docChanged(cli, obj, entGate, func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
 			if err != nil || state == nil {
 				return nil, err
@@ -451,7 +545,7 @@ func (b *builder) addSub(name string, f *gql.Field) error {
 // (once it exists), then a fresh copy on every change — the same
 // semantics as the services' SSE doc streams, driven by the same log
 // wake-ups. graphql-go re-executes the selection per emitted payload.
-func docChanged(cli *loom.Client, obj *gql.Object, roles []string, load func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error)) *gql.Field {
+func docChanged(cli *loom.Client, obj *gql.Object, g gate, load func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error)) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(obj),
 		Args: nsIDArgs(),
@@ -459,7 +553,7 @@ func docChanged(cli *loom.Client, obj *gql.Object, roles []string, load func(ctx
 			return p.Source, nil // the payload docSubscribe emitted
 		},
 		Subscribe: func(p gql.ResolveParams) (any, error) {
-			ns, id, err := parseNsID(p, roles)
+			ns, id, err := parseNsID(p, g, load)
 			if err != nil {
 				return nil, err
 			}
@@ -581,6 +675,8 @@ func (b *builder) rootField(f Field) error {
 	if resolve == nil {
 		return fmt.Errorf("graphql: field %s has no Resolve", name)
 	}
+	_, namespaced := f.Args["namespace"]
+	b.gated(kind, gate{roles: roles}, namespaced, name)
 	field := &gql.Field{
 		Type: out,
 		Args: args,
@@ -857,28 +953,41 @@ func listFields(p gql.ResolveParams) []string {
 	return out
 }
 
-func parseNsID(p gql.ResolveParams, roles []string) (string, uuid.UUID, error) {
+// parseNsID authorizes a read of one doc and returns where it lives.
+// load reads that doc for the gate's @allow rules, and only when one of
+// them compares a field of it.
+func parseNsID(p gql.ResolveParams, g gate, load stateLoader) (string, uuid.UUID, error) {
 	ns, _ := p.Args["namespace"].(string)
 	if ns == AllNamespaces {
 		return "", uuid.Nil, fmt.Errorf(`"*" is for lists — fetching one doc needs its namespace`)
 	}
-	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args, Fields: selectedFields(p), Roles: roles}); err != nil {
+	raw := fmt.Sprint(p.Args["id"])
+	id, idErr := uuid.Parse(raw)
+	d := Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: p.Args, Fields: selectedFields(p), Roles: g.roles, Rules: g.rules}
+	if len(g.rules) > 0 {
+		d.Target = func() (map[string]any, error) {
+			if idErr != nil {
+				return nil, fmt.Errorf("bad id %q", raw)
+			}
+			return load(p.Context, ns, id)
+		}
+	}
+	if err := decide(p.Context, d); err != nil {
 		return "", uuid.Nil, err
 	}
-	raw := fmt.Sprint(p.Args["id"])
-	id, err := uuid.Parse(raw)
-	if err != nil {
+	if idErr != nil {
 		return "", uuid.Nil, fmt.Errorf("bad id %q", raw)
 	}
 	return ns, id, nil
 }
 
-func aggregateGet(cli *loom.Client, name string, secrets []string, roles []string, obj *gql.Object) *gql.Field {
+func aggregateGet(cli *loom.Client, name string, secrets []string, g gate, obj *gql.Object) *gql.Field {
+	stored := aggregateState(cli, name)
 	return &gql.Field{
 		Type: obj,
 		Args: nsIDArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			ns, id, err := parseNsID(p, roles)
+			ns, id, err := parseNsID(p, g, stored)
 			if err != nil {
 				return nil, err
 			}
@@ -893,12 +1002,19 @@ func aggregateGet(cli *loom.Client, name string, secrets []string, roles []strin
 	}
 }
 
-func docGet(obj *gql.Object, roles []string, load func(ctx context.Context, ns string, id uuid.UUID) (any, error)) *gql.Field {
+func docGet(obj *gql.Object, g gate, load func(ctx context.Context, ns string, id uuid.UUID) (any, error)) *gql.Field {
+	stored := func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		state, err := load(ctx, ns, id)
+		if err != nil || state == nil || reflect.ValueOf(state).IsNil() {
+			return nil, err
+		}
+		return toDoc(state, ns, id.String())
+	}
 	return &gql.Field{
 		Type: obj,
 		Args: nsIDArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			ns, id, err := parseNsID(p, roles)
+			ns, id, err := parseNsID(p, g, stored)
 			if err != nil {
 				return nil, err
 			}
@@ -921,10 +1037,10 @@ func listArgs() gql.FieldConfigArgument {
 	}
 }
 
-func queryFromArgs(p gql.ResolveParams, roles []string) (loom.Query, error) {
+func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
 	args := p.Args
 	ns := fmt.Sprint(args["namespace"])
-	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args, Fields: selectedFields(p), Roles: roles}); err != nil {
+	if err := decide(p.Context, Decision{Kind: opKind(p), Field: p.Info.FieldName, Namespace: ns, Args: args, Fields: selectedFields(p), Roles: g.roles, Rules: g.rules, List: true}); err != nil {
 		return loom.Query{}, err
 	}
 	if ns == AllNamespaces {
@@ -953,6 +1069,9 @@ func queryFromArgs(p gql.ResolveParams, roles []string) (loom.Query, error) {
 			})
 		}
 	}
+	// the caller's @allow rule narrows the rows: whatever the caller
+	// filtered by, it sees only what the rule says it owns
+	q.Filters = append(q.Filters, ownFilters(p.Context, g.rules)...)
 	return q, nil
 }
 
@@ -969,12 +1088,12 @@ func rowDocs(rows []loom.Row) []map[string]any {
 	return out
 }
 
-func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
+func docList(obj *gql.Object, g gate, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
 		Resolve: func(p gql.ResolveParams) (any, error) {
-			q, err := queryFromArgs(p, roles)
+			q, err := queryFromArgs(p, g)
 			if err != nil {
 				return nil, err
 			}
@@ -993,7 +1112,7 @@ func docList(obj *gql.Object, roles []string, query func(ctx context.Context, q 
 // Requery-and-diff per log wake-up; no delta bookkeeping, so rows
 // entering and leaving the filter just work. Sized for UI tables, not
 // unbounded feeds — use where/limit.
-func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
+func listChanged(cli *loom.Client, obj *gql.Object, g gate, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
 	return &gql.Field{
 		Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(obj))),
 		Args: listArgs(),
@@ -1001,7 +1120,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(c
 			return p.Source, nil
 		},
 		Subscribe: func(p gql.ResolveParams) (any, error) {
-			q, err := queryFromArgs(p, roles)
+			q, err := queryFromArgs(p, g)
 			if err != nil {
 				return nil, err
 			}
@@ -1053,7 +1172,30 @@ func listChanged(cli *loom.Client, obj *gql.Object, roles []string, query func(c
 	}
 }
 
-func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, roles, required []string) error {
+// aggregateState and recordState read what is stored for an @allow
+// rule to compare: the doc of an aggregate that has events, or of a
+// record that has a row, and nil for one that does not exist yet.
+func aggregateState(cli *loom.Client, name string) stateLoader {
+	return func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		state, version, err := cli.Load(ctx, name, ns, id)
+		if err != nil || version == 0 {
+			return nil, err
+		}
+		return toDoc(state, ns, id.String())
+	}
+}
+
+func recordState(cli *loom.Client, name string) stateLoader {
+	return func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error) {
+		state, err := cli.Record(ctx, name, ns, id)
+		if err != nil || state == nil || reflect.ValueOf(state).IsNil() {
+			return nil, err
+		}
+		return toDoc(state, ns, id.String())
+	}
+}
+
+func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, g gate, required []string, stored stateLoader, plan bool) error {
 	field := lowerFirst(name)
 	if _, dup := b.muts[field]; dup {
 		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
@@ -1062,13 +1204,37 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 	if err != nil {
 		return err
 	}
+	b.gated("mutation", g, true, field)
+	result, description := dispatchResult, b.docs[name]
+	if plan {
+		if b.planned == nil {
+			b.planned = map[string]plannedOp{}
+		}
+		b.planned[name] = plannedOp{cli: cli, field: field, gate: g, stored: stored}
+		result = planObject
+		description = strings.TrimSpace(description + "\n\nThis does not run: it answers a plan of what the command would do. Run it with runPlan and the plan's id.")
+	}
 	b.muts[field] = &gql.Field{
-		Type: gql.NewNonNull(dispatchResult),
-		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
+		Description: description,
+		Type:        gql.NewNonNull(result),
+		Args:        gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
-			if err := decide(p.Context, Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args, Roles: roles}); err != nil {
+			d := Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args, Roles: g.roles, Rules: g.rules}
+			if plan {
+				d.Stage = StagePlan
+			}
+			if len(g.rules) > 0 {
+				// the payload by snake names, as the rules write them
+				given := map[string]any{}
+				if raw, err := json.Marshal(conv(args)); err == nil {
+					_ = json.Unmarshal(raw, &given)
+				}
+				target, _ := uuid.Parse(fmt.Sprint(args["aggregateId"]))
+				d.Target = commandTarget(p.Context, g.rules, ns, target, given, stored)
+			}
+			if err := decide(p.Context, d); err != nil {
 				return nil, err
 			}
 			raw, err := json.Marshal(conv(args))
@@ -1078,6 +1244,13 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 			cmd := newCmd()
 			if err := json.Unmarshal(raw, cmd); err != nil {
 				return nil, err
+			}
+			if plan {
+				held, err := cli.Plan(p.Context, cmd, 0)
+				if err != nil {
+					return nil, err
+				}
+				return planDoc(held)
 			}
 			if err := cli.Dispatch(p.Context, cmd); err != nil {
 				return nil, err
@@ -1108,6 +1281,7 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		return err
 	}
 	upload := u.Name
+	b.gated("mutation", gate{}, true, field)
 	b.muts[field] = &gql.Field{
 		Type: gql.NewNonNull(session),
 		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
@@ -1263,6 +1437,7 @@ func lowerFirst(s string) string {
 var playgroundHTML []byte
 
 type handler struct {
+	gates    map[string]rootGate
 	schema   gql.Schema
 	auth     Auth
 	policy   Policy
@@ -1303,15 +1478,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// resolve access before anything executes (the static playground page
 	// above is exempt — its queries land back here and are enforced); a
 	// context Access set by the deployment's own middleware wins
-	if _, ok := AccessFrom(r.Context()); !ok && h.auth != nil {
-		access, err := h.auth(r)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"errors":[{"message":"unauthenticated"}]}`))
-			return
-		}
-		r = r.WithContext(WithAccess(r.Context(), access))
+	r, err := h.Authenticate(r)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"unauthenticated"}]}`))
+		return
 	}
 	if h.policy != nil {
 		r = r.WithContext(withPolicy(r.Context(), h.policy))

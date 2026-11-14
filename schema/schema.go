@@ -30,7 +30,13 @@ type Schema struct {
 }
 
 type Aggregate struct {
-	Name     string `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc      string `yaml:"doc,omitempty" json:"-"`
 	Snapshot int    `yaml:"snapshot,omitempty" json:"snapshot,omitempty"` // every N events; 0 = disabled
 	// Table (@table) materializes the aggregate's state (minus @pii
 	// fields) into a typed per-aggregate table, written in the same
@@ -45,6 +51,9 @@ type Aggregate struct {
 	// the caller must hold one of these roles in the target namespace.
 	// Commands carry their own per-command @role.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+	// ReadAllow (@allow) gates the same generated reads by rule — see
+	// Rule. A list read is narrowed to the rows the caller's rule owns.
+	ReadAllow []*Rule `yaml:"read_allow,omitempty" json:"read_allow,omitempty"`
 }
 
 // Upload declares a resumable file upload whose lifecycle dispatches the
@@ -52,6 +61,23 @@ type Aggregate struct {
 // session is created, OnUploaded (required) when storage reports the
 // object finalized. Each referenced command must have exactly one
 // payload field, required and typed `file`, which loom fills.
+// Rule is one @allow alternative: who may call an operation, in terms
+// of the caller's attributes and of what the operation touches.
+//
+//	command RenameProject @allow(kind: admin) @allow(kind: session, project_id: caller.project)
+//
+// Caller pairs an attribute of the caller with the value it must have
+// (kind: session). Own pairs a field of the thing operated on with the
+// caller attribute it must equal (project_id: caller.project) — the
+// field read from the stored state, and for a command from its payload
+// too. Every pair of a rule must hold; an operation with several rules
+// is allowed when any one holds. Attribute names and values are the
+// deployment's: loom compares strings, nothing more.
+type Rule struct {
+	Caller map[string]string `yaml:"caller,omitempty" json:"caller,omitempty"`
+	Own    map[string]string `yaml:"own,omitempty" json:"own,omitempty"`
+}
+
 type Upload struct {
 	Name       string `yaml:"name" json:"name"`
 	OnStarted  string `yaml:"on_started,omitempty" json:"on_started,omitempty"`
@@ -59,7 +85,13 @@ type Upload struct {
 }
 
 type Command struct {
-	Name    string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc     string   `yaml:"doc,omitempty" json:"-"`
 	Payload *Payload `yaml:"payload,omitempty" json:"payload,omitempty"`
 	// Emits is a contract: the only events the handler may return.
 	Emits []string `yaml:"emits" json:"emits"`
@@ -69,6 +101,15 @@ type Command struct {
 	// In-process Dispatch and the service's own HTTP API are not gated;
 	// they stay behind trusted middleware.
 	Roles []string `yaml:"roles,omitempty" json:"roles,omitempty"`
+	// Allow (@allow) gates the command at the gateway by rule — see
+	// Rule. Beside @role, both must pass.
+	Allow []*Rule `yaml:"allow,omitempty" json:"allow,omitempty"`
+	// Plan (@plan) marks a command a caller must see the effect of
+	// before causing it: at the gateway the mutation runs nothing and
+	// answers a plan — what the command would emit — and the plan's id
+	// runs it (runPlan), once, while its target is unchanged. In-process
+	// Dispatch is not held back.
+	Plan bool `yaml:"plan,omitempty" json:"plan,omitempty"`
 }
 
 type Event struct {
@@ -96,18 +137,32 @@ type Event struct {
 // balances): commands mutate state directly; emitted events are
 // announcements into the log, never a rebuild source.
 type Record struct {
-	Name     string     `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc      string     `yaml:"doc,omitempty" json:"-"`
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
 	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the record's
 	// generated get, list, and list subscription.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+	// ReadAllow (@allow) — see Aggregate.ReadAllow.
+	ReadAllow []*Rule `yaml:"read_allow,omitempty" json:"read_allow,omitempty"`
 }
 
 // Entity is a read model maintained by a projection.
 type Entity struct {
 	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc string `yaml:"doc,omitempty" json:"-"`
 	// Table (@table) stores the entity in a typed per-entity table with a
 	// real column per state field, instead of the shared jsonb doc table —
 	// filters and ORDER BY hit real columns, and the table is plain SQL for
@@ -126,6 +181,8 @@ type Entity struct {
 	// ReadRoles (@role) — see Aggregate.ReadRoles; gates the entity's
 	// generated get, list, and both Changed subscriptions.
 	ReadRoles []string `yaml:"read_roles,omitempty" json:"read_roles,omitempty"`
+	// ReadAllow (@allow) — see Aggregate.ReadAllow.
+	ReadAllow []*Rule `yaml:"read_allow,omitempty" json:"read_allow,omitempty"`
 }
 
 // Index is a secondary index on a @table entity, declared in the SDL as
@@ -226,7 +283,13 @@ func (s *Series) IdentityFields() []string {
 // gets a named string type with constants and validation, the GraphQL
 // surfaces get real enum types, OpenAPI gets the value list.
 type Enum struct {
-	Name   string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc    string   `yaml:"doc,omitempty" json:"-"`
 	Values []string `yaml:"values" json:"values"`
 }
 
@@ -336,7 +399,13 @@ type ProjectionShot struct {
 }
 
 type NamedType struct {
-	Name    string   `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the .loom source: what the gateway and its MCP
+	// tools tell a caller it is. Plain `//` comments are notes and never
+	// land here. It is prose, not contract — absent from the JSON
+	// artifacts.
+	Doc     string   `yaml:"doc,omitempty" json:"-"`
 	Payload *Payload `yaml:"payload" json:"payload"`
 }
 
@@ -360,6 +429,9 @@ type Payload struct {
 	// see plaintext. For tenant-supplied credentials: SMTP passwords,
 	// API keys, webhook signing secrets. @secret implies @pii.
 	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
+	// Doc is the `///` doc comment written directly above a field —
+	// see Aggregate.Doc.
+	Doc string `yaml:"doc,omitempty" json:"-"`
 }
 
 // IsFile reports whether the payload is the builtin `file` type
@@ -559,6 +631,25 @@ func (s *Schema) Validate() error {
 			seen[r] = true
 		}
 	}
+	// an @allow rule's own-fields must be fields the gateway can read:
+	// of the state, or for a command of its payload too
+	checkAllow := func(kind, name string, rules []*Rule, state, payload *Payload) {
+		for _, r := range rules {
+			if len(r.Caller) == 0 && len(r.Own) == 0 {
+				fail("%s %s declares an empty @allow", kind, name)
+			}
+			for f := range r.Own {
+				_, inState := state.Properties[f]
+				inPayload := false
+				if payload != nil {
+					_, inPayload = payload.Properties[f]
+				}
+				if !inState && !inPayload {
+					fail("%s %s: @allow names field %s, which is neither in its state nor in its payload", kind, name, f)
+				}
+			}
+		}
+	}
 	checkReadRoles := func(kind, name string, roles []string) {
 		seen := map[string]bool{}
 		for _, r := range roles {
@@ -574,6 +665,10 @@ func (s *Schema) Validate() error {
 			fail("aggregate %s has no state", a.Name)
 		}
 		checkReadRoles("aggregate", a.Name, a.ReadRoles)
+		checkAllow("aggregate", a.Name, a.ReadAllow, a.State, nil)
+		for _, c := range a.Commands {
+			checkAllow("command", c.Name, c.Allow, a.State, c.Payload)
+		}
 		for _, c := range a.Commands {
 			checkRoles(c)
 			if len(c.Emits) == 0 {
@@ -596,6 +691,10 @@ func (s *Schema) Validate() error {
 			fail("record %s has no state", r.Name)
 		}
 		checkReadRoles("record", r.Name, r.ReadRoles)
+		checkAllow("record", r.Name, r.ReadAllow, r.State, nil)
+		for _, c := range r.Commands {
+			checkAllow("command", c.Name, c.Allow, r.State, c.Payload)
+		}
 		for _, c := range r.Commands {
 			checkRoles(c)
 			// unlike aggregate commands, record commands may emit nothing:
@@ -761,6 +860,7 @@ func (s *Schema) Validate() error {
 	// column defeats both — keep PII entities in the doc store).
 	for _, e := range s.Entities {
 		checkReadRoles("entity", e.Name, e.ReadRoles)
+		checkAllow("entity", e.Name, e.ReadAllow, e.State, nil)
 		if !e.Table {
 			continue
 		}
