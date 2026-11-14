@@ -150,6 +150,47 @@ return loomgen.NewRegistry(impl)
 handlers were never bound panics at boot, naming the call to add
 (`loomgen: aggregate Payee has no handlers — call impl.Payee(...)`).
 
+## Wiring by convention
+
+Under `layout: folders` every declaration's implementation has an
+obvious home — `aggregates.Order`, `processes.ShipOnPayment` — and a
+hand-kept `registry.go` adds only a line per declaration saying so: a
+list every new declaration edits, and two branches adding one each
+collide on. Set `wire:` and loom writes that line itself, in a file of
+its own per declaration:
+
+```yaml
+schema: schema/*.loom
+layout: folders
+wire: wire
+```
+
+```
+wire/order_aggregate_gen.go          impl.Order(&aggregates.Order{})
+wire/shiponpayment_process_gen.go    impl.ShipOnPayment = processes.NewShipOnPayment(deps)
+wire/wire_gen.go                     Impl(deps), Configure
+```
+
+The implementation of a declaration `X` is, in its kind's package, the
+constructor `NewX` when there is one — taking nothing, or the one
+dependency type every constructor of the service shares, which becomes
+`wire.Deps` — and otherwise the type `X`. `registry.go` is written once
+and builds the registry from `wire.Impl(deps)`; adding an aggregate or
+a process adds a file and edits none. What a convention cannot say is a
+`Configure` in a hand-written file of the package, run on the
+implementation before it is bound:
+
+```go
+// wire/goal.go
+func init() {
+    Configure(func(g *aggregates.Goal, s *processes.Services) {
+        g.InProgress = func(ctx context.Context, ns string, project uuid.UUID) ([]uuid.UUID, error) {
+            return processes.GoalsInProgress(ctx, s, ns, project)
+        }
+    })
+}
+```
+
 ## Keeping loomgen current
 
 A loom bump can change what `loom generate` emits, so the generated files
@@ -542,6 +583,24 @@ it fires once when it can and every interval from there. A schedule the
 newest build no longer declares stops. `Status` lists each with its
 next time.
 
+### A function on an interval
+
+Recurring work that is not a command — a sweep of an outside system, a
+report — is the same schedule with a function for a tick:
+
+```go
+err := cli.Every("githubBudget", time.Hour, func(ctx context.Context) error {
+    return logGitHubBudget(ctx)
+})
+```
+
+Call it before `Start`. The function is called at the start and every
+interval after, on one instance of the newest generation alive, and
+again at the next interval whatever came of the last call. It is for
+work the service does once, wherever it runs. A cache each instance
+keeps in its own memory is not that: every instance refreshes its own,
+with a ticker of its own.
+
 ### Looking again until it is done
 
 Some reactions have nothing to do yet: the deploy is still rolling out,
@@ -596,6 +655,25 @@ so `loom.Once` does not answer them from the first pass. A reaction
 that converges replays safely; one that sends an email will send it
 again, so narrow the replay to what needs it. Also on the service's
 API: `POST /processes/{name}/replay`.
+
+### Sending a command twice
+
+A caller that does not hear back sends the command again. Most commands
+take that well — the handler sees what the first one left — and some do
+not: one that appends, one whose second run is a second charge. An
+idempotency key says "this is the one I sent before":
+
+```go
+ctx, replayed := loom.WithIdempotencyKey(ctx, key)
+err := cli.Dispatch(ctx, cmd)   // nil both times; replayed() says which
+```
+
+A dispatch under a key that has already committed, for the same command
+and stream, does nothing. The key is written in the dispatch's own
+transaction, so one that failed left none and runs when it is sent
+again, and two sent at once resolve to one. Over the gateway the key is
+the `Idempotency-Key` header and a repeat answers `status: duplicate`;
+the MCP `dispatch` tool takes it as `key`. Keys are kept seven days.
 
 ## Effects: calling the outside world
 
@@ -1280,10 +1358,11 @@ whichever instance is asked:
   happened.
 - **Instances:** the builds with a live instance, newest first. More
   than one line after a deploy is the old revision still running. Only
-  the newest generation alive fires timers, runs batches and folds
-  projections, so an old instance kept for a traffic tag never runs a
-  held command with old code and never steps a projection past events
-  only the new build folds. A new instance announces itself, so older
+  the newest generation alive fires timers, runs batches, folds
+  projections, publishes the outbox and consumes the bus, so an old
+  instance kept for a traffic tag never runs a held command with old
+  code, never steps a projection past events only the new build folds,
+  and hands a bus event back rather than handle it. A new instance announces itself, so older
   ones stand down at once; if the newer build's instances go away, the
   older ones take the work up again within a few beats. `HereNewest`
   says which kind answered.

@@ -14,6 +14,51 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`wire:` in loom.yml: implementations wired by convention.** With
+  `layout: folders`, `wire: wire` has `loom generate` write one wiring
+  file per declaration into a generated package —
+  `wire/order_aggregate_gen.go`, `wire/notify_process_gen.go` — each
+  binding its implementation: the constructor `New<Name>` in its kind's
+  package when there is one, taking nothing or the one dependency type
+  the service's constructors share (`wire.Deps`), otherwise the type
+  `<Name>`. `registry.go` only builds the registry from `wire.Impl(deps)`
+  and no declaration edits it, so two branches that each add an
+  aggregate touch disjoint files. `wire.Configure(func(*aggregates.Goal,
+  wire.Deps))` in a hand-written file of the package is the wiring no
+  convention says. A removed declaration's wiring file is removed, and
+  `--check` covers the package.
+- **`Client.Every`: a function on an interval.** The schedule for
+  recurring work that is not a command. It is called at the start and
+  every interval after, on one instance of the newest generation alive,
+  and again at the next interval whatever came of the last call: an
+  error or a panic is logged. `Status.Schedules` lists it. It is for
+  work the service does once wherever it runs, not for a cache each
+  instance keeps in its own memory.
+- **Idempotency keys.** `loom.WithIdempotencyKey(ctx, key)` makes the
+  next `Dispatch` run only if no dispatch of the same command to the
+  same stream has committed under the key; a repeat does nothing and
+  says so. The key is recorded in the dispatch's own transaction, so a
+  dispatch that failed left none and runs when sent again, and two sent
+  at once resolve to one. The gateway reads the `Idempotency-Key`
+  header and answers a repeat `status: duplicate`; the MCP `dispatch`
+  tool takes `key`. New table `loom_idempotency`; keys are kept seven
+  days.
+
+### Changed
+
+- **The newest build alive publishes the outbox and consumes the bus.**
+  On an in-process bus a relay delivers to its own instance's
+  consumers, so an older build's relay handed every event to the older
+  build's code; the relay now runs on the newest generation alive. A
+  consumer of another service's events on a superseded instance hands
+  the event back (`loom.ErrSuperseded`) before it looks at it, where it
+  used to ack a type only the newer build subscribes to, park one it
+  could not decode, or react with old code. `gpub` nacks it without a
+  warning and stops pulling for three seconds, so an older instance
+  does not slow delivery to the newer one by pulling and handing back.
+  This closes the gap left open when timers, batches and projections
+  moved to the newest generation.
+
 - **A plan names what reacts.** Each event of a `Plan` now carries
   `Reactions`: this service's policies with the commands they may
   dispatch, its processes with the outside calls they declare, its

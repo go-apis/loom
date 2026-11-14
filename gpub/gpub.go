@@ -26,6 +26,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/pubsub/v2"
@@ -371,8 +372,21 @@ func (b *Bus) ensureSubscription(ctx context.Context, group string) (*pubsub.Sub
 	return sub, nil
 }
 
+// supersededPause is how long a subscriber stops pulling after its
+// handler has said the instance is superseded by a newer build. Every
+// message it pulls it only hands back, and each hand-back is a nack
+// Pub/Sub backs off from: an older instance that went on pulling would
+// slow the delivery of events the newer one is waiting to take. Stopped,
+// it leaves the subscription to the newer instances, and looks again
+// after the pause in case it is the newest once more.
+const supersededPause = 3 * time.Second
+
 func (b *Bus) receiveLoop(sub *pubsub.Subscriber, group string, handler func(ctx context.Context, env *loom.Envelope) error) {
 	defer b.wg.Done()
+	var (
+		superseded atomic.Bool
+		stop       atomic.Pointer[context.CancelFunc]
+	)
 	h := func(ctx context.Context, msg *pubsub.Message) {
 		env, err := b.codec.Unmarshal(msg.Data)
 		if err != nil {
@@ -383,19 +397,43 @@ func (b *Bus) receiveLoop(sub *pubsub.Subscriber, group string, handler func(ctx
 			return
 		}
 		if err := handler(ctx, env); err != nil {
-			b.log.WarnContext(ctx, "gpub: handler nack", "group", group, "type", env.Type, "error", err)
+			// an older build handing the event to the newest is routine
+			// for the minutes it lives after a deploy, not a failure
+			if !errors.Is(err, loom.ErrSuperseded) {
+				b.log.WarnContext(ctx, "gpub: handler nack", "group", group, "type", env.Type, "error", err)
+				msg.Nack()
+				return
+			}
 			msg.Nack()
+			// and stop pulling: what is in flight is handed back the
+			// same way, and the loop below waits before it pulls again
+			if !superseded.Swap(true) {
+				if cancel := stop.Load(); cancel != nil {
+					(*cancel)()
+				}
+			}
 			return
 		}
 		msg.Ack()
 	}
 	for b.cctx.Err() == nil {
-		if err := sub.Receive(b.cctx, h); err != nil && b.cctx.Err() == nil {
+		rctx, cancel := context.WithCancel(b.cctx)
+		stop.Store(&cancel)
+		err := sub.Receive(rctx, h)
+		cancel()
+		wait := time.Duration(0)
+		switch {
+		case superseded.Swap(false):
+			wait = supersededPause
+		case err != nil && b.cctx.Err() == nil:
 			b.log.ErrorContext(b.cctx, "gpub: receive loop retrying", "group", group, "error", err)
+			wait = time.Second
+		}
+		if wait > 0 {
 			select {
 			case <-b.cctx.Done():
 				return
-			case <-time.After(time.Second):
+			case <-time.After(wait):
 			}
 		}
 	}

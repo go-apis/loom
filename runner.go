@@ -792,6 +792,14 @@ func (c *Client) react(ctx context.Context, p *ReactorDef, evt *Event) error {
 func (c *Client) subscribeForeign(ctx context.Context, p *ReactorDef, foreign []string) error {
 	group := c.reg.Service + "." + p.Name
 	return c.bus.Subscribe(ctx, group, func(ctx context.Context, env *Envelope) (retErr error) {
+		// an older build hands the event back before it looks at it: it
+		// would ack a type only the newer build subscribes to as not
+		// its own, park one it cannot decode, or react with old code.
+		// The bus redelivers, and an instance of the newest build takes
+		// it (instances.go)
+		if !c.newest() {
+			return ErrSuperseded
+		}
 		if !contains(foreign, env.Type) {
 			return nil // not ours; other services' events share the bus
 		}
