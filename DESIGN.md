@@ -136,6 +136,20 @@ Rules enforced at parse/validate time:
   with identical column lists. `index` is a keyword only when `(` follows,
   so a field named `index` still parses
   ([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md))
+- `query (filter_col, ..., order_col [desc] [nulls first|last])`, also
+  inside an `entity X @table` block, declares the index a filtered,
+  ordered, paginated list read needs without the author working out the
+  index by hand: it desugars at parse time into the same `schema.Index`
+  a hand-written `index (...)` line would produce, plus a trailing `id`
+  column appended automatically in the order column's own direction, as
+  the stable tie-breaker a list page needs to never split or repeat a
+  row. `query (status, updated_at desc nulls last)` and
+  `index (status, updated_at desc nulls last, id desc)` are
+  indistinguishable once parsed — same columns, same default name — so
+  nothing downstream of parsing (`TableDef.Indexes`, `tables_gen.sql`,
+  `Migrate`) changed to support it. Restricted to entity `@table`, like
+  `index`
+  ([ADR 0011](docs/adr/0011-a-declared-query-generates-its-index.md))
 
 ## Generated code
 

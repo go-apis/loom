@@ -223,6 +223,21 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   ([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md)).
   **Migration:** regenerate `loomgen/`.
 
+- **A declared query generates its index.** Inside the same
+  `entity X @table { ... }` block, `query (filter_col, ..., order_col
+  [desc] [nulls first|last])` declares the index a filtered, ordered,
+  paginated list read needs, without working out the index by hand.
+  All columns but the last are equality filters; the last carries the
+  order and a trailing `id` column, appended automatically in the same
+  direction as the stable tie-breaker a list page needs so no row is
+  split or repeated across pages. `query (status, updated_at desc
+  nulls last)` desugars at parse time into the same `schema.Index`
+  `index (status, updated_at desc nulls last, id desc)` would, so it
+  rides ADR 0009's generator and `Migrate` pipeline unchanged. Restricted
+  to entity `@table`, like `index`
+  ([ADR 0011](docs/adr/0011-a-declared-query-generates-its-index.md)).
+  **Migration:** regenerate `loomgen/`.
+
 - **A list read can ask for only the fields it needs.** `Query.Fields
   []string` is opt-in on `QueryEntities`/`QueryRecords`; nil or empty
   keeps the existing whole-row read, byte-identical. Named, a `@table`

@@ -366,6 +366,26 @@ does nothing when the index is already there and valid. `Rebuild` and
 `Reset` empty tables with `DELETE`, so the index survives both
 ([ADR 0009](docs/adr/0009-a-projection-declares-its-indexes.md)).
 
+Declare the read itself with `query` instead, and skip working out the
+index by hand — the trailing tie-breaker column a paginated list needs
+is easy to get wrong or leave out:
+
+```
+entity OrderSummary @table {
+  status: string
+  updated_at: time
+  query (status, updated_at desc nulls last)
+}
+```
+
+All columns but the last are equality filters; the last is the order
+column. `query` desugars at parse time into the same index
+`index (status, updated_at desc nulls last, id desc)` would, with `id`
+appended automatically in the order column's direction as the stable
+tie-breaker, then rides the same `tables_gen.sql`/`Migrate` pipeline as
+`index`
+([ADR 0011](docs/adr/0011-a-declared-query-generates-its-index.md)).
+
 Note `Migrate` is per service once `@table` is in play: the shared
 `loom_*` DDL is identical from any client, but each service's typed
 tables ride its own registry — deployments that share one database must
