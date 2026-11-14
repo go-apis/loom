@@ -27,3 +27,7 @@ func (h *Parcel) DiscardParcel(ctx context.Context, state *loomgen.Parcel, cmd *
 	}
 	return []loom.DomainEvent{&loomgen.ParcelDiscarded{Discarded: true}}, nil
 }
+
+func (h *Parcel) AttachParcelPhoto(ctx context.Context, state *loomgen.Parcel, cmd *loomgen.AttachParcelPhoto) ([]loom.DomainEvent, error) {
+	return []loom.DomainEvent{&loomgen.ParcelPhotoAttached{Photo: cmd.Photo}}, nil
+}

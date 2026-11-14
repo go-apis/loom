@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS loom_t_orders_parcel (
 	"depot_id" uuid,
 	"discarded" boolean,
 	"label" text,
+	"photo" jsonb,
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, namespace, id)
 );

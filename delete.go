@@ -31,6 +31,18 @@ type StreamDeletion struct {
 // projection folding this stream's event types, so the caller (or the
 // console) knows what to Rebuild.
 func (c *Client) DeleteStream(ctx context.Context, namespace string, id uuid.UUID) (*StreamDeletion, error) {
+	return c.deleteStream(ctx, namespace, id, true)
+}
+
+// PreviewDeleteStream reports what DeleteStream would remove and what
+// it would leave to rebuild, and removes nothing. It runs the same
+// statements in a transaction it then rolls back, so the counts are the
+// delete's own; no key is shredded and no file removed.
+func (c *Client) PreviewDeleteStream(ctx context.Context, namespace string, id uuid.UUID) (*StreamDeletion, error) {
+	return c.deleteStream(ctx, namespace, id, false)
+}
+
+func (c *Client) deleteStream(ctx context.Context, namespace string, id uuid.UUID, forReal bool) (*StreamDeletion, error) {
 	rows, err := c.db.Query(ctx, `
 		SELECT DISTINCT type FROM loom_events WHERE service=$1 AND namespace=$2 AND aggregate_id=$3`,
 		c.reg.Service, namespace, id)
@@ -103,14 +115,15 @@ func (c *Client) DeleteStream(ctx context.Context, namespace string, id uuid.UUI
 		}
 		res.Rows += ct.RowsAffected()
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	// the stream's key, files, and every instance's cached DEK go the way
-	// of its rows; buffered events must not fold post-delete
-	if err := c.Shred(ctx, namespace, id); err != nil {
-		return res, err
+	if forReal {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		// the stream's key, files, and every instance's cached DEK go the
+		// way of its rows; buffered events must not fold post-delete
+		if err := c.Shred(ctx, namespace, id); err != nil {
+			return res, err
+		}
 	}
 
 	for _, p := range c.reg.Projections {

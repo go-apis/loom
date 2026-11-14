@@ -59,3 +59,21 @@ schedule daily every 1d -> Tick @in(platform) @id("11111111-2222-4333-8444-55555
 		}
 	}
 }
+
+// TestAnUploadsCommandCannotBePlanned: the store dispatches an upload's
+// command when the bytes land, with no caller there to show a plan to.
+func TestAnUploadsCommandCannotBePlanned(t *testing.T) {
+	s, err := Parse(`service s
+aggregate Doc {
+  state { scan: file? }
+  command Attach @plan { scan: file! } -> Attached
+  event Attached { scan: file! }
+  upload Scan { on uploaded -> Attach }
+}`)
+	if err == nil {
+		err = s.Validate()
+	}
+	if err == nil || !strings.Contains(err.Error(), "cannot be planned") {
+		t.Errorf("err = %v", err)
+	}
+}

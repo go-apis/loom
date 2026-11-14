@@ -112,6 +112,19 @@ func TestAllowRulesGateByWhatTheCallerIs(t *testing.T) {
 	refused("north re-registers south's parcel as its own", run("north", register, reg(theirs, north, "stolen")))
 	allowed("admin relabels any", run("admin", relabel, lab(theirs, "s1b")))
 
+	// uploading: opening an upload asks for its command to be run when
+	// the bytes land, by the store and not the caller — so the caller
+	// answers to that command's rules here, against the stored parcel
+	upload := `mutation($in: CreateParcelPhotoUploadInput!) { createParcelPhotoUpload(input: $in) { url } }`
+	photo := func(id string) map[string]any {
+		return map[string]any{"in": map[string]any{"namespace": "acme", "id": id, "name": "label.jpg", "contentType": "image/jpeg", "size": 10}}
+	}
+	allowed("north uploads to its own", run("north", upload, photo(mine)))
+	refused("north uploads to south's", run("north", upload, photo(theirs)))
+	refused("north uploads to a parcel that does not exist", run("north", upload, photo(uuid.NewString())))
+	allowed("admin uploads to any", run("admin", upload, photo(theirs)))
+	refused("a scoped caller with no attributes uploads", run("plain", upload, photo(mine)))
+
 	// reading one
 	res := run("north", get, map[string]any{"id": mine})
 	allowed("north reads its own", res)

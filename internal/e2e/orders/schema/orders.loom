@@ -175,6 +175,7 @@ aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: call
     depot_id: uuid
     label: string
     discarded: bool
+    photo: file?
   }
 
   /// Register a parcel at a depot.
@@ -204,6 +205,21 @@ aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: call
 
   event ParcelDiscarded {
     discarded: bool!
+  }
+
+  /// Attach a photo of the parcel's label.
+  command AttachParcelPhoto @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+    photo: file!
+  } -> ParcelPhotoAttached
+
+  event ParcelPhotoAttached {
+    photo: file!
+  }
+
+  // opening the upload answers to AttachParcelPhoto's rules: the store,
+  // not the caller, dispatches it when the bytes land
+  upload ParcelPhoto {
+    on uploaded -> AttachParcelPhoto
   }
 }
 

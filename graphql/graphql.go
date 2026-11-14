@@ -1264,6 +1264,46 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 // uploadMutation serves create{Name}Upload: open a resumable session on
 // the owning service (which dispatches the upload's `on started` command)
 // and hand the URL back for the browser to PUT chunks directly.
+// uploadGates is the gates of the commands an upload dispatches, in the
+// order it dispatches them and only those that declare one, and the
+// state of the aggregate or record they address.
+func uploadGates(cli *loom.Client, u *loom.UploadDef) ([]gate, stateLoader) {
+	reg := cli.Registry()
+	var gates []gate
+	add := func(g gate) {
+		if len(g.roles) > 0 || len(g.rules) > 0 {
+			gates = append(gates, g)
+		}
+	}
+	for _, agg := range reg.Aggregates {
+		if agg.Name != u.Owner {
+			continue
+		}
+		for _, name := range []string{u.OnStarted, u.OnUploaded} {
+			for _, def := range agg.Commands {
+				if def.Name == name {
+					add(gate{roles: def.Roles, rules: def.Allow})
+				}
+			}
+		}
+		return gates, aggregateState(cli, agg.Name)
+	}
+	for _, rec := range reg.Records {
+		if rec.Name != u.Owner {
+			continue
+		}
+		for _, name := range []string{u.OnStarted, u.OnUploaded} {
+			for _, def := range rec.Commands {
+				if def.Name == name {
+					add(gate{roles: def.Roles, rules: def.Allow})
+				}
+			}
+		}
+		return gates, recordState(cli, rec.Name)
+	}
+	return nil, nil
+}
+
 func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 	field := "create" + u.Name + "Upload"
 	if _, dup := b.muts[field]; dup {
@@ -1281,18 +1321,39 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		return err
 	}
 	upload := u.Name
-	b.gated("mutation", gate{}, true, field)
+	// opening an upload is asking for its commands to be run — the one
+	// at the start now, the one at the end when the bytes land, by the
+	// store's word and not the caller's. So the caller answers to each
+	// command's gate here, where there is still a caller to ask
+	gates, stored := uploadGates(cli, u)
+	shown := gate{}
+	if len(gates) > 0 {
+		shown = gates[len(gates)-1]
+	}
+	b.gated("mutation", shown, true, field)
 	b.muts[field] = &gql.Field{
 		Type: gql.NewNonNull(session),
 		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
-			if err := decide(p.Context, Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args}); err != nil {
-				return nil, err
+			id, idErr := uuid.Parse(fmt.Sprint(args["id"]))
+			asked := gates
+			if len(asked) == 0 {
+				asked = []gate{{}}
 			}
-			id, err := uuid.Parse(fmt.Sprint(args["id"]))
-			if err != nil {
+			for _, g := range asked {
+				d := Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args, Roles: g.roles, Rules: g.rules}
+				if len(g.rules) > 0 {
+					// an upload's command carries a file and nothing
+					// else, so only the stored state says whose it is
+					d.Target = commandTarget(p.Context, g.rules, ns, id, nil, stored)
+				}
+				if err := decide(p.Context, d); err != nil {
+					return nil, err
+				}
+			}
+			if idErr != nil {
 				return nil, fmt.Errorf("bad id %q", args["id"])
 			}
 			req := loom.UploadRequest{

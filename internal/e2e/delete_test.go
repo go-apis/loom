@@ -66,6 +66,40 @@ func TestDeleteStream(t *testing.T) {
 		return a != nil && b != nil && s != nil
 	})
 
+	// counted first: the preview says what the delete will remove and
+	// what it will leave to rebuild, and removes nothing
+	preview, err := cli.PreviewDeleteStream(ctx, "default", junk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Events == 0 || preview.Rows == 0 || len(preview.Projections) == 0 {
+		t.Fatalf("preview = %+v; want the stream's events, rows and projections", preview)
+	}
+	if _, version, err := cli.Load(ctx, "Order", "default", junk); err != nil || version == 0 {
+		t.Fatalf("the preview deleted the stream: v%d err=%v", version, err)
+	}
+	if row, _ := cli.Entity(ctx, "OrderSummary", "default", junk); row == nil {
+		t.Fatal("the preview deleted the stream's @table row")
+	}
+	dry, _ := json.Marshal(map[string]any{"namespace": "default", "ids": []uuid.UUID{junk}, "rebuild": true, "dry_run": true})
+	dryResp, err := http.Post(srv.URL+"/streams/delete", "application/json", bytes.NewReader(dry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dryOut struct {
+		Status  string              `json:"status"`
+		Deleted loom.StreamDeletion `json:"deleted"`
+		Rebuilt []string            `json:"rebuilt"`
+	}
+	err = json.NewDecoder(dryResp.Body).Decode(&dryOut)
+	dryResp.Body.Close()
+	if err != nil || dryOut.Status != "previewed" || dryOut.Deleted.Events != preview.Events || len(dryOut.Rebuilt) != 0 {
+		t.Fatalf("dry run over the API = %+v, %v; want the preview's counts and nothing rebuilt", dryOut, err)
+	}
+	if _, version, err := cli.Load(ctx, "Order", "default", junk); err != nil || version == 0 {
+		t.Fatalf("the dry run deleted the stream: v%d err=%v", version, err)
+	}
+
 	body, _ := json.Marshal(map[string]any{
 		"namespace": "default", "ids": []uuid.UUID{junk}, "rebuild": true,
 	})
@@ -87,6 +121,9 @@ func TestDeleteStream(t *testing.T) {
 	}
 	if out.Deleted.Events == 0 || out.Deleted.Rows == 0 {
 		t.Fatalf("expected events and rows deleted, got %+v", out.Deleted)
+	}
+	if out.Deleted.Events != preview.Events || out.Deleted.Rows != preview.Rows || out.Deleted.Snapshots != preview.Snapshots {
+		t.Errorf("the delete removed %+v; the preview said %+v", out.Deleted, *preview)
 	}
 	if len(out.Rebuilt) == 0 {
 		t.Fatalf("expected affected projections rebuilt, got %+v", out)
