@@ -215,7 +215,12 @@ func (c *catalogue) describeFields(fields []field, nest bool, depth int) []map[s
 // sub-selection of its own; with paths ("total", "lines.sku") it is
 // exactly those, each segment checked against the type so nothing a
 // caller wrote reaches the document unchecked.
-func (c *catalogue) selection(t typeRef, paths []string) (string, error) {
+//
+// deep is how far the default reaches into fields that are objects
+// themselves: zero for a read, whose rows stay flat unless asked, and
+// more for a command, whose whole answer (a plan and its events) is
+// what the caller came for.
+func (c *catalogue) selection(t typeRef, paths []string, deep int) (string, error) {
 	if c.leaf(t) {
 		if len(paths) > 0 {
 			return "", fmt.Errorf("%s has no fields to choose", t.name)
@@ -226,8 +231,16 @@ func (c *catalogue) selection(t typeRef, paths []string) (string, error) {
 	if len(paths) == 0 {
 		var names []string
 		for _, f := range td.fields {
-			if c.leaf(f.typ) && !needsArgs(f) {
+			switch {
+			case needsArgs(f):
+			case c.leaf(f.typ):
 				names = append(names, f.name)
+			case deep > 0:
+				sub, err := c.selection(f.typ, nil, deep-1)
+				if err != nil {
+					return "", err
+				}
+				names = append(names, f.name+sub)
 			}
 		}
 		if len(names) == 0 {
@@ -266,7 +279,7 @@ func (c *catalogue) selection(t typeRef, paths []string) (string, error) {
 		if needsArgs(*f) {
 			return "", fmt.Errorf("%s.%s takes arguments and cannot be chosen here", td.name, name)
 		}
-		sub, err := c.selection(f.typ, rest[name])
+		sub, err := c.selection(f.typ, rest[name], deep)
 		if err != nil {
 			return "", err
 		}
@@ -289,7 +302,11 @@ func needsArgs(f field) bool {
 // the arguments given, each as a typed variable. Argument names come
 // from the catalogue, never from the caller's text.
 func (c *catalogue) document(op *operation, args map[string]any, paths []string) (string, error) {
-	sel, err := c.selection(op.typ, paths)
+	deep := 0
+	if op.kind == kindCommand {
+		deep = 3
+	}
+	sel, err := c.selection(op.typ, paths, deep)
 	if err != nil {
 		return "", err
 	}

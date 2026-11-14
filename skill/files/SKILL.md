@@ -138,6 +138,14 @@ it. Write one on every command, in the caller's terms: what it does and
 when to use it. Keep reasons, history and implementation notes in plain
 `//` comments, which are never published.
 
+## Commands that cannot be undone take @plan
+
+A command that deletes, archives, revokes or otherwise cannot be taken
+back is declared `@plan`. At the gateway its mutation then answers a
+plan of what it would emit and runs nothing; `runPlan` with the plan's
+id runs it, once, while its target is unchanged. Handlers need nothing
+special: the plan is the handler's own decision, not yet written.
+
 ## Reading
 
 - `cli.Load(ctx, "Aggregate", ns, id)` reads an aggregate's state from

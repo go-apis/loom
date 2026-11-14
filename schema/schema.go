@@ -104,6 +104,12 @@ type Command struct {
 	// Allow (@allow) gates the command at the gateway by rule — see
 	// Rule. Beside @role, both must pass.
 	Allow []*Rule `yaml:"allow,omitempty" json:"allow,omitempty"`
+	// Plan (@plan) marks a command a caller must see the effect of
+	// before causing it: at the gateway the mutation runs nothing and
+	// answers a plan — what the command would emit — and the plan's id
+	// runs it (runPlan), once, while its target is unchanged. In-process
+	// Dispatch is not held back.
+	Plan bool `yaml:"plan,omitempty" json:"plan,omitempty"`
 }
 
 type Event struct {

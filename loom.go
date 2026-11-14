@@ -340,6 +340,9 @@ type CommandDef struct {
 	// Allow (@allow) gates the command at the gateway by rule; beside
 	// Roles, both must pass.
 	Allow []Rule
+	// Plan (@plan): at the gateway the command is planned, not run —
+	// see Client.Plan. In-process Dispatch runs it as any other.
+	Plan bool
 	// Required names the schema-required payload fields (snake case) —
 	// the gateway serves exactly these as NonNull inputs, matching the
 	// emitted SDL. Go value-ness can't say it: optional strings and
@@ -383,6 +386,8 @@ type RecordCommandDef struct {
 	Roles []string
 	// Allow — see CommandDef.Allow.
 	Allow []Rule
+	// Plan — see CommandDef.Plan.
+	Plan bool
 	// Required — see CommandDef.Required.
 	Required []string
 	// Doc and FieldDocs — see CommandDef.Doc.

@@ -949,6 +949,39 @@ and inherits the checks by delegating to `DefaultPolicy`. Like `@role`,
 `@allow` gates only the gateway — and so the MCP tools — never
 in-process `Dispatch`.
 
+Some commands should not be run on a caller's first word. Mark one
+`@plan` and the gateway holds it back:
+
+```
+/// Throw a parcel away. It cannot be brought back.
+command DiscardParcel @plan -> ParcelDiscarded
+```
+
+Its mutation now runs nothing. It decides the command against the
+state as it stands and answers a `Plan`: the events the handler would
+emit, the target and its version, an expiry, and an id.
+`runPlan(namespace, id)` runs that plan — exactly the command that was
+planned, since the plan's id is all it takes:
+
+- **Once.** The plan is spent when it runs, whether or not the command
+  then succeeds.
+- **Only if nothing moved.** The command runs only while its target is
+  at the version it was planned against; otherwise the plan is stale,
+  and is planned again.
+- **For a while.** A plan expires (`loom.DefaultPlanTTL`, 15 minutes).
+- **By whoever may run the command.** Planning and running each answer
+  to the command's own `@role` and `@allow`, for the caller of that
+  step. Each is its own `Decision` — `Stage` is `StagePlan`, then
+  `StageRun` — so a `Policy` can let an agent plan what only a person
+  may run.
+
+A command its handler refuses is refused at planning, with the
+handler's error. A plan shows what the command emits, not what reacts
+to it: processes and policies are not run to find out. `@plan` holds
+back only the gateway, and so the MCP tools; in-process `Dispatch`
+(processes, timers, your own code) runs the command as any other, and
+`Client.Plan` / `Client.RunPlan` are there to call directly.
+
 When flat roles run out — "platform staff bypass everything", "this
 client must be tagged to the caller's org" — set a `Policy`: the OPA
 shape with Go as the rule language. Every operation (reads, lists,

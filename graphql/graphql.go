@@ -142,6 +142,7 @@ func New(cfg Config) (http.Handler, error) {
 			return nil, err
 		}
 	}
+	b.runPlanMutation()
 	for _, f := range cfg.Fields {
 		if err := b.rootField(f); err != nil {
 			return nil, err
@@ -280,6 +281,8 @@ type builder struct {
 	// gates is every root query and mutation's gate, by field name —
 	// what a probe decides over (handler.Allowed).
 	gates map[string]rootGate
+	// planned is every @plan command, by command name (plan.go).
+	planned map[string]plannedOp
 }
 
 // gated records root fields' gates for probes.
@@ -406,7 +409,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range agg.Commands {
-			if err := b.mutation(cli, def.Name, def.New, gate{roles: def.Roles, rules: def.Allow}, def.Required, aggregateState(cli, agg.Name)); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, gate{roles: def.Roles, rules: def.Allow}, def.Required, aggregateState(cli, agg.Name), def.Plan); err != nil {
 				return err
 			}
 		}
@@ -459,7 +462,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		for _, def := range rec.Commands {
-			if err := b.mutation(cli, def.Name, def.New, gate{roles: def.Roles, rules: def.Allow}, def.Required, recordState(cli, rec.Name)); err != nil {
+			if err := b.mutation(cli, def.Name, def.New, gate{roles: def.Roles, rules: def.Allow}, def.Required, recordState(cli, rec.Name), def.Plan); err != nil {
 				return err
 			}
 		}
@@ -1182,7 +1185,7 @@ func recordState(cli *loom.Client, name string) stateLoader {
 	}
 }
 
-func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, g gate, required []string, stored stateLoader) error {
+func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Command, g gate, required []string, stored stateLoader, plan bool) error {
 	field := lowerFirst(name)
 	if _, dup := b.muts[field]; dup {
 		return fmt.Errorf("graphql: mutation %q defined by two services — rename one side", field)
@@ -1192,16 +1195,34 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 		return err
 	}
 	b.gated("mutation", g, true, field)
+	result, description := dispatchResult, b.docs[name]
+	if plan {
+		if b.planned == nil {
+			b.planned = map[string]plannedOp{}
+		}
+		b.planned[name] = plannedOp{cli: cli, field: field, gate: g, stored: stored}
+		result = planObject
+		description = strings.TrimSpace(description + "\n\nThis does not run: it answers a plan of what the command would do. Run it with runPlan and the plan's id.")
+	}
 	b.muts[field] = &gql.Field{
-		Description: b.docs[name],
-		Type:        gql.NewNonNull(dispatchResult),
+		Description: description,
+		Type:        gql.NewNonNull(result),
 		Args:        gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
 		Resolve: func(p gql.ResolveParams) (any, error) {
 			args, _ := p.Args["input"].(map[string]any)
 			ns, _ := args["namespace"].(string)
 			d := Decision{Kind: "mutation", Field: field, Namespace: ns, Args: args, Roles: g.roles, Rules: g.rules}
+			if plan {
+				d.Stage = StagePlan
+			}
 			if len(g.rules) > 0 {
-				d.Target = commandTarget(p.Context, g.rules, args, conv, stored)
+				// the payload by snake names, as the rules write them
+				given := map[string]any{}
+				if raw, err := json.Marshal(conv(args)); err == nil {
+					_ = json.Unmarshal(raw, &given)
+				}
+				target, _ := uuid.Parse(fmt.Sprint(args["aggregateId"]))
+				d.Target = commandTarget(p.Context, g.rules, ns, target, given, stored)
 			}
 			if err := decide(p.Context, d); err != nil {
 				return nil, err
@@ -1213,6 +1234,13 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 			cmd := newCmd()
 			if err := json.Unmarshal(raw, cmd); err != nil {
 				return nil, err
+			}
+			if plan {
+				held, err := cli.Plan(p.Context, cmd, 0)
+				if err != nil {
+					return nil, err
+				}
+				return planDoc(held)
 			}
 			if err := cli.Dispatch(p.Context, cmd); err != nil {
 				return nil, err

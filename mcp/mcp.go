@@ -133,7 +133,7 @@ func (s *server) serverFor(ctx context.Context) *sdk.Server {
 	})
 	sdk.AddTool(srv, &sdk.Tool{
 		Name:        "dispatch",
-		Description: "Run a command: an operation that changes something. Refused when the caller may not run it, exactly as the API refuses it.",
+		Description: "Run a command: an operation that changes something. Refused when the caller may not run it, exactly as the API refuses it. Some commands do not run at once: they answer a plan of what they would do, with an id. Show the plan, then run it with the runPlan command (args: namespace, id).",
 		Annotations: &sdk.ToolAnnotations{DestructiveHint: &yes, OpenWorldHint: &no},
 	}, func(_ context.Context, _ *sdk.CallToolRequest, in callIn) (*sdk.CallToolResult, any, error) {
 		return s.call(ctx, in, kindCommand, false), nil, nil

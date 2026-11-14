@@ -2,7 +2,6 @@ package graphql
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -148,21 +147,14 @@ func ownFilters(ctx context.Context, rules []loom.Rule) []loom.Filter {
 // The state is the authority — a payload cannot claim another owner's
 // thing — so a field the two disagree on is left out, and no rule owns
 // it.
-func commandTarget(ctx context.Context, rules []loom.Rule, args map[string]any, payload converter, load stateLoader) func() (map[string]any, error) {
+//
+// given is the payload by snake names, as the schema and the rules
+// write them.
+func commandTarget(ctx context.Context, rules []loom.Rule, ns string, id uuid.UUID, given map[string]any, load stateLoader) func() (map[string]any, error) {
 	return func() (map[string]any, error) {
-		ns, _ := args["namespace"].(string)
-		id, err := uuid.Parse(fmt.Sprint(args["aggregateId"]))
-		if err != nil {
-			return nil, fmt.Errorf("bad aggregateId %q", args["aggregateId"])
-		}
 		state, err := load(ctx, ns, id)
 		if err != nil {
 			return nil, err
-		}
-		// the payload by snake names, as the schema and the rules write them
-		given := map[string]any{}
-		if raw, err := json.Marshal(payload(args)); err == nil {
-			_ = json.Unmarshal(raw, &given)
 		}
 		out := map[string]any{}
 		for _, r := range rules {

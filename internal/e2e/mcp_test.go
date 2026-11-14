@@ -54,13 +54,14 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	depot := uuid.NewString()
 	tokens := map[string]loomgql.Access{
 		"owner":  {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "owner"}},
 		"member": {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "member"}},
 		"other":  {Namespaces: []string{"globex"}, Mutate: true, Roles: map[string]string{"globex": "owner"}},
 		"reader": {Namespaces: []string{"acme"}, Roles: map[string]string{"acme": "owner"}},
 		"courier": {Namespaces: []string{"acme"}, Mutate: true, Roles: map[string]string{"acme": "member"},
-			Attrs: map[string]string{"kind": "courier", "depot": uuid.NewString()}},
+			Attrs: map[string]string{"kind": "courier", "depot": depot}},
 	}
 	gateway, err := loomgql.New(loomgql.Config{
 		Services: []*loom.Client{cli},
@@ -296,5 +297,33 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 	}
 	if text, refused = call(owner, "dispatch", ship); refused || decode(text)["status"] != "ok" {
 		t.Errorf("the owner shipping = %s", text)
+	}
+
+	// a @plan command through dispatch answers the whole plan — its
+	// events included, with nothing asked for — and runs nothing; the
+	// plan's id through runPlan runs it
+	courier := session("courier")
+	parcel := uuid.NewString()
+	if text, refused = call(courier, "dispatch", map[string]any{"name": "registerParcel", "args": map[string]any{"input": map[string]any{
+		"aggregateId": parcel, "namespace": "acme", "depotId": depot, "label": "box"}}}); refused {
+		t.Fatalf("registerParcel = %s", text)
+	}
+	if text, _ = call(courier, "describe", map[string]any{"name": "discardParcel"}); !strings.Contains(text, "This does not run") || !strings.Contains(text, "runPlan") {
+		t.Errorf("describe discardParcel does not say it plans: %s", text)
+	}
+	text, refused = call(courier, "dispatch", map[string]any{"name": "discardParcel", "args": map[string]any{"input": map[string]any{"aggregateId": parcel, "namespace": "acme"}}})
+	if refused || !strings.Contains(text, `"events":[{"data":{"discarded":true},"type":"ParcelDiscarded"}]`) {
+		t.Fatalf("dispatch discardParcel = %s", text)
+	}
+	one = map[string]any{"name": "parcel", "args": map[string]any{"namespace": "acme", "id": parcel}}
+	if text, _ := call(courier, "get", one); decode(text)["discarded"] == true {
+		t.Fatalf("planning discarded the parcel: %s", text)
+	}
+	planID := decode(text)["id"]
+	if text, refused = call(courier, "dispatch", map[string]any{"name": "runPlan", "args": map[string]any{"namespace": "acme", "id": planID}}); refused || decode(text)["status"] != "ok" {
+		t.Fatalf("dispatch runPlan = %s", text)
+	}
+	if text, _ := call(courier, "get", one); decode(text)["discarded"] != true {
+		t.Errorf("the plan ran and the parcel is not discarded: %s", text)
 	}
 }

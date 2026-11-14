@@ -18,6 +18,12 @@ var (
 	_ = uuid.UUID{}
 )
 
+type DiscardParcel struct {
+	loom.CommandBase
+}
+
+func (*DiscardParcel) LoomCommand() string { return "DiscardParcel" }
+
 type RegisterParcel struct {
 	loom.CommandBase
 
@@ -35,6 +41,12 @@ type RelabelParcel struct {
 
 func (*RelabelParcel) LoomCommand() string { return "RelabelParcel" }
 
+type ParcelDiscarded struct {
+	Discarded bool `json:"discarded"`
+}
+
+func (*ParcelDiscarded) LoomEvent() string { return "ParcelDiscarded" }
+
 type ParcelRegistered struct {
 	DepotId uuid.UUID `json:"depot_id"`
 	Label   string    `json:"label"`
@@ -49,12 +61,15 @@ type ParcelRelabelled struct {
 func (*ParcelRelabelled) LoomEvent() string { return "ParcelRelabelled" }
 
 type Parcel struct {
-	DepotId uuid.UUID `json:"depot_id"`
-	Label   string    `json:"label"`
+	DepotId   uuid.UUID `json:"depot_id"`
+	Discarded bool      `json:"discarded"`
+	Label     string    `json:"label"`
 }
 
 func (s *Parcel) Fold(eventType string, data any) error {
 	switch e := data.(type) {
+	case *ParcelDiscarded:
+		s.Discarded = e.Discarded
 	case *ParcelRegistered:
 		s.DepotId = e.DepotId
 		s.Label = e.Label
@@ -68,6 +83,7 @@ func (s *Parcel) Fold(eventType string, data any) error {
 }
 
 type ParcelHandlers interface {
+	DiscardParcel(ctx context.Context, state *Parcel, cmd *DiscardParcel) ([]loom.DomainEvent, error)
 	RegisterParcel(ctx context.Context, state *Parcel, cmd *RegisterParcel) ([]loom.DomainEvent, error)
 	RelabelParcel(ctx context.Context, state *Parcel, cmd *RelabelParcel) ([]loom.DomainEvent, error)
 }
@@ -82,6 +98,20 @@ func aggregateDefParcel(h ParcelHandlers) *loom.AggregateDef {
 		},
 		NewState: func() loom.AggregateState { return &Parcel{} },
 		Commands: []*loom.CommandDef{
+			{
+				Name:  "DiscardParcel",
+				New:   func() loom.Command { return &DiscardParcel{} },
+				Emits: []string{"ParcelDiscarded"},
+				Allow: []loom.Rule{
+					{Caller: map[string]string{"kind": "admin"}},
+					{Caller: map[string]string{"kind": "courier"}, Own: map[string]string{"depot_id": "depot"}},
+				},
+				Plan: true,
+				Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
+					evts, err := h.DiscardParcel(ctx, state.(*Parcel), cmd.(*DiscardParcel))
+					return asAny(evts), err
+				},
+			},
 			{
 				Name:  "RegisterParcel",
 				New:   func() loom.Command { return &RegisterParcel{} },
@@ -124,6 +154,7 @@ func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Parcel", register: func(impl Impl, h any, r *loom.Registry) {
 		r.Aggregates = append(r.Aggregates, aggregateDefParcel(h.(ParcelHandlers)))
 		r.Events = append(r.Events,
+			&loom.EventDef{Name: "ParcelDiscarded", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelDiscarded{} }},
 			&loom.EventDef{Name: "ParcelRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelRegistered{} }},
 			&loom.EventDef{Name: "ParcelRelabelled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelRelabelled{} }},
 		)
@@ -136,18 +167,21 @@ func init() {
 	namespace  text NOT NULL,
 	id         uuid NOT NULL,
 	"depot_id" uuid,
+	"discarded" boolean,
 	"label" text,
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, namespace, id)
 );`,
 				Columns: []loom.TableColumn{
 					{Name: "depot_id", Type: "uuid"},
+					{Name: "discarded", Type: "boolean"},
 					{Name: "label", Type: "text"},
 				},
 				Values: func(state loom.EntityState) []any {
 					e := state.(*Parcel)
 					return []any{
 						e.DepotId,
+						e.Discarded,
 						e.Label,
 					}
 				},

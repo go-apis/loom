@@ -50,6 +50,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   probe (`Decision.Probe`, `graphql.Executor.Allowed`): no arguments,
   no target, nothing run. It is a listing aid — the call itself is
   decided again in full.
+- **`@plan`: see a command's effect before causing it.** A command
+  marked `@plan` is not run by its gateway mutation: the mutation
+  answers a `Plan` — the events the command's handler decided it would
+  emit, with nothing written — and `runPlan(namespace, id)` runs that
+  plan: the same command, once, and only while its target is at the
+  version it was planned against. A stale, spent or expired plan is
+  refused. Both steps answer to the command's own gate, each as its own
+  `Decision` (`Stage` plan, then run), so a `Policy` can let an agent
+  plan what only a person may run. In core: `Client.Plan`,
+  `Client.RunPlan`, `Client.PlannedCommand`, the `loom_plans` table
+  (created by `Migrate`). In-process `Dispatch` is never held back. The
+  MCP `dispatch` tool returns a command's whole answer, so a plan
+  arrives with its events.
 
 ### Fixed
 
