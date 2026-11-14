@@ -63,6 +63,18 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   (created by `Migrate`). In-process `Dispatch` is never held back. The
   MCP `dispatch` tool returns a command's whole answer, so a plan
   arrives with its events.
+- **`Client.Status`: what the background work is doing.** One read of
+  which instance holds the process lease (its generation and revision,
+  whether it is yielding, whether the service needs a leader at all),
+  every projection and process with its lag and — new — `BehindSince`,
+  when the oldest event it has not handled was written, and what is
+  waiting: timers pending and overdue, effects running and failed, the
+  outbox, dead letters, held plans. It is read from the database, so
+  any instance answers for the whole service. `graphql.Config.Status`
+  serves it as the `serviceStatus` query (`runners(onlyBehind: true)`
+  for what needs attention), to All access under `DefaultPolicy`, and
+  so to the MCP tools. `GET /runners` is the same read and gains
+  `behind_since`.
 
 ### Fixed
 

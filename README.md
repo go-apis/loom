@@ -1088,6 +1088,31 @@ never published: a doc reaches every caller of the gateway, so writing
 one is deliberate. A schema with no `///` generates exactly what it did
 before.
 
+### What the background work is doing
+
+`Client.Status(ctx)` answers for the whole service from the database,
+whichever instance is asked:
+
+- **The lease:** whether the service needs a leader (it does when a
+  process reacts to its own events), whether one holds it, the leader's
+  generation and revision, whether it is yielding to a newer deploy, and
+  the answering instance's own build. A leader on an older generation
+  than the instance answering is a deploy whose hand-over has not
+  happened.
+- **Runners:** every projection and process with its position, its
+  `Lag` in log positions, and `BehindSince` — when the oldest event it
+  has not handled was written. Lag says how far behind; `BehindSince`
+  says for how long.
+- **What is waiting:** timers pending and overdue, effects running and
+  failed, the outbox's depth and oldest row, dead letters, held plans.
+
+Set `graphql.Config.Status` and the gateway serves it as
+`serviceStatus`, one entry per composed service, with
+`runners(onlyBehind: true)` for what needs attention. It names no
+tenant, so under `DefaultPolicy` only `All` access reads it; let your
+operators in from your `Policy` by its field name. Through `mcp.New` an
+agent finds it with `search` and reads it with `list`.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service
