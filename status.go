@@ -36,6 +36,9 @@ type Status struct {
 	Stalled int `json:"stalled"`
 
 	Timers TimerStatus `json:"timers"`
+	// Schedules is the commands dispatched on an interval, and when
+	// each is next due.
+	Schedules []ScheduleStatus `json:"schedules"`
 	// EffectsRunning and EffectsFailed count journaled outside calls in
 	// flight and given up on.
 	EffectsRunning int64 `json:"effects_running"`
@@ -115,6 +118,9 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	}
 	st := &Status{Service: c.reg.Service, Latest: latest, Runners: runners, HereNewest: !c.superseded.Load()}
 	if st.Instances, err = c.instances(ctx); err != nil {
+		return nil, err
+	}
+	if st.Schedules, err = c.schedules(ctx); err != nil {
 		return nil, err
 	}
 	for _, r := range runners {

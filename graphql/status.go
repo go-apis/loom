@@ -69,6 +69,16 @@ var (
 			"newest":     {Type: gql.NewNonNull(gql.Boolean), Resolve: mapField("newest"), Description: "The newest generation alive: the one whose instances fire timers, run batches and fold projections."},
 		},
 	})
+	scheduleStatus = gql.NewObject(gql.ObjectConfig{
+		Name:        "ScheduleStatus",
+		Description: "A command the service dispatches on an interval.",
+		Fields: gql.Fields{
+			"name":         {Type: gql.NewNonNull(gql.String), Resolve: mapField("name")},
+			"command":      {Type: gql.NewNonNull(gql.String), Resolve: mapField("command")},
+			"everySeconds": {Type: gql.NewNonNull(gql.Float), Resolve: mapField("every_seconds")},
+			"nextAt":       {Type: scalarTime, Resolve: mapField("next_at"), Description: "When it is next due. While a tick is being run this shows a few minutes out."},
+		},
+	})
 	serviceStatus = gql.NewObject(gql.ObjectConfig{
 		Name:        "ServiceStatus",
 		Description: "What one service's background work is doing now.",
@@ -81,6 +91,7 @@ var (
 			"behind":         {Type: gql.NewNonNull(gql.Int), Resolve: mapField("behind"), Description: "How many runners have events still to handle."},
 			"stalled":        {Type: gql.NewNonNull(gql.Int), Resolve: mapField("stalled"), Description: "How many runners are halted."},
 			"timers":         {Type: gql.NewNonNull(timerStatus), Resolve: mapField("timers")},
+			"schedules":      {Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(scheduleStatus))), Resolve: mapField("schedules"), Description: "The commands dispatched on an interval, and when each is next due."},
 			"effectsRunning": {Type: gql.NewNonNull(scalarLong), Resolve: mapField("effects_running")},
 			"effectsFailed":  {Type: gql.NewNonNull(scalarLong), Resolve: mapField("effects_failed")},
 			"outboxDepth":    {Type: gql.NewNonNull(scalarLong), Resolve: mapField("outbox_depth"), Description: "Events not yet published to the bus."},

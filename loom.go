@@ -143,6 +143,7 @@ type Registry struct {
 	Tables      []*TableDef
 	Joins       []*JoinDef
 	Enums       []*EnumDef
+	Schedules   []*ScheduleDef
 	Types       []*TypeDef
 }
 
@@ -157,6 +158,32 @@ type Rule struct {
 	Caller map[string]string
 	Own    map[string]string
 }
+
+// ScheduleDef mirrors a schema `schedule`: a command the service
+// dispatches every Every, for as long as it runs (schedules.go).
+type ScheduleDef struct {
+	Name    string
+	Every   time.Duration
+	Command string
+	// New builds the command, addressed to the schedule's stream.
+	New func() Command
+	// Doc — see AggregateDef.Doc.
+	Doc string
+}
+
+// ScheduleTarget addresses a scheduled command: its namespace, and the
+// stream id the schema gave (@id) or, when it gave none, the one derived
+// from the service and the schedule's name — the same on every build,
+// so a schedule keeps its stream. Generated registries call it.
+func ScheduleTarget(service, schedule, namespace, id string) CommandBase {
+	if id != "" {
+		return CommandBase{Namespace: namespace, AggregateID: uuid.MustParse(id)}
+	}
+	return CommandBase{Namespace: namespace, AggregateID: uuid.NewSHA1(scheduleSpace, []byte(service+"/"+schedule))}
+}
+
+// scheduleSpace is the uuid v5 namespace of derived schedule stream ids.
+var scheduleSpace = uuid.MustParse("7d0c9f5e-2b1a-4c3d-9e8f-6a5b4c3d2e1f")
 
 // EnumDef mirrors a schema `enum`: the closed value set behind a
 // generated named string type. The gateway serves these as real GraphQL

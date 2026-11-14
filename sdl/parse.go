@@ -164,6 +164,8 @@ func (p *parser) schema() error {
 			err = p.reactor(&p.out.Processes, "process")
 		case "projection":
 			err = p.projection()
+		case "schedule":
+			err = p.schedule()
 		case "type":
 			err = p.typeDecl()
 		case "enum":
@@ -296,6 +298,48 @@ func (p *parser) allowRule() (*schema.Rule, error) {
 		}
 	}
 	return rule, nil
+}
+
+// schedule parses a command dispatched on an interval:
+//
+//	schedule flowWatch every 5m -> TickFlowWatch @in(platform) @id("818f9260-…")
+func (p *parser) schedule() error {
+	at := p.next()
+	name, err := p.ident()
+	if err != nil {
+		return err
+	}
+	if !p.accept("every") {
+		return p.errf(p.peek(), "schedule %s: expected `every <interval>`, got %q", name, p.peek().text)
+	}
+	every := p.next()
+	if every.kind != tNumber {
+		return p.errf(every, "schedule %s: every wants an interval (30s, 5m, 1h, 1d), got %q", name, every.text)
+	}
+	if err := p.expect("->"); err != nil {
+		return err
+	}
+	cmd, err := p.ident()
+	if err != nil {
+		return err
+	}
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
+	sc := &schema.Schedule{Name: name, Doc: at.doc, Every: every.text, Command: cmd}
+	for d, args := range dirs {
+		switch {
+		case d == "in" && len(args) == 1:
+			sc.Namespace = args[0]
+		case d == "id" && len(args) == 1:
+			sc.ID = args[0]
+		default:
+			return p.errf(at, "schedule %s: unknown or malformed directive @%s (schedules take @in(namespace), @id(\"uuid\"))", name, d)
+		}
+	}
+	p.out.Schedules = append(p.out.Schedules, sc)
+	return nil
 }
 
 func (p *parser) aggregate() error {

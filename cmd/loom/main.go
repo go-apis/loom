@@ -9,8 +9,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -49,6 +51,8 @@ func main() {
 		err = runEmit(os.Args[2:], "openapi.json", gen.OpenAPI)
 	case "graphql":
 		err = runEmit(os.Args[2:], "", gen.GraphQL)
+	case "access":
+		err = runEmit(os.Args[2:], "access.md", gen.Access)
 	case "rewrap":
 		err = runRewrap(os.Args[2:])
 	default:
@@ -65,8 +69,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom check <schema.loom|schema dir ...>")
 	fmt.Fprintln(os.Stderr, "       loom skill [--root <repo root>] [--check]")
-	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json]")
-	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls]")
+	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json] [--check]")
+	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls] [--check]")
+	fmt.Fprintln(os.Stderr, "       loom access [--dir <service dir>] [--out access.md] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom rewrap --db <dsn> (--from-local <hex>|--from-kms <key>) (--to-local <hex>|--to-kms <key>)")
 	os.Exit(2)
 }
@@ -131,6 +136,7 @@ func runEmit(args []string, defaultOut string, emit func(*schema.Schema) ([]byte
 	fs := flag.NewFlagSet("emit", flag.ExitOnError)
 	dir := fs.String("dir", ".", "service directory (where loom.yml lives)")
 	out := fs.String("out", "", "output file")
+	check := fs.Bool("check", false, "write nothing; exit non-zero when the output file is missing or stale")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,6 +164,20 @@ func runEmit(args []string, defaultOut string, emit func(*schema.Schema) ([]byte
 		name = *out
 	} else {
 		name = filepath.Join(*dir, name)
+	}
+	if *check {
+		have, err := os.ReadFile(name)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s is missing: run the command without --check and commit it", name)
+		}
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(have, data) {
+			return fmt.Errorf("%s is stale: the schema says otherwise. Run the command without --check and commit it", name)
+		}
+		fmt.Println("current", name)
+		return nil
 	}
 	if err := os.WriteFile(name, data, 0o644); err != nil {
 		return err

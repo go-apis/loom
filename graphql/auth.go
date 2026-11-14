@@ -54,6 +54,13 @@ type Access struct {
 	// refused, so adding @role to a schema fails closed until the Auth
 	// hook grants roles.
 	Roles map[string]string
+	// Actor names the caller for the record — "user:<id>", "session:<job>",
+	// whatever the deployment's ids are. The gateway stamps it on every
+	// command the caller's request dispatches (loom.Metadata.Actor), so
+	// the events a command emits say who caused them, and so do the
+	// events of whatever reacts to those. Empty leaves the metadata as
+	// the deployment's own middleware set it, if it did.
+	Actor string
 	// Attrs is what the caller is, as the deployment names it — kind:
 	// session, job_kind: build, project: <id> — for the schema's @allow
 	// rules to compare. A nil map opts out of the attribute model:

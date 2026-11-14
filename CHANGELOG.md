@@ -14,6 +14,47 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`schedule`: a command on an interval, with loom owning the clock.**
+  `schedule flowWatch every 5m -> TickFlowWatch @in(platform)`
+  dispatches the command at the deploy and every interval after, to one
+  stream: `@in` names its namespace, `@id("uuid")` its id, or one is
+  derived from the service and the schedule's name. It rides the timer
+  table, on the newest generation alive, and its row is moved on after
+  every tick whether the command succeeded or not, so a tick that fails
+  does not end the series — which a command re-arming itself with
+  `loom.After` cannot promise. A failed tick is logged, not parked.
+  Missed ticks are not made up. `Status.Schedules` lists each with its
+  next time. **Migration:** regenerate `loomgen/`.
+- **`loom.NotYet`: look again until it is done.** A reaction that
+  returns `loom.NotYet(reason)` is not a failure: it is looked at again
+  later under its process's `@retry`, without the three immediate
+  attempts and without failure logs. When the attempts run out the
+  event is parked, saying how many times it looked. A process with no
+  `@retry` that answers `NotYet` is parked at once, saying so.
+- **`Client.ReplayProcess`: hand a process events it has been past.**
+  For a process added after the things it is about exist, or whose
+  outside call was down while they went by. Narrow it by event type,
+  namespace or stream; `LatestPerAggregate` reacts once per existing
+  thing; `DryRun` counts. The process's checkpoint does not move, and
+  the replay's effects run again under its own id rather than being
+  answered from the journal. Also `POST /processes/{name}/replay`.
+- **The gateway records who ran a command.** `Access.Actor`, set by the
+  `Auth` hook, is stamped on the metadata of every command a request
+  dispatches, over GraphQL and through the MCP tools, so its events
+  name the caller. A planned command's events name whoever ran the
+  plan, with `plan:<id>` as their cause.
+- **MCP sign-in discovery.** `mcp.Config.SignIn` names the endpoint and
+  the authorization servers whose tokens it takes. A request with no
+  usable token is answered 401 naming the sign-in document (RFC 9728),
+  and `mcp.Mount` serves both the endpoint and that document. loom
+  issues no token: the gateway's `Auth` hook still decides who a
+  bearer is.
+- **`loom access`: who may run what, as a document.** Every command
+  and generated read under the name the gateway serves, with its
+  `@role` names, its `@allow` rules read aloud and whether it is
+  planned first. `--check` fails when the checked-in file is missing or
+  stale; `loom graphql` and `loom openapi` take `--check` too.
+
 - **The gateway serves agents over MCP.** `mcp.New(mcp.Config{Gateway: h})`
   mounts five tools over the handler `graphql.New` returned: `search`,
   `describe`, `dispatch`, `get` and `list`. They are the same for every

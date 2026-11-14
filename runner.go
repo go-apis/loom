@@ -754,6 +754,11 @@ func (c *Client) reactWithRetry(ctx context.Context, p *ReactorDef, evt *Event) 
 		if err == nil {
 			return nil
 		}
+		// not a failure: trying again at once would only ask the same
+		// question three times (notyet.go)
+		if IsNotYet(err) {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return err

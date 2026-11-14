@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -114,7 +115,20 @@ func (c *Client) startTimerRunner(ctx context.Context, poll time.Duration) {
 		}
 		t := time.NewTicker(poll)
 		defer t.Stop()
+		var ensured time.Time
 		for {
+			// the newest build's registry is the schedule: read it into
+			// the timer table now and again (schedules.go)
+			if c.newest() && time.Since(ensured) >= scheduleEnsure {
+				if err := c.ensureSchedules(ctx); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					c.log.ErrorContext(ctx, "schedules not written", "error", err)
+				} else {
+					ensured = time.Now()
+				}
+			}
 			// an instance a newer generation has superseded leaves the
 			// timers to it: they hold commands, and the newest build is
 			// the one to run them (instances.go)
@@ -247,6 +261,9 @@ func (c *Client) claimDueTimers(ctx context.Context, limit int) ([]dueTimer, err
 func (c *Client) fireClaimed(ctx context.Context, d dueTimer) error {
 	if d.cmdType == retryTimerType { // a @retry reaction (retry.go)
 		return c.fireRetry(ctx, d)
+	}
+	if strings.HasPrefix(d.key, scheduleKeyPrefix) { // a schedule's tick (schedules.go)
+		return c.fireSchedule(ctx, d)
 	}
 	fireErr := c.fireTimer(ctx, d.key, d.cmdType, d.cmd, d.meta)
 	tx, err := c.db.Begin(ctx)

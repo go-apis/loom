@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	gql "github.com/graphql-go/graphql"
+
+	"github.com/go-apis/loom"
 )
 
 // Result is one in-process execution's answer: the data GraphQL
@@ -49,14 +51,31 @@ func AsExecutor(h http.Handler) (Executor, bool) {
 }
 
 func (h *handler) Authenticate(r *http.Request) (*http.Request, error) {
-	if _, ok := AccessFrom(r.Context()); ok || h.auth == nil {
-		return r, nil
+	ctx := r.Context()
+	access, ok := AccessFrom(ctx)
+	if !ok {
+		if h.auth == nil {
+			return r, nil
+		}
+		var err error
+		if access, err = h.auth(r); err != nil {
+			return nil, err
+		}
+		ctx = WithAccess(ctx, access)
 	}
-	access, err := h.auth(r)
-	if err != nil {
-		return nil, err
+	return r.WithContext(withActor(ctx, access)), nil
+}
+
+// withActor names the caller on the metadata of whatever this request
+// dispatches. Metadata that already names an actor stands: the
+// deployment's middleware put it there.
+func withActor(ctx context.Context, access Access) context.Context {
+	meta := loom.MetaFrom(ctx)
+	if access.Actor == "" || meta.Actor != "" {
+		return ctx
 	}
-	return r.WithContext(WithAccess(r.Context(), access)), nil
+	meta.Actor = access.Actor
+	return loom.WithMeta(ctx, meta)
 }
 
 func (h *handler) Exec(ctx context.Context, query string, variables map[string]any) Result {

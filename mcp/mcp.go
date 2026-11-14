@@ -41,10 +41,13 @@ type Config struct {
 	// Name defaults to "loom".
 	Name    string
 	Version string
-	// Unauthenticated answers a request the gateway's Auth refused.
-	// Nil answers 401 with a bare Bearer challenge; a deployment whose
-	// clients sign in over OAuth sets it to name its resource metadata
-	// in WWW-Authenticate.
+	// SignIn, when set, tells a client with no usable token how to get
+	// one: the 401 names the sign-in document (SignIn.Metadata), which
+	// names the authorization servers. Mount serves both.
+	SignIn *SignIn
+	// Unauthenticated answers a request the gateway's Auth refused, in
+	// place of the 401 SignIn (or, without one, a bare Bearer challenge)
+	// gives.
 	Unauthenticated func(w http.ResponseWriter, r *http.Request)
 }
 
@@ -68,8 +71,14 @@ func New(cfg Config) (http.Handler, error) {
 		s.impl.Name = "loom"
 	}
 	if s.refuse == nil {
+		challenge := "Bearer"
+		if cfg.SignIn != nil {
+			if challenge, err = cfg.SignIn.challenge(); err != nil {
+				return nil, err
+			}
+		}
 		s.refuse = func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
+			w.Header().Set("WWW-Authenticate", challenge)
 			http.Error(w, `{"error":"unauthenticated"}`, http.StatusUnauthorized)
 		}
 	}
