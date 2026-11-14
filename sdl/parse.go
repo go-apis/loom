@@ -226,7 +226,7 @@ func (p *parser) directives() (map[string][]string, error) {
 }
 
 func (p *parser) aggregate() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -235,7 +235,7 @@ func (p *parser) aggregate() error {
 	if err != nil {
 		return err
 	}
-	agg := &schema.Aggregate{Name: name}
+	agg := &schema.Aggregate{Name: name, Doc: doc}
 	for d := range dirs {
 		if d != "snapshot" && d != "table" && d != "role" {
 			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role)", name, d)
@@ -300,7 +300,7 @@ func (p *parser) aggregate() error {
 // record parses state-of-record declarations: like an aggregate but with
 // no snapshot directive (the row is the source of truth).
 func (p *parser) record() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -309,7 +309,7 @@ func (p *parser) record() error {
 	if err != nil {
 		return err
 	}
-	rec := &schema.Record{Name: name}
+	rec := &schema.Record{Name: name, Doc: doc}
 	for d := range dirs {
 		if d != "role" {
 			return fmt.Errorf("record %s: unknown directive @%s (records take @role)", name, d)
@@ -407,12 +407,12 @@ func (p *parser) upload() (*schema.Upload, error) {
 // command at the GraphQL gateway: only callers holding one of the named
 // roles in the target namespace may dispatch it.
 func (p *parser) command() (*schema.Command, error) {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return nil, err
 	}
-	cmd := &schema.Command{Name: name}
+	cmd := &schema.Command{Name: name, Doc: doc}
 	dirs, err := p.directives()
 	if err != nil {
 		return nil, err
@@ -545,7 +545,7 @@ func (p *parser) upcast() error {
 }
 
 func (p *parser) entity() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -554,7 +554,7 @@ func (p *parser) entity() error {
 	if err != nil {
 		return err
 	}
-	ent := &schema.Entity{Name: name}
+	ent := &schema.Entity{Name: name, Doc: doc}
 	for d := range dirs {
 		if d != "table" && d != "role" {
 			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table, @role)", name, d)
@@ -657,6 +657,7 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 			}
 			continue
 		}
+		doc := p.peek().doc
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -668,6 +669,7 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 		if err != nil {
 			return nil, err
 		}
+		ft.Doc = doc
 		if p.accept("!") {
 			out.Required = append(out.Required, name)
 		}
@@ -951,7 +953,7 @@ func (p *parser) projection() error {
 }
 
 func (p *parser) typeDecl() error {
-	p.next()
+	doc := p.next().doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -960,7 +962,7 @@ func (p *parser) typeDecl() error {
 	if err != nil {
 		return err
 	}
-	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, Payload: pl})
+	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, Doc: doc, Payload: pl})
 	return nil
 }
 
@@ -1044,7 +1046,7 @@ func (p *parser) mergeEnums() error {
 	for _, b := range ordered {
 		e := enums[b.name]
 		if e == nil {
-			e = &schema.Enum{Name: b.name}
+			e = &schema.Enum{Name: b.name, Doc: homes[b.name].at.doc}
 			enums[b.name] = e
 			seen[b.name] = map[string]where{}
 			p.out.Enums = append(p.out.Enums, e)
@@ -1116,6 +1118,7 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 	}
 	out := &schema.Payload{Type: "object", Properties: map[string]*schema.Payload{}}
 	for !p.accept("}") {
+		doc := p.peek().doc
 		name, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -1127,6 +1130,7 @@ func (p *parser) fieldBlock() (*schema.Payload, error) {
 		if err != nil {
 			return nil, err
 		}
+		ft.Doc = doc
 		if p.accept("!") {
 			out.Required = append(out.Required, name)
 		}

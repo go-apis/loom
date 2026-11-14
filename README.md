@@ -992,6 +992,25 @@ apply exactly as they do over HTTP, and a hand-written `Field` is
 reachable like a generated one. `Config.Unauthenticated` lets a
 deployment name its OAuth resource metadata in the 401 it answers.
 
+What an agent reads about an operation is what the schema's doc
+comments say. A `///` block directly above an aggregate, record, entity,
+type, enum, command or field is its doc; the gateway serves it as the
+GraphQL description, `search` matches on it and `describe` shows it:
+
+```
+/// Place a new order for a customer. The total is worked out from
+/// the items.
+command PlaceOrder {
+  /// ISO 4217 code the prices are in, for example USD.
+  currency: string!
+} -> OrderPlaced
+```
+
+Plain `//` comments stay notes for whoever reads the schema and are
+never published: a doc reaches every caller of the gateway, so writing
+one is deliberate. A schema with no `///` generates exactly what it did
+before.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service

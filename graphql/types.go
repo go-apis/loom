@@ -116,9 +116,9 @@ func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {
 		// nullable (the DSL has no `!` in state or entity blocks), and a
 		// column added by migration is NULL for rows written before it
 		// existed — a NonNull here made those rows unreadable.
-		gqlFields[f.camel] = &gql.Field{Type: out, Resolve: mapField(f.snake)}
+		gqlFields[f.camel] = &gql.Field{Type: out, Resolve: mapField(f.snake), Description: b.docs[name+"."+f.snake]}
 	}
-	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields})
+	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields, Description: b.docs[name]})
 	b.types[name] = &typeEntry{obj: obj, fields: sig}
 	return obj, nil
 }
@@ -216,9 +216,9 @@ func (b *builder) nestedObject(t reflect.Type) (*gql.Object, error) {
 		if !f.nullable {
 			out = gql.NewNonNull(out)
 		}
-		gqlFields[f.camel] = &gql.Field{Type: out, Resolve: mapField(f.snake)}
+		gqlFields[f.camel] = &gql.Field{Type: out, Resolve: mapField(f.snake), Description: b.docs[name+"."+f.snake]}
 	}
-	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields})
+	obj := gql.NewObject(gql.ObjectConfig{Name: name, Fields: gqlFields, Description: b.docs[name]})
 	b.types[name] = &typeEntry{obj: obj, fields: sig}
 	return obj, nil
 }
@@ -311,10 +311,10 @@ func (b *builder) commandInput(name string, cmd loom.Command, required []string)
 		if _, isEnum := in.(*gql.Enum); requiredSet[f.snake] && !isEnum {
 			in = gql.NewNonNull(in)
 		}
-		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in}
+		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in, Description: b.docs[name+"."+f.snake]}
 		convs[f.camel] = fieldConv{snake: f.snake, conv: conv}
 	}
-	input := gql.NewInputObject(gql.InputObjectConfig{Name: name + "Input", Fields: cfg})
+	input := gql.NewInputObject(gql.InputObjectConfig{Name: name + "Input", Fields: cfg, Description: b.docs[name]})
 	return input, structConv(convs), nil
 }
 
@@ -434,13 +434,13 @@ func (b *builder) nestedInput(t reflect.Type) (gql.Input, converter, error) {
 		} else if !f.nullable {
 			in = gql.NewNonNull(in)
 		}
-		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in}
+		cfg[f.camel] = &gql.InputObjectFieldConfig{Type: in, Description: b.docs[t.Name()+"."+f.snake]}
 		convs[f.camel] = fieldConv{snake: f.snake, conv: conv}
 	}
 	if existing, ok := b.inputs[name]; ok {
 		return existing, structConv(convs), nil
 	}
-	input := gql.NewInputObject(gql.InputObjectConfig{Name: name, Fields: cfg})
+	input := gql.NewInputObject(gql.InputObjectConfig{Name: name, Fields: cfg, Description: b.docs[t.Name()]})
 	b.inputs[name] = input
 	return input, structConv(convs), nil
 }

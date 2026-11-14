@@ -24,6 +24,14 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   so it meets the gateway's `Auth`, `Policy`, `@role` gates, depth limit
   and redaction as an HTTP caller's does; the package holds no rules of
   its own. Streamable HTTP, stateless.
+- **Doc comments.** A `///` block directly above an aggregate, record,
+  entity, type, enum, command or field is its doc. The generator carries
+  it into the registry (`Doc`, `FieldDocs`, `EntityDoc`,
+  `EntityFieldDocs`), the gateway serves it as the GraphQL description,
+  and the MCP tools search and show it. Plain `//` comments are notes
+  and are never published. A schema with no `///` generates what it did
+  before; the JSON artifacts (`loom openapi`, `loom graphql`) do not
+  carry docs.
 
 ### Fixed
 

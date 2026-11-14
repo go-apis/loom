@@ -152,6 +152,8 @@ type Registry struct {
 type EnumDef struct {
 	Name   string
 	Values []string
+	// Doc is the `///` doc comment written above the enum in the schema.
+	Doc string
 }
 
 // TypeDef mirrors a schema `type`: a named struct reused inside commands,
@@ -163,6 +165,9 @@ type TypeDef struct {
 	// input, as CommandDef.Required does for a command's top level. Go
 	// value-ness can't say it: `[T]?` and `[T]` are both a plain slice.
 	Required []string
+	// Doc and FieldDocs — see AggregateDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
 }
 
 // JoinDef is a schema-declared gateway edge between entities (`join` in
@@ -298,6 +303,13 @@ type AggregateDef struct {
 	// ReadRoles (@role on the aggregate block) gates the generated
 	// GraphQL reads — the singular get and its Changed subscription.
 	ReadRoles []string
+	// Doc is the `///` doc comment written directly above the
+	// declaration in the schema, and FieldDocs the doc comments above
+	// its state fields (snake case names). The gateway serves them as
+	// descriptions, which is what its MCP tools search and show; the
+	// runtime never reads them.
+	Doc       string
+	FieldDocs map[string]string
 }
 
 type CommandDef struct {
@@ -316,7 +328,10 @@ type CommandDef struct {
 	// emitted SDL. Go value-ness can't say it: optional strings and
 	// required strings are both plain `string`.
 	Required []string
-	Handle   func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
+	// Doc and FieldDocs (payload fields) — see AggregateDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
+	Handle    func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
 }
 
 // RecordDef backs state-of-record objects that are NOT event-sourced
@@ -335,6 +350,9 @@ type RecordDef struct {
 	// ReadRoles — see AggregateDef.ReadRoles; covers get, list, and the
 	// list subscription.
 	ReadRoles []string
+	// Doc and FieldDocs — see AggregateDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
 }
 
 type RecordCommandDef struct {
@@ -346,7 +364,10 @@ type RecordCommandDef struct {
 	Roles []string
 	// Required — see CommandDef.Required.
 	Required []string
-	Handle   func(ctx context.Context, state any, cmd Command) ([]any, error)
+	// Doc and FieldDocs — see CommandDef.Doc.
+	Doc       string
+	FieldDocs map[string]string
+	Handle    func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 
 type EventDef struct {
@@ -474,6 +495,11 @@ type ProjectionDef struct {
 	// projection feeding it) gates the entity's generated GraphQL reads —
 	// get, list, and both Changed subscriptions.
 	EntityReadRoles []string
+	// EntityDoc and EntityFieldDocs are the entity's doc and its state
+	// fields' docs, denormalized like EntityReadRoles — see
+	// AggregateDef.Doc.
+	EntityDoc       string
+	EntityFieldDocs map[string]string
 }
 
 func (r *Registry) aggregateDef(name string) *AggregateDef {
