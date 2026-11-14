@@ -737,6 +737,13 @@ func (p *parser) entityBlock(ent *schema.Entity) (*schema.Payload, error) {
 			}
 			continue
 		}
+		if p.peek().text == "query" && p.peekAt(1).text == "(" {
+			p.next()
+			if err := p.query(ent); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		doc := p.peek().doc
 		name, err := p.ident()
 		if err != nil {
@@ -829,12 +836,29 @@ func (p *parser) join(ent *schema.Entity) error {
 // checked against the entity's actual fields in schema.Validate, not
 // here, since the state block may be parsed before or after this line.
 func (p *parser) index(ent *schema.Entity) error {
-	t := p.next() // "("
-	idx := &schema.Index{}
+	t := p.peek()
+	cols, err := p.indexColumns(ent, "index")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return p.errf(t, "entity %s: index has no columns", ent.Name)
+	}
+	ent.Indexes = append(ent.Indexes, &schema.Index{Columns: cols})
+	return nil
+}
+
+// indexColumns parses the parenthesized column list shared by `index` and
+// `query` — the leading "(" is consumed here, each column optionally
+// carrying `desc` and `nulls first|last`, exactly as index's doc comment
+// describes. kind names the caller in error text ("index" or "query").
+func (p *parser) indexColumns(ent *schema.Entity, kind string) ([]schema.IndexColumn, error) {
+	p.next() // "("
+	var cols []schema.IndexColumn
 	for {
 		name, err := p.ident()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		col := schema.IndexColumn{Name: name}
 		if p.accept("desc") {
@@ -844,26 +868,51 @@ func (p *parser) index(ent *schema.Entity) error {
 			nt := p.peek()
 			n, err := p.ident()
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if n != "first" && n != "last" {
-				return p.errf(nt, "entity %s: index nulls wants first or last, got %q", ent.Name, n)
+				return nil, p.errf(nt, "entity %s: %s nulls wants first or last, got %q", ent.Name, kind, n)
 			}
 			col.Nulls = n
 		}
-		idx.Columns = append(idx.Columns, col)
+		cols = append(cols, col)
 		if p.accept(",") {
 			continue
 		}
 		break
 	}
 	if err := p.expect(")"); err != nil {
+		return nil, err
+	}
+	return cols, nil
+}
+
+// query parses a declared-query line on a @table entity — the index its
+// filtered, ordered read needs, written as the query itself instead of as
+// an index:
+//
+//	query (status, updated_at desc nulls last)
+//
+// Columns parse exactly like index's (optional desc, nulls first|last).
+// All but the last column are the query's equality filters, named plain;
+// the last is its order column, carrying whatever desc/nulls it declares.
+// A trailing id column, in the order column's own direction, is appended
+// automatically — the stable tie-breaker a hand-written index would also
+// need for keyset pagination — so the desugared Index is the same one a
+// hand-written `index (...)` line naming the same columns plus `id` would
+// produce. Restricted to @table like index; schema.Validate enforces both
+// that and that every named column is real.
+func (p *parser) query(ent *schema.Entity) error {
+	t := p.peek()
+	cols, err := p.indexColumns(ent, "query")
+	if err != nil {
 		return err
 	}
-	if len(idx.Columns) == 0 {
-		return p.errf(t, "entity %s: index has no columns", ent.Name)
+	if len(cols) == 0 {
+		return p.errf(t, "entity %s: query has no columns", ent.Name)
 	}
-	ent.Indexes = append(ent.Indexes, idx)
+	cols = append(cols, schema.IndexColumn{Name: "id", Desc: cols[len(cols)-1].Desc})
+	ent.Indexes = append(ent.Indexes, &schema.Index{Columns: cols})
 	return nil
 }
 
