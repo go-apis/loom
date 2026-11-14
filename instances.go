@@ -21,8 +21,26 @@ import (
 // older revision and the newer one's instances are gone, the older
 // instances are the newest alive and fire again within a few beats.
 //
-// With no generation none of this happens: every instance fires timers,
-// as it always did.
+// The same goes for the other work whose outcome a build's code
+// decides, and the same rule covers it (newest):
+//
+//   - batches hold commands, as timers do;
+//   - a projection is folded by whichever instance takes its step lock,
+//     and one of an older build steps over events only the newer build's
+//     projection subscribes to, moving the checkpoint past them: the
+//     read model is short of those events until it is rebuilt.
+//
+// What an older instance still does: answer requests, publish the
+// outbox (envelopes are already written; no build decides them), keep
+// series partitions, and consume the bus.
+//
+// With no generation none of this happens: every instance does all of
+// it, as it always did.
+
+// instanceArrived is the payload an instance sends on the service's
+// channel after its first beat. An older loom on that channel reads it
+// as a log wake-up, which costs it one empty poll.
+const instanceArrived = "instance"
 
 // instanceBeat is how often an instance refreshes its row and looks for
 // a newer generation, for the poll interval it was started with: the
@@ -73,18 +91,26 @@ func (c *Client) runInstances(ctx context.Context, poll time.Duration, ready cha
 		was := c.superseded.Swap(newest > c.gen.n)
 		switch now := newest > c.gen.n; {
 		case now && !was:
-			c.log.InfoContext(ctx, "a newer generation is alive: this instance stops firing timers",
+			c.log.InfoContext(ctx, "a newer generation is alive: this instance leaves timers, batches and projections to it",
 				append(c.genAttrs(), "newer_generation", newest)...)
 		case was && !now:
-			c.log.InfoContext(ctx, "no newer generation is alive: this instance fires timers again", c.genAttrs()...)
+			c.log.InfoContext(ctx, "no newer generation is alive: this instance takes timers, batches and projections up again", c.genAttrs()...)
 		}
 	}
 	beat()
 	close(ready)
+	// tell the instances already running, so an older build stands down
+	// now rather than at its next beat: the gap between a new build's
+	// first event and an old build's last fold is the one this closes
+	if _, err := c.db.Exec(ctx, `SELECT pg_notify($1, $2)`, "loom_"+c.reg.Service, instanceArrived); err != nil && ctx.Err() == nil {
+		c.log.WarnContext(ctx, "instance arrival not announced; older builds learn at their next beat", "error", err)
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
+		case <-c.beatNudge:
+			beat()
 		case <-ctx.Done():
 			// say so on the way out, so the instances left do not wait
 			// out the liveness window for this one
@@ -98,6 +124,20 @@ func (c *Client) runInstances(ctx context.Context, poll time.Duration, ready cha
 	}
 }
 
+// newest reports whether this instance may do the work the newest build
+// alive is to do: its first beat is in, and no newer generation was
+// alive at its last. An instance never started has no beat to wait for.
+func (c *Client) newest() bool {
+	if c.beaten != nil {
+		select {
+		case <-c.beaten:
+		default:
+			return false
+		}
+	}
+	return !c.superseded.Load()
+}
+
 // InstanceStatus is the live instances of one build.
 type InstanceStatus struct {
 	Generation int64     `json:"generation"`
@@ -105,7 +145,7 @@ type InstanceStatus struct {
 	Count      int       `json:"count"`
 	SeenAt     time.Time `json:"seen_at"`
 	// Newest is whether this is the newest generation alive: the one
-	// whose instances fire timers.
+	// whose instances fire timers, run batches and fold projections.
 	Newest bool `json:"newest"`
 }
 

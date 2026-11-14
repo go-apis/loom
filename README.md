@@ -1101,10 +1101,13 @@ whichever instance is asked:
   happened.
 - **Instances:** the builds with a live instance, newest first. More
   than one line after a deploy is the old revision still running. Only
-  the newest generation alive fires timers, so an old instance kept
-  for a traffic tag never runs a timer's command with old code; if the
-  newer build's instances go away, the older ones take timers up again
-  within a few beats.
+  the newest generation alive fires timers, runs batches and folds
+  projections, so an old instance kept for a traffic tag never runs a
+  held command with old code and never steps a projection past events
+  only the new build folds. A new instance announces itself, so older
+  ones stand down at once; if the newer build's instances go away, the
+  older ones take the work up again within a few beats. `HereNewest`
+  says which kind answered.
 - **Runners:** every projection and process with its position, its
   `Lag` in log positions, and `BehindSince` — when the oldest event it
   has not handled was written. Lag says how far behind; `BehindSince`

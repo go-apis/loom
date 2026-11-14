@@ -97,6 +97,15 @@ func (c *Client) listenOnce(ctx context.Context, channel string) error {
 			}
 			continue
 		}
+		// an instance announced itself: look again at who is alive now,
+		// not at the next beat (instances.go)
+		if n.Payload == instanceArrived {
+			select {
+			case c.beatNudge <- struct{}{}:
+			default:
+			}
+			continue
+		}
 		c.broadcastLog()
 	}
 }
