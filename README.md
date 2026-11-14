@@ -914,6 +914,41 @@ ship") stay in the command handler. `loom graphql` stamps the gate on
 the SDL artifact as a `@role(anyOf: [...])` field directive, so
 consumers can read the contract.
 
+A role says what a caller is in a namespace. `@allow` says what the
+caller is at all, and what it owns:
+
+```
+aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+  state { depot_id: uuid  label: string }
+  command RelabelParcel @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+    label: string!
+  } -> ParcelRelabelled
+}
+```
+
+Each `@allow` is one rule and any one may hold. `attr: value` compares
+an attribute your `Auth` hook put in `Access.Attrs` (`kind: courier`);
+`field: caller.attr` demands that a field of the thing operated on
+equals a caller attribute. On an aggregate, record or entity the rules
+gate its reads; on a command, the command. The gateway does the
+comparing:
+
+- **A command** is checked against the stored state. Its payload counts
+  only where the state has no value — a thing being created — so a
+  caller cannot claim another owner's thing by what it sends.
+- **A get** is refused unless the stored doc is the caller's.
+- **A list**, and its subscription, is narrowed to the caller's rows
+  whatever else it filters by.
+
+`@allow` sits beside `@role`: both must pass. Attribute names and
+values are yours. A scoped caller with no `Attrs` meets no rule, so
+adding `@allow` fails closed until `Auth` grants attributes; `All`
+access with no `Attrs` map keeps god-mode semantics. A custom `Policy`
+sees the rules as `Decision.Rules` (with `List` and a lazy `Target`)
+and inherits the checks by delegating to `DefaultPolicy`. Like `@role`,
+`@allow` gates only the gateway — and so the MCP tools — never
+in-process `Dispatch`.
+
 When flat roles run out — "platform staff bypass everything", "this
 client must be tagged to the caller's org" — set a `Policy`: the OPA
 shape with Go as the rule language. Every operation (reads, lists,

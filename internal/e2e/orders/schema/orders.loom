@@ -163,6 +163,37 @@ series ReqSample @time(at) @dim(route) @key(sample_id) @retain(30d) {
   status:      int
 }
 
+/// A parcel a courier carries for one depot.
+// @allow gates by what the caller is: an admin may do anything here, a
+// courier only what belongs to its own depot — the reads, the list
+// (narrowed to the depot's rows) and both commands.
+aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+  state {
+    depot_id: uuid
+    label: string
+  }
+
+  /// Register a parcel at a depot.
+  command RegisterParcel @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+    depot_id: uuid!
+    label: string!
+  } -> ParcelRegistered
+
+  /// Change what a parcel's label says.
+  command RelabelParcel @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+    label: string!
+  } -> ParcelRelabelled
+
+  event ParcelRegistered {
+    depot_id: uuid!
+    label: string!
+  }
+
+  event ParcelRelabelled {
+    label: string!
+  }
+}
+
 /// One line of an order.
 type OrderItem {
   /// The stock-keeping unit being bought.

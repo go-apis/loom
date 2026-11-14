@@ -468,12 +468,13 @@ var (
 	if len(readRoles) > 0 {
 		fmt.Fprintf(&b, "\t\tReadRoles: %s,\n", stringSlice(readRoles))
 	}
-	ownerDoc := ""
+	ownerDoc, readAllow := "", []*schema.Rule(nil)
 	if o.agg != nil {
-		ownerDoc = o.agg.Doc
+		ownerDoc, readAllow = o.agg.Doc, o.agg.ReadAllow
 	} else {
-		ownerDoc = o.rec.Doc
+		ownerDoc, readAllow = o.rec.Doc, o.rec.ReadAllow
 	}
+	writeRules(&b, "\t\t", "ReadAllow", readAllow)
 	writeDocs(&b, "\t\t", "Doc", ownerDoc, "FieldDocs", state)
 	fmt.Fprintf(&b, "\t\tNewState: func() %s { return &%s{} },\n", stateType, o.name)
 	fmt.Fprintf(&b, "\t\tCommands: []*loom.%s{\n", cmdType)
@@ -485,6 +486,7 @@ var (
 		if len(c.Roles) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
 		}
+		writeRules(&b, "\t\t\t\t", "Allow", c.Allow)
 		if req := requiredFields(c.Payload); len(req) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
 		}
@@ -1123,6 +1125,7 @@ func loomErrNilEvent(eventType string) error {
 			if len(ent.ReadRoles) > 0 {
 				fmt.Fprintf(&b, "\t\t\t\tEntityReadRoles: %s,\n", stringSlice(ent.ReadRoles))
 			}
+			writeRules(&b, "\t\t\t\t", "EntityReadAllow", ent.ReadAllow)
 			writeDocs(&b, "\t\t\t\t", "EntityDoc", ent.Doc, "EntityFieldDocs", ent.State)
 		}
 		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
@@ -1612,6 +1615,38 @@ func writeDocs(b *strings.Builder, indent, docKey, doc, fieldsKey string, pl *sc
 	fmt.Fprintf(b, "%s%s: map[string]string{\n", indent, fieldsKey)
 	for _, name := range names {
 		fmt.Fprintf(b, "%s\t%q: %q,\n", indent, name, docs[name])
+	}
+	fmt.Fprintf(b, "%s},\n", indent)
+}
+
+// writeRules writes a definition's @allow rules, in declared order with
+// each rule's pairs sorted; nothing when the schema declares none.
+func writeRules(b *strings.Builder, indent, key string, rules []*schema.Rule) {
+	if len(rules) == 0 {
+		return
+	}
+	pairs := func(m map[string]string) string {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = fmt.Sprintf("%q: %q", k, m[k])
+		}
+		return "map[string]string{" + strings.Join(parts, ", ") + "}"
+	}
+	fmt.Fprintf(b, "%s%s: []loom.Rule{\n", indent, key)
+	for _, r := range rules {
+		var fields []string
+		if len(r.Caller) > 0 {
+			fields = append(fields, "Caller: "+pairs(r.Caller))
+		}
+		if len(r.Own) > 0 {
+			fields = append(fields, "Own: "+pairs(r.Own))
+		}
+		fmt.Fprintf(b, "%s\t{%s},\n", indent, strings.Join(fields, ", "))
 	}
 	fmt.Fprintf(b, "%s},\n", indent)
 }

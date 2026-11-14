@@ -32,6 +32,18 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   and are never published. A schema with no `///` generates what it did
   before; the JSON artifacts (`loom openapi`, `loom graphql`) do not
   carry docs.
+- **`@allow`: rules by what the caller is.** Beside `@role`, an
+  aggregate, record, entity or command takes `@allow(...)` rules:
+  `@allow(kind: admin) @allow(kind: session, project_id: caller.project)`.
+  `attr: value` compares one of the caller's new `Access.Attrs`;
+  `field: caller.attr` demands that a field of the thing operated on
+  equals a caller attribute. The gateway checks the field against the
+  stored state (a command's payload counts only where the state has
+  none, so a caller cannot claim another owner's thing), refuses a get
+  the caller does not own, and narrows a list and its subscription to
+  the rows it does. Rules ride `Decision.Rules`, `Decision.List` and
+  `Decision.Target`; `DefaultPolicy` enforces them, and a scoped caller
+  with no `Attrs` meets no rule, so adding `@allow` fails closed.
 
 ### Fixed
 
