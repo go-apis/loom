@@ -44,7 +44,7 @@ import (
 //	POST /projections/{name}/rebuild    refold one read model from the event log
 //	POST /runners/{name}/skip           park a stalled projection's failing event to dead letters and advance past it
 //	POST /processes/{name}/replay       hand a process events it has been past (body: types[], namespace, aggregate_id, latest_per_aggregate, dry_run)
-//	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?) — the junk lever, irreversible
+//	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?, dry_run?) — the junk lever, irreversible; dry_run counts and deletes nothing
 //	POST /reset                         factory-reset: empty every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
 //	POST /uploads/{session}/parts?n=    s3-multipart dialect: presigned PUT URL for part n
@@ -630,6 +630,7 @@ func (c *Client) apiDeleteStreams(w http.ResponseWriter, r *http.Request) {
 		Namespace string      `json:"namespace"`
 		IDs       []uuid.UUID `json:"ids"`
 		Rebuild   bool        `json:"rebuild"`
+		DryRun    bool        `json:"dry_run"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		apiError(w, http.StatusBadRequest, err.Error())
@@ -639,12 +640,18 @@ func (c *Client) apiDeleteStreams(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "namespace and ids are required")
 		return
 	}
+	remove, status := c.DeleteStream, "deleted"
+	if body.DryRun {
+		remove, status = c.PreviewDeleteStream, "previewed"
+	}
 	total := StreamDeletion{}
 	notFound := []uuid.UUID{}
 	projections := map[string]bool{}
 	for _, id := range body.IDs {
-		c.log.WarnContext(r.Context(), "DELETE STREAM", "namespace", body.Namespace, "id", id, "actor", r.Header.Get("X-Actor"))
-		res, err := c.DeleteStream(r.Context(), body.Namespace, id)
+		if !body.DryRun {
+			c.log.WarnContext(r.Context(), "DELETE STREAM", "namespace", body.Namespace, "id", id, "actor", r.Header.Get("X-Actor"))
+		}
+		res, err := remove(r.Context(), body.Namespace, id)
 		if err != nil {
 			if res == nil && len(body.IDs) > 0 && strings.Contains(err.Error(), "no such stream") {
 				notFound = append(notFound, id)
@@ -664,7 +671,7 @@ func (c *Client) apiDeleteStreams(w http.ResponseWriter, r *http.Request) {
 	rebuilt := []string{}
 	for p := range projections {
 		total.Projections = append(total.Projections, p)
-		if body.Rebuild {
+		if body.Rebuild && !body.DryRun {
 			if err := c.Rebuild(r.Context(), p); err != nil {
 				apiError(w, http.StatusInternalServerError, fmt.Sprintf("deleted, but rebuild %s: %s", p, err))
 				return
@@ -675,7 +682,7 @@ func (c *Client) apiDeleteStreams(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(total.Projections)
 	sort.Strings(rebuilt)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "deleted", "deleted": total, "not_found": notFound, "rebuilt": rebuilt,
+		"status": status, "deleted": total, "not_found": notFound, "rebuilt": rebuilt,
 	})
 }
 

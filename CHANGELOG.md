@@ -14,6 +14,24 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`PreviewDeleteStream`: what a stream delete would remove.** The
+  same counts `DeleteStream` reports — events, snapshots, outbox rows,
+  read-model rows, the projections left to rebuild — with nothing
+  removed: it runs the delete's own statements in a transaction it
+  rolls back, and shreds no key. `POST /streams/delete` takes
+  `dry_run: true`.
+
+### Fixed
+
+- **An upload answers to its commands' gates.** `create<Name>Upload`
+  was decided on the namespace alone, so a caller a command's `@role`
+  or `@allow` refuses could still have the command run by opening an
+  upload: the store dispatches it when the bytes land. The upload
+  mutation now asks each of its commands' gates of the caller, with
+  `@allow` own-fields read from the stored state. A schema whose
+  upload dispatches a `@plan` command is refused: there is no caller
+  at that point to show a plan to.
+
 - **`schedule`: a command on an interval, with loom owning the clock.**
   `schedule flowWatch every 5m -> TickFlowWatch @in(platform)`
   dispatches the command at the deploy and every interval after, to one
