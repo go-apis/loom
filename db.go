@@ -546,13 +546,19 @@ func (c *Client) saveSnapshot(ctx context.Context, tx pgx.Tx, agg *AggregateDef,
 // batch — for every runner sharing it through the fan-out buffer, even
 // the ones that never look at that type.
 func (c *Client) readLog(ctx context.Context, q querier, afterSeq int64, limit int) ([]*Event, error) {
-	rows, err := q.Query(ctx, `
+	return c.queryEvents(ctx, q, `
 		SELECT global_seq, namespace, aggregate_type, aggregate_id, version, type, schema_version, at, correlation_id, causation_id, actor, data
 		FROM loom_events
 		WHERE service=$1 AND global_seq > $2
 		ORDER BY global_seq ASC
 		LIMIT $3`,
 		c.reg.Service, afterSeq, limit)
+}
+
+// queryEvents reads this service's events by a query that selects
+// readLog's columns in readLog's order, decrypted and not decoded.
+func (c *Client) queryEvents(ctx context.Context, q querier, sql string, args ...any) ([]*Event, error) {
+	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}

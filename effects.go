@@ -95,6 +95,11 @@ type effectScopeKey struct{}
 
 func withEffectScope(ctx context.Context, c *Client, p *ReactorDef, evt *Event) context.Context {
 	scope := fmt.Sprintf("process:%s/%s:%d", p.Name, evt.Service, evt.GlobalSeq)
+	// a replay's effects are its own: calling the outside world again
+	// is what it is for (replay.go)
+	if id, ok := ctx.Value(replayKey{}).(string); ok {
+		scope = "replay:" + id + "/" + scope
+	}
 	return context.WithValue(ctx, effectScopeKey{}, &effectScope{c: c, p: p, scope: scope})
 }
 

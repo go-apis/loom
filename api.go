@@ -43,6 +43,7 @@ import (
 //	POST /shred                         delete a stream's @pii data key and files (body: namespace, id) — irreversible
 //	POST /projections/{name}/rebuild    refold one read model from the event log
 //	POST /runners/{name}/skip           park a stalled projection's failing event to dead letters and advance past it
+//	POST /processes/{name}/replay       hand a process events it has been past (body: types[], namespace, aggregate_id, latest_per_aggregate, dry_run)
 //	POST /streams/delete                delete streams outright (body: namespace, ids[], rebuild?) — the junk lever, irreversible
 //	POST /reset                         factory-reset: empty every loom_* table (body: {"confirm": "<service>"}) — irreversible
 //	POST /uploads                       open a resumable upload session (body: upload, namespace, id, name, content_type, size)
@@ -79,6 +80,7 @@ func (c *Client) HTTPHandler() http.Handler {
 	mux.HandleFunc("POST /shred", c.apiShred)
 	mux.HandleFunc("POST /projections/{name}/rebuild", c.apiRebuild)
 	mux.HandleFunc("POST /runners/{name}/skip", c.apiSkip)
+	mux.HandleFunc("POST /processes/{name}/replay", c.apiReplay)
 	mux.HandleFunc("POST /streams/delete", c.apiDeleteStreams)
 	mux.HandleFunc("POST /reset", c.apiReset)
 	mux.HandleFunc("GET /console", c.apiConsole)
@@ -591,6 +593,31 @@ func (c *Client) apiSkip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "seq": seq})
+}
+
+// apiReplay hands a process events it has been past (ReplayProcess). An
+// empty body replays everything it subscribes to; dry_run counts first.
+func (c *Client) apiReplay(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Types              []string  `json:"types"`
+		Namespace          string    `json:"namespace"`
+		AggregateID        uuid.UUID `json:"aggregate_id"`
+		LatestPerAggregate bool      `json:"latest_per_aggregate"`
+		DryRun             bool      `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	res, err := c.ReplayProcess(r.Context(), r.PathValue("name"), ReplayOptions{
+		Types: body.Types, Namespace: body.Namespace, AggregateID: body.AggregateID,
+		LatestPerAggregate: body.LatestPerAggregate, DryRun: body.DryRun,
+	})
+	if err != nil {
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // apiDeleteStreams deletes one or many streams in a namespace. Streams
