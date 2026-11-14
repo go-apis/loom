@@ -971,6 +971,27 @@ scoped callers reach one only when a policy explicitly allows it. They
 are composed at the deployment, so the emitted SDL artifact does not
 carry them.
 
+### Agents: the gateway over MCP
+
+`mcp.New` serves the same composed schema to agents over the Model
+Context Protocol:
+
+```go
+gateway, _ := graphql.New(graphql.Config{Services: services, Auth: auth, Policy: policy})
+agents, _ := mcp.New(mcp.Config{Gateway: gateway, Name: "orders"})
+mux.Handle("/graphql", gateway)
+mux.Handle("/mcp", agents)
+```
+
+An agent gets five tools whatever the schema holds: `search` finds a
+command or read by name, `describe` says what it takes and returns,
+`dispatch` runs a command, `get` reads one record and `list` reads many.
+Every call is one GraphQL operation run in-process through the gateway,
+so `Auth`, `Policy`, `@role`, the depth limit and `@secret` redaction
+apply exactly as they do over HTTP, and a hand-written `Field` is
+reachable like a generated one. `Config.Unauthenticated` lets a
+deployment name its OAuth resource metadata in the 401 it answers.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service
