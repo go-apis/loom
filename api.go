@@ -872,7 +872,10 @@ func seriesQueryFromURL(r *http.Request) (SeriesQuery, error) {
 }
 
 // queryFromURL turns query params into a Query: reserved keys aside, every
-// param is a filter — `status=shipped`, `total_cents.gte=1000`.
+// param is a filter — `status=shipped`, `total_cents.gte=1000`. Paging
+// past a page is a cursor (ADR 0012), not an offset: after_id (plus
+// after_value, or after_null=1 for a NULL order-column boundary) comes
+// from the previous page's last Row's own Cursor.
 func queryFromURL(r *http.Request) (Query, error) {
 	p := r.URL.Query()
 	q := Query{
@@ -882,12 +885,12 @@ func queryFromURL(r *http.Request) (Query, error) {
 	if v := p.Get("limit"); v != "" {
 		q.Limit, _ = strconv.Atoi(v)
 	}
-	if v := p.Get("offset"); v != "" {
-		q.Offset, _ = strconv.Atoi(v)
+	if id := p.Get("after_id"); id != "" {
+		q.After = &Cursor{ID: id, Value: p.Get("after_value"), Null: p.Get("after_null") == "1"}
 	}
 	for key, values := range p {
 		switch key {
-		case "namespace", "order", "limit", "offset":
+		case "namespace", "order", "limit", "after_id", "after_value", "after_null":
 			continue
 		}
 		if len(values) == 0 {

@@ -29,7 +29,13 @@ type Query struct {
 	// OrderBy is a state field, or "updated_at"; prefix "-" for descending.
 	OrderBy string
 	Limit   int
-	Offset  int
+	// After pages past a previous page's boundary row by keyset — the
+	// cursor-pagination replacement for an offset, which skipped or
+	// repeated rows whenever OrderBy's column tied across a page
+	// boundary. ORDER BY always tie-breaks on id, so a Cursor built (via
+	// Row.Cursor) from the last row of one page, fed in here, reads the
+	// next page exactly once regardless of ties. Nil reads the first page.
+	After *Cursor
 	// Fields, when set, narrows each Row.Data to the named state fields —
 	// the list read selects only those, so unasked columns are never read.
 	// Nil or empty reads the whole row. The meta fields (id, namespace,
@@ -44,6 +50,70 @@ type Row struct {
 	Namespace string          `json:"namespace"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	Data      json.RawMessage `json:"data"`
+}
+
+// Cursor marks a page boundary for keyset pagination: the OrderBy
+// column's value (as text — bound the same untyped way a Filter's value
+// is, so the column's own type drives the comparison) and the id
+// tie-breaker, both of the boundary row. Build one with Row.Cursor.
+type Cursor struct {
+	Value string
+	// Null marks that the OrderBy column's value was itself NULL on the
+	// boundary row; Value is meaningless when Null is true.
+	Null bool
+	ID   string
+}
+
+// Cursor builds the keyset-pagination boundary for paging past r on a
+// list read ordered by orderBy — the same string passed as Query.OrderBy
+// for that read ("" and "updated_at" both mean the updated_at column). A
+// custom field's value is read from r.Data, so r must come from a read
+// whose Fields was nil or named that field — one that narrowed it out
+// leaves no value here to build the cursor from.
+func (r Row) Cursor(orderBy string) (Cursor, error) {
+	field := strings.TrimPrefix(orderBy, "-")
+	if field == "" || field == "updated_at" {
+		return Cursor{ID: r.ID, Value: r.UpdatedAt.UTC().Format(time.RFC3339Nano)}, nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(r.Data, &doc); err != nil {
+		return Cursor{}, fmt.Errorf("loom: cursor: %w", err)
+	}
+	raw, ok := doc[field]
+	if !ok {
+		return Cursor{}, fmt.Errorf("loom: cursor: field %q not in row (Fields narrowed it out?)", field)
+	}
+	if string(raw) == "null" {
+		return Cursor{ID: r.ID, Null: true}, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return Cursor{ID: r.ID, Value: s}, nil
+	}
+	return Cursor{ID: r.ID, Value: string(raw)}, nil
+}
+
+// keysetFilter appends the WHERE predicate that continues a list read
+// past Cursor c on a column read as orderExpr (descending when desc),
+// tie-broken by idExpr: a row matches exactly when it sorts strictly
+// after c in that order — the same order the paired ORDER BY clause
+// produces, NULLS always last — so paging with this predicate between
+// calls visits every row once even when orderExpr ties.
+func keysetFilter(b *strings.Builder, args *[]any, orderExpr, idExpr string, desc bool, c Cursor) {
+	cmp := ">"
+	if desc {
+		cmp = "<"
+	}
+	*args = append(*args, c.ID)
+	idArg := len(*args)
+	if c.Null {
+		fmt.Fprintf(b, " AND %s IS NULL AND %s %s $%d", orderExpr, idExpr, cmp, idArg)
+		return
+	}
+	*args = append(*args, c.Value)
+	valArg := len(*args)
+	fmt.Fprintf(b, " AND (%s IS NULL OR %s %s $%d OR (%s = $%d AND %s %s $%d))",
+		orderExpr, orderExpr, cmp, valArg, orderExpr, valArg, idExpr, cmp, idArg)
 }
 
 var fieldRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
@@ -143,15 +213,20 @@ func docsListSQL(table, typeCol, typeName, service string, q Query) (string, []a
 			orderCol = fmt.Sprintf("data->>'%s'", field)
 		}
 	}
-	dir := "ASC"
+
+	if q.After != nil {
+		keysetFilter(&b, &args, orderCol, "id", desc, *q.After)
+	}
+
+	dir, idDir := "ASC", "ASC"
 	if desc {
 		// Postgres defaults DESC to NULLS FIRST, so every row missing the
 		// order field would pin to the top of a newest-first list (e.g. a
 		// backfilled invoice with no requested_at leading the admin list
 		// forever). Rows without the field sort last in both directions.
-		dir = "DESC NULLS LAST"
+		dir, idDir = "DESC NULLS LAST", "DESC"
 	}
-	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
+	fmt.Fprintf(&b, " ORDER BY %s %s, id %s LIMIT %d", orderCol, dir, idDir, q.Limit)
 	return b.String(), args, nil
 }
 

@@ -386,13 +386,18 @@ func tableListSQL(def *TableDef, service string, q Query) (string, []any, error)
 			orderCol = quoteIdent(field)
 		}
 	}
-	dir := "ASC"
+
+	if q.After != nil {
+		keysetFilter(&b, &args, orderCol, "id", desc, *q.After)
+	}
+
+	dir, idDir := "ASC", "ASC"
 	if desc {
 		// same as queryDocs: Postgres defaults DESC to NULLS FIRST, which
 		// pins never-set rows to the top of newest-first lists
-		dir = "DESC NULLS LAST"
+		dir, idDir = "DESC NULLS LAST", "DESC"
 	}
-	fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d OFFSET %d", orderCol, dir, q.Limit, q.Offset)
+	fmt.Fprintf(&b, " ORDER BY %s %s, id %s LIMIT %d", orderCol, dir, idDir, q.Limit)
 	return b.String(), args, nil
 }
 

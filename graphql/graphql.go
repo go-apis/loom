@@ -1033,7 +1033,10 @@ func listArgs() gql.FieldConfigArgument {
 		"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
 		"order":     {Type: gql.String},
 		"limit":     {Type: gql.Int},
-		"offset":    {Type: gql.Int},
+		// offset is accepted but no longer applied: list reads page by
+		// cursor now (ADR 0012), and giving these list args a cursor
+		// argument to replace offset is a deferred follow-up.
+		"offset": {Type: gql.Int},
 	}
 }
 
@@ -1052,9 +1055,6 @@ func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
 	}
 	if limit, ok := args["limit"].(int); ok {
 		q.Limit = limit
-	}
-	if offset, ok := args["offset"].(int); ok {
-		q.Offset = offset
 	}
 	if where, ok := args["where"].([]any); ok {
 		for _, w := range where {
