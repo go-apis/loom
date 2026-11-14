@@ -42,7 +42,11 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 		poll = 5 * time.Second
 	}
 	c.StartRelay(ctx, poll)
-	c.startTimerRunner(ctx, poll)
+	// timers wait for the instance's first beat: one superseded by a
+	// newer generation learns so before it fires anything
+	beaten := make(chan struct{})
+	go c.runInstances(ctx, poll, beaten)
+	c.startTimerRunner(ctx, poll, beaten)
 	c.startBatchRunner(ctx, poll)
 	go c.listenLoop(ctx)
 

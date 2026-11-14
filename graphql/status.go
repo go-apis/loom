@@ -58,6 +58,17 @@ var (
 			"oldestDue": {Type: scalarTime, Resolve: mapField("oldest_due")},
 		},
 	})
+	instanceStatus = gql.NewObject(gql.ObjectConfig{
+		Name:        "InstanceStatus",
+		Description: "The live instances of one build of the service.",
+		Fields: gql.Fields{
+			"generation": {Type: gql.NewNonNull(scalarLong), Resolve: mapField("generation")},
+			"revision":   {Type: gql.String, Resolve: mapField("revision")},
+			"count":      {Type: gql.NewNonNull(gql.Int), Resolve: mapField("count")},
+			"seenAt":     {Type: gql.NewNonNull(scalarTime), Resolve: mapField("seen_at")},
+			"newest":     {Type: gql.NewNonNull(gql.Boolean), Resolve: mapField("newest"), Description: "The newest generation alive: the one whose instances fire timers."},
+		},
+	})
 	serviceStatus = gql.NewObject(gql.ObjectConfig{
 		Name:        "ServiceStatus",
 		Description: "What one service's background work is doing now.",
@@ -65,6 +76,7 @@ var (
 			"service":        {Type: gql.NewNonNull(gql.String), Resolve: mapField("service")},
 			"latest":         {Type: gql.NewNonNull(scalarLong), Resolve: mapField("latest"), Description: "The newest event's position in the log."},
 			"lease":          {Type: gql.NewNonNull(leaseStatus), Resolve: mapField("lease")},
+			"instances":      {Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(instanceStatus))), Resolve: mapField("instances"), Description: "The builds with a live instance, newest first. More than one line after a deploy means the old revision is still running."},
 			"behind":         {Type: gql.NewNonNull(gql.Int), Resolve: mapField("behind"), Description: "How many runners have events still to handle."},
 			"stalled":        {Type: gql.NewNonNull(gql.Int), Resolve: mapField("stalled"), Description: "How many runners are halted."},
 			"timers":         {Type: gql.NewNonNull(timerStatus), Resolve: mapField("timers")},

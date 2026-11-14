@@ -100,6 +100,10 @@ func generationFrom(n int64, revision string) generation {
 // logs the generation, or why there is none. Any failure is no
 // generation, never a guess.
 func (c *Client) resolveGeneration(ctx context.Context) {
+	c.genOnce.Do(func() { c.lookupGeneration(ctx) })
+}
+
+func (c *Client) lookupGeneration(ctx context.Context) {
 	if c.gen.lookup {
 		look, cancel := context.WithTimeout(ctx, cloudRunLookupTimeout)
 		n, err := cloudRunRevisionCreated(look, os.Getenv("K_SERVICE"), c.gen.revision)

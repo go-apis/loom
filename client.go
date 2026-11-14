@@ -112,6 +112,8 @@ type Client struct {
 	runnerIdlePoll  time.Duration // Config.RunnerIdlePoll
 	leader          leaderFlag    // this instance holds the service's process lease (election.go)
 	gen             generation    // Config.Generation, Config.Revision as the election orders them
+	genOnce         sync.Once     // the generation is resolved once, by whichever runner needs it first
+	superseded      atomic.Bool   // a newer generation is alive: this instance fires no timers (instances.go)
 	procSteps       atomic.Int64  // process runner steps in flight (a yielding leader drains them)
 
 	watchMu  sync.Mutex
