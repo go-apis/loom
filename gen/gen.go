@@ -487,6 +487,9 @@ var (
 			fmt.Fprintf(&b, "\t\t\t\tRoles: %s,\n", stringSlice(c.Roles))
 		}
 		writeRules(&b, "\t\t\t\t", "Allow", c.Allow)
+		if c.Plan {
+			b.WriteString("\t\t\t\tPlan: true,\n")
+		}
 		if req := requiredFields(c.Payload); len(req) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
 		}

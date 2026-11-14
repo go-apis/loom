@@ -491,11 +491,17 @@ func (p *parser) command() (*schema.Command, error) {
 		return nil, err
 	}
 	for d := range dirs {
-		if d != "role" && d != "allow" {
-			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role, @allow)", name, d)
+		if d != "role" && d != "allow" && d != "plan" {
+			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role, @allow, @plan)", name, d)
 		}
 	}
 	cmd.Allow = p.allows
+	if args, ok := dirs["plan"]; ok {
+		if len(args) > 0 {
+			return nil, fmt.Errorf("command %s: @plan takes no arguments", name)
+		}
+		cmd.Plan = true
+	}
 	if args, ok := dirs["role"]; ok {
 		if len(args) == 0 {
 			return nil, fmt.Errorf("command %s: @role wants at least one role name", name)

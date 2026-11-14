@@ -171,6 +171,7 @@ aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: call
   state {
     depot_id: uuid
     label: string
+    discarded: bool
   }
 
   /// Register a parcel at a depot.
@@ -189,8 +190,17 @@ aggregate Parcel @table @allow(kind: admin) @allow(kind: courier, depot_id: call
     label: string!
   }
 
+  /// Throw a parcel away. It cannot be brought back.
+  // @plan: the gateway answers what this would do and runs nothing
+  // until the plan's id comes back through runPlan.
+  command DiscardParcel @plan @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) -> ParcelDiscarded
+
   event ParcelRelabelled {
     label: string!
+  }
+
+  event ParcelDiscarded {
+    discarded: bool!
   }
 }
 

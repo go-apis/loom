@@ -149,7 +149,12 @@ type SeriesRetractResult {
 	addCommands := func(cmds []*schema.Command) {
 		for _, c := range cmds {
 			gqlCommandInput(&b, c, enums)
-			mutations = append(mutations, fmt.Sprintf("  %s(input: %sInput!): DispatchResult!%s", lowerFirst(c.Name), c.Name, roleDirective(c)))
+			// a @plan command's mutation answers what it would do; runPlan runs it
+			result := "DispatchResult"
+			if c.Plan {
+				result = "Plan"
+			}
+			mutations = append(mutations, fmt.Sprintf("  %s(input: %sInput!): %s!%s", lowerFirst(c.Name), c.Name, result, roleDirective(c)))
 		}
 	}
 	addUploads := func(uploads []*schema.Upload) {
@@ -203,6 +208,28 @@ type SeriesRetractResult {
 		mutations = append(mutations,
 			fmt.Sprintf("  append%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesAppendResult!", sr.Name, sr.Name),
 			fmt.Sprintf("  retract%ss(namespace: Namespace!, rows: [%sInput!]!): SeriesRetractResult!", sr.Name, sr.Name))
+	}
+
+	if usesPlans(s) {
+		b.WriteString(`"""one event a planned command would emit"""
+type PlannedEvent {
+  type: String!
+  data: Map
+}
+
+"""a command held back: what it would do, and the id that runs it (runPlan)"""
+type Plan {
+  id: UUID!
+  command: String!
+  namespace: Namespace!
+  targetId: UUID!
+  version: Int!
+  events: [PlannedEvent!]!
+  expiresAt: Time!
+}
+
+`)
+		mutations = append(mutations, "  runPlan(namespace: Namespace!, id: UUID!): DispatchResult!")
 	}
 
 	writeBlock(&b, "type Mutation", mutations)
@@ -303,6 +330,25 @@ func rolesDirective(roles []string) string {
 		quoted[i] = strconv.Quote(r)
 	}
 	return fmt.Sprintf(" @role(anyOf: [%s])", strings.Join(quoted, ", "))
+}
+
+// usesPlans reports whether any command is marked @plan.
+func usesPlans(s *schema.Schema) bool {
+	for _, a := range s.Aggregates {
+		for _, c := range a.Commands {
+			if c.Plan {
+				return true
+			}
+		}
+	}
+	for _, r := range s.Records {
+		for _, c := range r.Commands {
+			if c.Plan {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // usesRoles reports whether any command or read model declares @role.

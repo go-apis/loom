@@ -146,6 +146,13 @@ type Decision struct {
 	// where the state has none. It reads the database, so it is called
 	// only when a rule needs it. Nil when the operation has no rules.
 	Target func() (map[string]any, error)
+	// Stage is where a @plan command is: StagePlan when its mutation
+	// is asked for a plan, StageRun when runPlan is asked to run one.
+	// Empty for every other operation. Both stages carry the command's
+	// own Field, Roles and Rules, so a Policy that tells them apart can
+	// let one caller plan what only another may run. At StageRun, Args
+	// is the held command by its snake-case field names.
+	Stage string
 	// Probe marks a question, not an operation: could this caller ever
 	// run Field in Namespace? It carries no Args and no Target, and
 	// nothing runs on a yes. The catalogue a caller is shown
@@ -159,6 +166,12 @@ type Decision struct {
 	Access    Access
 	HasAccess bool
 }
+
+// The stages of a @plan command (Decision.Stage).
+const (
+	StagePlan = "plan"
+	StageRun  = "run"
+)
 
 // Policy replaces the built-in authorization when set on Config: every
 // operation — reads, lists, subscriptions, mutations, uploads, file

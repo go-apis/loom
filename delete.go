@@ -80,6 +80,13 @@ func (c *Client) DeleteStream(ctx context.Context, namespace string, id uuid.UUI
 		return nil, err
 	}
 	res.Outbox = ct.RowsAffected()
+	// a plan held against the stream holds a command for it, payload
+	// and all: it goes with the history it was planned against
+	if _, err = tx.Exec(ctx, `
+		DELETE FROM loom_plans WHERE service=$1 AND namespace=$2 AND target_id=$3`,
+		c.reg.Service, namespace, id); err != nil {
+		return nil, err
+	}
 	ct, err = tx.Exec(ctx, `
 		DELETE FROM loom_entities WHERE service=$1 AND namespace=$2 AND id=$3`,
 		c.reg.Service, namespace, id)

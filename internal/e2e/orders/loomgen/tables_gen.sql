@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS loom_t_orders_parcel (
 	namespace  text NOT NULL,
 	id         uuid NOT NULL,
 	"depot_id" uuid,
+	"discarded" boolean,
 	"label" text,
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (service, namespace, id)

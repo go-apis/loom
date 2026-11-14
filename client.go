@@ -390,6 +390,9 @@ func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta
 	if err != nil {
 		return nil, err
 	}
+	if err := stalePlan(ctx, cmd, version); err != nil {
+		return nil, err
+	}
 
 	payloads, err := def.Handle(ctx, state, cmd)
 	if err != nil {
@@ -481,6 +484,9 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 		if err := json.Unmarshal(data, state); err != nil {
 			return nil, fmt.Errorf("record %s/%s: %w", rec.Name, id, err)
 		}
+	}
+	if err := stalePlan(ctx, cmd, version); err != nil {
+		return nil, err
 	}
 
 	payloads, err := def.Handle(ctx, state, cmd)
