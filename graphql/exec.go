@@ -30,6 +30,13 @@ type Executor interface {
 	// context: with an Auth hook mounted, a context carrying no Access
 	// is refused rather than run open.
 	Exec(ctx context.Context, query string, variables map[string]any) Result
+	// Allowed reports whether the caller on ctx could ever run the root
+	// field named — a query or mutation of the composed schema — in any
+	// namespace it has. It asks the same Policy a call would, as a probe
+	// (Decision.Probe), so what a caller is shown follows the rules
+	// that decide what it may do. It is a listing aid, not a grant: the
+	// call itself is decided again with its arguments.
+	Allowed(ctx context.Context, field string) bool
 	// Introspect is the schema's shape — every type, field and argument
 	// with its description. It runs no resolver and reads no data.
 	Introspect() (map[string]any, error)
@@ -70,6 +77,33 @@ func (h *handler) Exec(ctx context.Context, query string, variables map[string]a
 		VariableValues: variables,
 		Context:        withLoader(ctx),
 	}))
+}
+
+func (h *handler) Allowed(ctx context.Context, field string) bool {
+	a, has := AccessFrom(ctx)
+	if !has {
+		return h.auth == nil
+	}
+	g, ok := h.gates[field]
+	if !ok {
+		return false
+	}
+	if h.policy != nil {
+		ctx = withPolicy(ctx, h.policy)
+	}
+	spaces := a.Namespaces
+	switch {
+	case !g.namespaced:
+		spaces = []string{""}
+	case a.All:
+		spaces = []string{AllNamespaces}
+	}
+	for _, ns := range spaces {
+		if decide(ctx, Decision{Kind: g.kind, Field: field, Namespace: ns, Roles: g.roles, Rules: g.rules, Probe: true}) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *handler) Introspect() (map[string]any, error) {

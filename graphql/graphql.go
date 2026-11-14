@@ -164,7 +164,19 @@ func New(cfg Config) (http.Handler, error) {
 	if maxDepth == 0 {
 		maxDepth = DefaultMaxDepth
 	}
-	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth}, nil
+	// every root field can be probed: one whose builder declared no
+	// gate (series reads and writes) is gated by namespace alone
+	for name := range b.queries {
+		if _, ok := b.gates[name]; !ok {
+			b.gated("query", gate{}, true, name)
+		}
+	}
+	for name := range b.muts {
+		if _, ok := b.gates[name]; !ok {
+			b.gated("mutation", gate{}, true, name)
+		}
+	}
+	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth, gates: b.gates}, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -265,6 +277,19 @@ type builder struct {
 	// docs is what the schema's comments say, by declaration and by
 	// field (registerDocs).
 	docs map[string]string
+	// gates is every root query and mutation's gate, by field name —
+	// what a probe decides over (handler.Allowed).
+	gates map[string]rootGate
+}
+
+// gated records root fields' gates for probes.
+func (b *builder) gated(kind string, g gate, namespaced bool, fields ...string) {
+	if b.gates == nil {
+		b.gates = map[string]rootGate{}
+	}
+	for _, f := range fields {
+		b.gates[f] = rootGate{gate: g, kind: kind, namespaced: namespaced}
+	}
 }
 
 // registerEnums turns the registry's EnumDefs into shared GraphQL enum
@@ -366,6 +391,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		aggGate := gate{roles: agg.ReadRoles, rules: agg.ReadAllow}
+		b.gated("query", aggGate, true, lowerFirst(agg.Name), lowerFirst(agg.Name)+"s")
 		if err := b.addQuery(lowerFirst(agg.Name), b.described(aggregateGet(cli, agg.Name, agg.StateSecret, aggGate, obj), "One "+agg.Name+" by id.", agg.Name)); err != nil {
 			return err
 		}
@@ -409,6 +435,7 @@ func (b *builder) service(cli *loom.Client) error {
 		}
 		recSecrets := rec.StateSecret
 		recGate := gate{roles: rec.ReadRoles, rules: rec.ReadAllow}
+		b.gated("query", recGate, true, lowerFirst(rec.Name), lowerFirst(rec.Name)+"s")
 		if err := b.addQuery(lowerFirst(rec.Name), b.described(docGet(obj, recGate, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Record(ctx, rec.Name, ns, id)
 			if err != nil || state == nil {
@@ -454,6 +481,7 @@ func (b *builder) service(cli *loom.Client) error {
 			return err
 		}
 		entGate := gate{roles: p.EntityReadRoles, rules: p.EntityReadAllow}
+		b.gated("query", entGate, true, lowerFirst(entity), lowerFirst(entity)+"s")
 		if err := b.addQuery(lowerFirst(entity), b.described(docGet(obj, entGate, func(ctx context.Context, ns string, id uuid.UUID) (any, error) {
 			state, err := cli.Entity(ctx, entity, ns, id)
 			if state == nil {
@@ -634,6 +662,8 @@ func (b *builder) rootField(f Field) error {
 	if resolve == nil {
 		return fmt.Errorf("graphql: field %s has no Resolve", name)
 	}
+	_, namespaced := f.Args["namespace"]
+	b.gated(kind, gate{roles: roles}, namespaced, name)
 	field := &gql.Field{
 		Type: out,
 		Args: args,
@@ -1161,6 +1191,7 @@ func (b *builder) mutation(cli *loom.Client, name string, newCmd func() loom.Com
 	if err != nil {
 		return err
 	}
+	b.gated("mutation", g, true, field)
 	b.muts[field] = &gql.Field{
 		Description: b.docs[name],
 		Type:        gql.NewNonNull(dispatchResult),
@@ -1212,6 +1243,7 @@ func (b *builder) uploadMutation(cli *loom.Client, u *loom.UploadDef) error {
 		return err
 	}
 	upload := u.Name
+	b.gated("mutation", gate{}, true, field)
 	b.muts[field] = &gql.Field{
 		Type: gql.NewNonNull(session),
 		Args: gql.FieldConfigArgument{"input": {Type: gql.NewNonNull(input)}},
@@ -1367,6 +1399,7 @@ func lowerFirst(s string) string {
 var playgroundHTML []byte
 
 type handler struct {
+	gates    map[string]rootGate
 	schema   gql.Schema
 	auth     Auth
 	policy   Policy

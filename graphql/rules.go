@@ -18,6 +18,15 @@ type gate struct {
 	rules []loom.Rule
 }
 
+// rootGate is a root field as a probe needs it: whether it is a query
+// or a mutation, what the schema declares about who may run it, and
+// whether it takes a namespace (a hand-written Field may not).
+type rootGate struct {
+	gate
+	kind       string
+	namespaced bool
+}
+
 // stateLoader reads the stored state of the thing an operation touches
 // as a doc map (json field names), or nil when there is none yet.
 type stateLoader func(ctx context.Context, ns string, id uuid.UUID) (map[string]any, error)
@@ -27,7 +36,8 @@ type stateLoader func(ctx context.Context, ns string, id uuid.UUID) (map[string]
 // equals the caller's attribute, and every Own field of the target
 // equals the caller attribute it names. A list has no one target, so a
 // rule holds for it on its Caller pairs alone and its Own pairs narrow
-// the rows instead (ownFilters).
+// the rows instead (ownFilters); a probe has no target either, and
+// asks only whether a rule could hold.
 //
 // An open mount is not gated, as with roles. God access (All) with no
 // attribute model keeps its meaning — everything; any Attrs map switches
@@ -48,7 +58,7 @@ func checkRules(d Decision) error {
 		if !callerMatches(a, r) {
 			continue
 		}
-		if len(r.Own) == 0 || d.List {
+		if len(r.Own) == 0 || d.List || d.Probe {
 			return nil
 		}
 		if !loaded {

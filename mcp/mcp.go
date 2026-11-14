@@ -10,7 +10,9 @@
 // The tools are the same for every schema — search, describe, dispatch,
 // get, list — so a service with seven hundred commands gives an agent
 // five tools, not seven hundred. An agent finds an operation by name
-// (search), reads what it takes (describe), then calls it.
+// (search), reads what it takes (describe), then calls it. search and
+// describe show a caller only what it could run: each operation is
+// probed through the gateway's own Policy (graphql.Executor.Allowed).
 //
 // Nothing here decides who may do what. Every call becomes one GraphQL
 // operation run in-process through the gateway (graphql.Executor), so it
@@ -120,14 +122,14 @@ func (s *server) serverFor(ctx context.Context) *sdk.Server {
 		Description: "Find operations by name or description. Start here: it answers each match's name, whether it is a command (changes something) or a read, and a one-line summary. Then describe the one you want.",
 		Annotations: readOnly,
 	}, func(_ context.Context, _ *sdk.CallToolRequest, in searchIn) (*sdk.CallToolResult, any, error) {
-		return s.search(in), nil, nil
+		return s.search(ctx, in), nil, nil
 	})
 	sdk.AddTool(srv, &sdk.Tool{
 		Name:        "describe",
 		Description: "What one operation takes and returns: its arguments with their types (input objects expanded, enums with their values) and the fields of its result. Also describes a type by name.",
 		Annotations: readOnly,
 	}, func(_ context.Context, _ *sdk.CallToolRequest, in describeIn) (*sdk.CallToolResult, any, error) {
-		return s.describe(in), nil, nil
+		return s.describe(ctx, in), nil, nil
 	})
 	sdk.AddTool(srv, &sdk.Tool{
 		Name:        "dispatch",
@@ -153,7 +155,7 @@ func (s *server) serverFor(ctx context.Context) *sdk.Server {
 	return srv
 }
 
-func (s *server) search(in searchIn) *sdk.CallToolResult {
+func (s *server) search(ctx context.Context, in searchIn) *sdk.CallToolResult {
 	if in.Kind != "" && in.Kind != kindCommand && in.Kind != kindRead {
 		return refused(fmt.Sprintf("kind is %q or %q, not %q", kindCommand, kindRead, in.Kind))
 	}
@@ -163,7 +165,8 @@ func (s *server) search(in searchIn) *sdk.CallToolResult {
 	}
 	limit = min(limit, 100)
 	found := []map[string]any{}
-	for _, op := range s.cat.search(in.Query, in.Kind, limit) {
+	visible := func(op *operation) bool { return s.ex.Allowed(ctx, op.name) }
+	for _, op := range s.cat.search(in.Query, in.Kind, limit, visible) {
 		hit := map[string]any{"name": op.name, "kind": op.kind, "tool": s.toolFor(op)}
 		if op.desc != "" {
 			hit["summary"] = firstLine(op.desc)
@@ -173,8 +176,12 @@ func (s *server) search(in searchIn) *sdk.CallToolResult {
 	return answer(map[string]any{"operations": found})
 }
 
-func (s *server) describe(in describeIn) *sdk.CallToolResult {
+func (s *server) describe(ctx context.Context, in describeIn) *sdk.CallToolResult {
 	op := s.cat.ops[in.Name]
+	// an operation the caller could never run is not there for it
+	if op != nil && !s.ex.Allowed(ctx, op.name) {
+		return refused(fmt.Sprintf("no operation or type is named %q; search for it", in.Name))
+	}
 	if op == nil {
 		if t := s.cat.describeType(in.Name, 3); t != nil {
 			return answer(t)
