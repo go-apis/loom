@@ -1,0 +1,3 @@
+schema: schema/clock.loom
+module: github.com/go-apis/loom/internal/e2e/clock
+package: clock

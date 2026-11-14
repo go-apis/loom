@@ -25,6 +25,7 @@ type Schema struct {
 	Policies    []*Reactor    `yaml:"policies,omitempty" json:"policies,omitempty"`
 	Processes   []*Reactor    `yaml:"processes,omitempty" json:"processes,omitempty"`
 	Projections []*Projection `yaml:"projections,omitempty" json:"projections,omitempty"`
+	Schedules   []*Schedule   `yaml:"schedules,omitempty" json:"schedules,omitempty"`
 	Types       []*NamedType  `yaml:"types,omitempty" json:"types,omitempty"`
 	Enums       []*Enum       `yaml:"enums,omitempty" json:"enums,omitempty"`
 }
@@ -344,6 +345,45 @@ type Reactor struct {
 
 // Retry is a process's durable retry policy. Min and MaxBackoff are Go
 // duration strings ("100ms", "5s", "5m").
+// Schedule dispatches a command on a fixed interval, for as long as the
+// service runs:
+//
+//	schedule flowWatch every 5m -> TickFlowWatch @in(platform)
+//
+// loom owns the clock: the command is not re-armed by anything it
+// causes, so a tick whose reaction fails, or is never deployed, does
+// not end the series. The command goes to one stream — Namespace (@in)
+// and ID (@id, a uuid; when absent, one derived from the service and
+// the schedule's name) — and carries no payload, so its command may
+// declare no required field.
+type Schedule struct {
+	Name string `yaml:"name" json:"name"`
+	// Doc — see Aggregate.Doc.
+	Doc string `yaml:"doc,omitempty" json:"-"`
+	// Every is the interval as written: 30s, 5m, 1h, 1d.
+	Every     string `yaml:"every" json:"every"`
+	Command   string `yaml:"command" json:"command"`
+	Namespace string `yaml:"namespace" json:"namespace"`
+	ID        string `yaml:"id,omitempty" json:"id,omitempty"`
+}
+
+// Interval parses Every. Days are not a time.Duration unit, and a
+// schedule in days is the common case, so `d` is read here.
+func (s *Schedule) Interval() (time.Duration, error) {
+	text := s.Every
+	unit := time.Duration(1)
+	if days, ok := strings.CutSuffix(text, "d"); ok {
+		text, unit = days+"h", 24
+	}
+	d, err := time.ParseDuration(text)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("schedule %s: every %q is not an interval (30s, 5m, 1h, 1d)", s.Name, s.Every)
+	}
+	return d * unit, nil
+}
+
+var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 type Retry struct {
 	Max        int    `yaml:"max" json:"max"`
 	Min        string `yaml:"min" json:"min"`
@@ -565,6 +605,7 @@ func (s *Schema) Sort() {
 		sort.Slice(a.Commands, func(i, j int) bool { return a.Commands[i].Name < a.Commands[j].Name })
 		sort.Slice(a.Uploads, func(i, j int) bool { return a.Uploads[i].Name < a.Uploads[j].Name })
 	}
+	sort.Slice(s.Schedules, func(i, j int) bool { return s.Schedules[i].Name < s.Schedules[j].Name })
 	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Name < s.Records[j].Name })
 	for _, r := range s.Records {
 		sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].Name < r.Commands[j].Name })
@@ -633,6 +674,35 @@ func (s *Schema) Validate() error {
 			seen[r] = true
 		}
 	}
+	scheduled := map[string]bool{}
+	for _, sc := range s.Schedules {
+		if scheduled[sc.Name] {
+			fail("schedule %s is declared twice", sc.Name)
+		}
+		scheduled[sc.Name] = true
+		if _, err := sc.Interval(); err != nil {
+			fail("%v", err)
+		}
+		if sc.Namespace == "" {
+			fail("schedule %s names no namespace: add @in(<namespace>)", sc.Name)
+		}
+		if sc.ID != "" && !uuidShape.MatchString(sc.ID) {
+			fail("schedule %s: @id(%q) is not a uuid", sc.Name, sc.ID)
+		}
+		var payload *Payload
+		if _, c := s.FindCommand(sc.Command); c != nil {
+			payload = c.Payload
+		} else if _, c := s.FindRecordCommand(sc.Command); c != nil {
+			payload = c.Payload
+		} else {
+			fail("schedule %s dispatches %s, which no aggregate or record declares", sc.Name, sc.Command)
+			continue
+		}
+		if payload != nil && len(payload.Required) > 0 {
+			fail("schedule %s dispatches %s, which requires %s: a scheduled command carries no payload", sc.Name, sc.Command, strings.Join(payload.Required, ", "))
+		}
+	}
+
 	// an @allow rule's own-fields must be fields the gateway can read:
 	// of the state, or for a command of its payload too
 	checkAllow := func(kind, name string, rules []*Rule, state, payload *Payload) {

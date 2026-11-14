@@ -1065,6 +1065,20 @@ func loomErrNilEvent(eventType string) error {
 	g.reactorDefs(&b, "Policies", g.s.Policies)
 	g.reactorDefs(&b, "Processes", g.s.Processes)
 
+	if len(g.s.Schedules) > 0 {
+		b.WriteString("\t\tSchedules: []*loom.ScheduleDef{\n")
+		for _, sc := range g.s.Schedules {
+			every, _ := sc.Interval() // Validate has parsed it
+			fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEvery: %d, // every %s\n\t\t\t\tCommand: %q,\n", sc.Name, every, sc.Every, sc.Command)
+			if sc.Doc != "" {
+				fmt.Fprintf(&b, "\t\t\t\tDoc: %q,\n", sc.Doc)
+			}
+			fmt.Fprintf(&b, "\t\t\t\tNew: func() loom.Command {\n\t\t\t\t\treturn &%s{CommandBase: loom.ScheduleTarget(%q, %q, %q, %q)}\n\t\t\t\t},\n\t\t\t},\n",
+				sc.Command, g.s.Service, sc.Name, sc.Namespace, sc.ID)
+		}
+		b.WriteString("\t\t},\n")
+	}
+
 	if len(g.s.Enums) > 0 {
 		b.WriteString("\t\tEnums: []*loom.EnumDef{\n")
 		for _, e := range g.s.Enums {

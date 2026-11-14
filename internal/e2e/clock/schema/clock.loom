@@ -1,0 +1,23 @@
+service clock
+
+// A service that does nothing but tick: the fixture for `schedule`.
+
+/// How many times the bell has rung.
+aggregate Bell {
+  state {
+    rings: int
+  }
+
+  /// Ring the bell once.
+  command RingBell -> BellRang
+
+  event BellRang {
+    rings: int!
+  }
+}
+
+/// Rings the bell every second.
+schedule bell every 1s -> RingBell @in(tower)
+
+/// Rings the same bell's neighbour, at a stream the schema names.
+schedule chime every 1h -> RingBell @in(tower) @id("11111111-2222-4333-8444-555555555555")
