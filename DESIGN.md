@@ -244,6 +244,16 @@ generated switches, folds from generated assignments.
   build that states no release writes floors of zero and is never
   refused; so are the types a log held before floors were kept, seeded
   at zero by the first `Migrate` (`floor.go`, ADR 0013).
+- **The log can be exported, signed.** `Client.ExportEvents` writes a
+  service's events in log order as lines of JSON — a header, one line an
+  event, a footer — each event line carrying a SHA-256 chain over the
+  line before it and its own bytes, and the footer (the count, the last
+  sequence, the last chain) signed by a `Signer` the caller gives.
+  `VerifyExport`, and `loom verify-export` on the command line, check it
+  away from the service: a changed, dropped, added or moved event breaks
+  the chain at that event, and a file cut short or added to does not
+  match its footer. Events are exported as stored, so a `@pii` field
+  leaves sealed (`export.go`).
 - **One connection per caller.** Nothing waits for a pooled connection
   while it holds one: rows are read in full and closed before the
   events or rows in them are opened, a data-key read or mint runs on the
