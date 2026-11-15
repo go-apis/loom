@@ -77,3 +77,28 @@ func TestBindingsChainAndAreReadBack(t *testing.T) {
 type countingInvoice struct {
 	billinggen.InvoiceHandlers
 }
+
+// NewPartialRegistry holds what the Impl binds and leaves the rest out,
+// where NewRegistry panics naming the first it misses: a test of one
+// handler binds that one.
+func TestPartialRegistryHoldsOnlyWhatIsBound(t *testing.T) {
+	impl := *new(billinggen.Impl).Invoice(&billing.Invoice{}).RaiseOnOrder(&billing.RaiseOnOrder{})
+	reg := billinggen.NewPartialRegistry(impl)
+	if len(reg.Aggregates) != 1 || reg.Aggregates[0].Name != "Invoice" || len(reg.Records) != 0 {
+		t.Fatalf("aggregates %d, records %d; want Invoice alone", len(reg.Aggregates), len(reg.Records))
+	}
+	if len(reg.Processes) != 1 || reg.Processes[0].Name != "raiseOnOrder" || len(reg.Policies) != 0 {
+		t.Fatalf("processes %d, policies %d; want raiseOnOrder alone", len(reg.Processes), len(reg.Policies))
+	}
+	// an aggregate nothing bound brings none of its own: Payee's table
+	// and events are left out with it
+	if len(reg.Events) != 3 || len(reg.Tables) != 0 {
+		t.Fatalf("%d events, %d tables; want Invoice's and the shared event, and no table", len(reg.Events), len(reg.Tables))
+	}
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "has no implementation") {
+			t.Fatalf("NewRegistry on the same Impl: %v", r)
+		}
+	}()
+	billinggen.NewRegistry(impl)
+}
