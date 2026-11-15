@@ -341,6 +341,14 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **Two processes migrating one database no longer collide.** `Migrate`
+  holds a lock for the database while it runs. `CREATE ... IF NOT EXISTS`
+  does not stop two sessions creating the same table, or the same day's
+  partition of a `@retain` series, from colliding in the catalog
+  (`relation ... already exists`, or a duplicate key in
+  `pg_type_typname_nsp_index`), so a rollout's instances or a test
+  suite's packages migrating one empty database at once could fail.
+
 - **An upload answers to its commands' gates.** `create<Name>Upload`
   was decided on the namespace alone, so a caller a command's `@role`
   or `@allow` refuses could still have the command run by opening an

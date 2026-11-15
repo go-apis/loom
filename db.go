@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -277,7 +278,18 @@ CREATE TABLE IF NOT EXISTS loom_dead_letters (
 // Migrate applies the storage schema, including any @table entity tables
 // with their additive column diff and their declared indexes. Idempotent; meant for a deploy-time
 // migration endpoint or command, never for application boot.
+//
+// One Migrate runs on a database at a time: CREATE ... IF NOT EXISTS
+// does not stop two sessions creating the same table, or the same day's
+// partition of a @retain series, from colliding in the catalog, so the
+// instances of a rollout, or a test suite's packages on one DSN, wait
+// their turn on a lock held for the whole migration.
 func (c *Client) Migrate(ctx context.Context) error {
+	unlock, err := c.migrateLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if _, err := c.db.Exec(ctx, ddl); err != nil {
 		return err
 	}
@@ -296,6 +308,68 @@ func (c *Client) Migrate(ctx context.Context) error {
 		return err
 	}
 	return c.checkLogTypes(ctx)
+}
+
+// migrating holds, for each pool, the turn of the one Migrate that runs
+// on it at a time. Clients of one process often share a pool, and each
+// waiting on the database's lock holds a connection: all of them
+// waiting at once could leave the one that holds the lock no connection
+// to migrate with.
+var migrating sync.Map // *pgxpool.Pool → chan struct{}
+
+// migrateLock holds a session lock, one for the whole database since
+// services share loom's own tables, on a connection of its own, and
+// answers what lets it go. The migration's statements run on the pool's
+// other connections, so a pool of one connection migrates unlocked
+// across processes rather than waiting on itself.
+func (c *Client) migrateLock(ctx context.Context) (func(), error) {
+	t, _ := migrating.LoadOrStore(c.db, make(chan struct{}, 1))
+	turn := t.(chan struct{})
+	select {
+	case turn <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("loom: migrate lock: %w", ctx.Err())
+	}
+	if c.db.Config().MaxConns < 2 {
+		return func() { <-turn }, nil
+	}
+	conn, err := c.db.Acquire(ctx)
+	if err != nil {
+		<-turn
+		return nil, fmt.Errorf("loom: migrate lock: %w", err)
+	}
+	// asked again and again, never waited on inside one statement: a
+	// session waiting on the lock would hold a snapshot, and the
+	// migration's CREATE INDEX CONCURRENTLY waits for every snapshot
+	// older than its own to go
+	for locked := false; !locked; {
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('loom_migrate'))`).Scan(&locked); err != nil {
+			conn.Release()
+			<-turn
+			return nil, fmt.Errorf("loom: migrate lock: %w", err)
+		}
+		if locked {
+			break
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			conn.Release()
+			<-turn
+			return nil, fmt.Errorf("loom: migrate lock: %w", ctx.Err())
+		}
+	}
+	return func() {
+		defer func() { <-turn }()
+		// the caller's ctx may be done; the lock must still be let go
+		release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(release, `SELECT pg_advisory_unlock(hashtext('loom_migrate'))`); err != nil {
+			// a connection that cannot unlock is closed, which lets the lock go
+			_ = conn.Conn().Close(release)
+		}
+		conn.Release()
+	}, nil
 }
 
 // checkLogTypes refuses a migration whose registry cannot name every event
