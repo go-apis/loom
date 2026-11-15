@@ -970,6 +970,17 @@ loomtest.Reaction(t, reg, "raiseOnOrder").
 projections, timers and batches stay e2e territory — this harness tests
 domain decisions, not delivery.
 
+For those, and for anything else that needs the store, `loomtest.Postgres(t)`
+gives the test a database of its own on a real server: it creates one on
+the server `LOOM_TEST_PG` names, answers a pool on it, and drops it when
+the test ends (the test is skipped when there is no server to reach).
+
+```go
+pool := loomtest.Postgres(t)
+cli, _ := loom.New(loom.Config{DB: pool, Registry: NewRegistry(), Release: 5})
+_ = cli.Migrate(ctx)
+```
+
 ## The gateway
 
 One GraphQL endpoint over any number of loom services, built at boot from

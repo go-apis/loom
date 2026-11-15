@@ -14,6 +14,14 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`loomtest.Postgres`: a database of its own for a test.** For what
+  the given/when/then harness cannot show because it needs the store — a
+  client's `Migrate` and `Start`, dispatches that commit, runners —
+  `loomtest.Postgres(t)` creates a fresh database on the server
+  `LOOM_TEST_PG` names, answers a pool on it sized for a test, and drops
+  it when the test ends. With no server to reach the test is skipped.
+  loom's own end-to-end tests use it.
+
 - **A build older than a stored event type refuses to start.** The store
   records, with each event type's first event, the release that wrote it
   (`loom_event_floors`; first write wins). `Start` returns a
