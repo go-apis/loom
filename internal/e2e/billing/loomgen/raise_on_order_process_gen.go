@@ -35,7 +35,7 @@ func (b Bound) RaiseOnOrder() RaiseOnOrderReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "raiseOnOrder", bind: "RaiseOnOrder", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(RaiseOnOrderReactions)
+		reactions, _ := h.(RaiseOnOrderReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Processes = append(r.Processes,
 			&loom.ReactorDef{
 				Name:   "raiseOnOrder",

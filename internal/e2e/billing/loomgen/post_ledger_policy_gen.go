@@ -35,7 +35,7 @@ func (b Bound) PostLedger() PostLedgerReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "policy", name: "postLedger", bind: "PostLedger", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(PostLedgerReactions)
+		reactions, _ := h.(PostLedgerReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Policies = append(r.Policies,
 			&loom.ReactorDef{
 				Name:   "postLedger",

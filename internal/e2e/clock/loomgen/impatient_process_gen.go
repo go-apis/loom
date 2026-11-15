@@ -35,7 +35,7 @@ func (b Bound) Impatient() ImpatientReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "impatient", bind: "Impatient", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(ImpatientReactions)
+		reactions, _ := h.(ImpatientReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Processes = append(r.Processes,
 			&loom.ReactorDef{
 				Name:   "impatient",

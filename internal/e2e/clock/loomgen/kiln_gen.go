@@ -137,7 +137,8 @@ func (b Bound) Kiln() KilnHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Kiln", bind: "Kiln", register: func(impl Impl, h any, r *loom.Registry) {
-		def := aggregateDefKiln(h.(KilnHandlers))
+		handlers, _ := h.(KilnHandlers) // nil under NewPartialRegistry when nothing is bound
+		def := aggregateDefKiln(handlers)
 		def.Look = impl.Look.LookKiln
 		r.Aggregates = append(r.Aggregates, def)
 		r.Events = append(r.Events,

@@ -85,7 +85,8 @@ func (b Bound) Bell() BellHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Bell", bind: "Bell", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Aggregates = append(r.Aggregates, aggregateDefBell(h.(BellHandlers)))
+		handlers, _ := h.(BellHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Aggregates = append(r.Aggregates, aggregateDefBell(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "BellRang", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &BellRang{} }},
 		)

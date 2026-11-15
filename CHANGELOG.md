@@ -14,11 +14,14 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
-- **`loomgen.NewPartialRegistry`: the registry of what a test binds.**
-  It holds the declarations the `Impl` binds and leaves the rest out,
-  where `NewRegistry` panics naming the first it misses. A test of one
-  handler binds that one and reads its definition from the registry; a
-  service starts on `NewRegistry`. **Migration:** regenerate `loomgen/`.
+- **`loomgen.NewPartialRegistry`: the registry a test builds.** It is
+  the whole registry from an `Impl` that need not bind everything: a
+  declaration nothing is bound to is there with its definition and no
+  implementation, and panics only when loom calls it, where
+  `NewRegistry` panics at once naming the first it misses. A test binds
+  the one handler it tests, or none to read the schema's definitions; a
+  service starts on `NewRegistry`. (v0.116.0 left an unbound declaration
+  out.) **Migration:** regenerate `loomgen/`.
 
 - **Bindings chain, and are read back.** A binding method answers its
   `Impl`, so one expression builds one —

@@ -131,7 +131,8 @@ func (b Bound) Invoice() InvoiceHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Invoice", bind: "Invoice", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Aggregates = append(r.Aggregates, aggregateDefInvoice(h.(InvoiceHandlers)))
+		handlers, _ := h.(InvoiceHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Aggregates = append(r.Aggregates, aggregateDefInvoice(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "", Aliases: nil, New: func() any { return &InvoicePaid{} }},
 			&loom.EventDef{Name: "InvoiceRaised", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &InvoiceRaised{} }},

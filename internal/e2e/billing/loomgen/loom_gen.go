@@ -28,10 +28,11 @@ type Impl struct {
 // naming it, on a declaration impl binds nothing to.
 func NewRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, false) }
 
-// NewPartialRegistry is the registry of what impl binds and no more: a
-// declaration impl binds nothing to is left out, not a panic. It is for
-// a test of one handler, which binds that one (and whatever it
-// dispatches to) and reads its definition from the registry; a service
+// NewPartialRegistry is the whole registry, as NewRegistry builds it,
+// from an impl that need not bind everything: a declaration impl binds
+// nothing to is there with its definition and no implementation, and
+// panics only when loom calls it. It is for a test, which binds the one
+// handler it tests, or none to read the schema's definitions; a service
 // starts on NewRegistry.
 func NewPartialRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, true) }
 
@@ -96,7 +97,7 @@ var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "pr
 // loomRegisterAll adds every declaration to the registry and puts each
 // list in name order — never init order — so the registry is the same on
 // every boot. A declaration whose implementation was never bound panics
-// with its name, or under partial is left out.
+// with its name, or under partial is registered with none.
 func loomRegisterAll(impl Impl, r *loom.Registry, partial bool) {
 	owners := append([]loomOwner(nil), loomOwners...)
 	sort.Slice(owners, func(i, j int) bool {
@@ -107,10 +108,7 @@ func loomRegisterAll(impl Impl, r *loom.Registry, partial bool) {
 	})
 	for _, o := range owners {
 		h := impl.handlers[o.kind+":"+o.name]
-		if h == nil && partial {
-			continue
-		}
-		if h == nil {
+		if h == nil && !partial {
 			panic(fmt.Sprintf("loomgen: %s %s has no implementation — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.bind))
 		}
 		o.register(impl, h, r)

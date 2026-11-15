@@ -204,7 +204,8 @@ func (b Bound) Parcel() ParcelHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Parcel", bind: "Parcel", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Aggregates = append(r.Aggregates, aggregateDefParcel(h.(ParcelHandlers)))
+		handlers, _ := h.(ParcelHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Aggregates = append(r.Aggregates, aggregateDefParcel(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "ParcelDiscarded", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelDiscarded{} }},
 			&loom.EventDef{Name: "ParcelPhotoAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelPhotoAttached{} }},

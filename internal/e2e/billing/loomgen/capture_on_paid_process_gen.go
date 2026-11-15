@@ -35,7 +35,7 @@ func (b Bound) CaptureOnPaid() CaptureOnPaidReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "captureOnPaid", bind: "CaptureOnPaid", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(CaptureOnPaidReactions)
+		reactions, _ := h.(CaptureOnPaidReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Processes = append(r.Processes,
 			&loom.ReactorDef{
 				Name:   "captureOnPaid",
