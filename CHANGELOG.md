@@ -14,6 +14,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A wait: an owner, a deadline, and a loop it calls.** A loop that is
+  waiting on someone says so: `loom.WaitFor(ctx, loom.Wait{Name, Owner,
+  Deadline})` in a look, or `Client.Wait` from outside one. The wait is
+  kept with its instance's looks. When the deadline passes with the
+  wait still open, the instance's look is called and told the wait has
+  expired and who was to answer (`loom.LookingAt(ctx).ExpiredWait`),
+  once. `loom.StopWaiting(ctx, name)` and `Client.EndWait` end a wait
+  that has been answered. A wait with no name, owner or deadline is
+  refused.
+  ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md))
+
 - **A `@loop` aggregate's look runs, for every live instance.** Each
   instance has a row in the new `loom_loop_due` table. Its first event
   makes it due at once, every later event brings its next look to

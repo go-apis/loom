@@ -116,4 +116,9 @@ DESIGN.md's "Not yet built").
   work with cause `loop:<Aggregate>/<id>`, and write the next look by
   `LoopState.NextLook`. `LookDone(ctx)` drops the row until an event
   arrives; `LookAgain(ctx, d)` asks for a sooner look.
-- Still to build: how a look sets a wait.
+- **A wait is started and ended** (`wait.go`). `WaitFor(ctx, w)` in a
+  look, `Client.Wait` outside one; `StopWaiting(ctx, name)` and
+  `Client.EndWait` for a wait that has been answered. A wait with no
+  name, owner or deadline is refused. It lives in its instance's row, its
+  deadline is a time the instance is looked at, and an expiry is told to
+  the look once.

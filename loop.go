@@ -147,6 +147,9 @@ func LookingAt(ctx context.Context) Looking {
 type lookSaid struct {
 	done  bool
 	again time.Duration
+	// waits the look started, and the names of those it ended (wait.go)
+	waits   []Wait
+	stopped []string
 }
 
 type lookSaidKey struct{}
