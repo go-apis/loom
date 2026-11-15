@@ -161,6 +161,17 @@ commands; never dispatch them yourself. Make every outside call through
 outside the transaction (a counter, a cache, a log of record) checks
 `loom.Planning(ctx)` first.
 
+## A change to who may see what shows in the contract
+
+A service with a gateway keeps an access contract: a test calling
+`contract.Run` with every kind of principal its policy tells apart, and
+a recorded `contract.json`. When you change a policy, an `@allow`, an
+`@role` or a list's filter, run that test. If it fails, the failure
+names the operation and the principal whose view changed. Re-record it
+(`LOOM_CONTRACT_UPDATE=1`) only when that change is the one you meant,
+and say so in the pull request: the file's diff is the review. A new
+kind of principal goes into the suite the day the policy names it.
+
 ## Work that recurs is a schedule
 
 A look, a sweep or a reconcile that runs every so often is declared

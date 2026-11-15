@@ -958,6 +958,58 @@ loomtest.Reaction(t, reg, "raiseOnOrder").
 projections, timers and batches stay e2e territory — this harness tests
 domain decisions, not delivery.
 
+## Testing: the access contract
+
+A rule that holds for the principals someone thought to test and is
+skipped for one nobody ran is the bug an ordinary test misses. Package
+`contract` runs them all. Give it the gateway, the kinds of principal
+the service's policy tells apart, and the namespaces the test seeded:
+
+```go
+contract.Run(t, contract.Suite{
+    Gateway: gateway, // loom/graphql.New(...), over a seeded store
+    Principals: []contract.Principal{
+        {Name: "person", Access: person},
+        {Name: "org admin", Access: orgAdmin},
+        {Name: "estate staff", Access: staff},
+    },
+    Namespaces: []string{"acme", "globex"},
+    Labels:     map[string]string{archived.String(): "the archived project"},
+    Golden:     "testdata/contract.json",
+})
+```
+
+It reads the gateway's own schema, so every query and mutation is in
+it the moment it exists, and records for each principal:
+
+- **who may run each operation**, by the gateway's own probe
+  (`Executor.Allowed`);
+- **which rows each list shows it**, in each namespace, by label or id,
+  or the refusal it got;
+- **which fields are hidden from it**, per type.
+
+That record is the contract, a JSON file committed beside the code.
+`Run` fails for every operation and principal that now differs from it,
+naming both: `query projects as estate staff in acme: shown [the
+archived project, the live project]; the contract says shown [the live
+project]`. Record it the first time, and after a change that is meant,
+with `LOOM_CONTRACT_UPDATE=1`, and read the diff: the file is where a
+reviewer sees what each kind of caller is shown. Give seeded rows ids
+that are the same on every run, or a label.
+
+Mutations and reads that take more than a namespace are probed, not
+run: the contract says who may run them, not what they answer.
+
+A client that publishes what it asks of the gateway is checked the same
+way. `contract.ReadAsks` reads a file of the queries and mutations it
+sends and the fields it reads on each type (the shape of runsheet's
+console manifest, `/.well-known/gateway-asks.json`); set it as
+`Suite.Asks` and every ask must be served to every principal in
+`AsksFor`. An asked query the policy refuses a principal, one the
+gateway does not have, and a field hidden from a principal each fail by
+name: `the client asks query parcels, which is refused as org admin`.
+`AsksExcept` excuses what the client asks only on behalf of some.
+
 ## The gateway
 
 One GraphQL endpoint over any number of loom services, built at boot from
