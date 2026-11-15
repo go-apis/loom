@@ -254,6 +254,20 @@ generated switches, folds from generated assignments.
   the chain at that event, and a file cut short or added to does not
   match its footer. Events are exported as stored, so a `@pii` field
   leaves sealed (`export.go`).
+- **A setting is declared, and every change says why.**
+  `setting build_cap: int @default(2)` declares a value a person may
+  change while the service runs: a `string`, `int`, `bool`, `float` or an
+  enum, with a default. It is read per namespace (`Client.Setting`, or
+  the typed `loomgen.SettingBuildCap`): the namespace's own value, else
+  the one set for every namespace (`EveryNamespace`, `"*"`), else the
+  default. `SetSetting` and `ResetSetting` refuse an empty reason
+  (`ErrNoReason`) and a value of the wrong type, and write the value and
+  a history row in one transaction: who (the context's actor), when,
+  why, the value before and after (`loom_settings`,
+  `loom_setting_changes`). The gateway serves `settings`,
+  `settingHistory`, `setSetting` and `resetSetting` for any service that
+  declares one, under its own rules (`settings.go`,
+  `graphql/settings.go`).
 - **One connection per caller.** Nothing waits for a pooled connection
   while it holds one: rows are read in full and closed before the
   events or rows in them are opened, a data-key read or mint runs on the

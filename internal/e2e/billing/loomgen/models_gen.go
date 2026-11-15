@@ -3,6 +3,7 @@
 package loomgen
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -11,8 +12,13 @@ import (
 )
 
 var (
+	_ context.Context
 	_ = fmt.Sprintf
 	_ = time.Time{}
 	_ = uuid.UUID{}
 	_ = loom.CommandBase{}
 )
+
+// loomSettings is the service's settings, each added by the file of the
+// schema file that declares it.
+var loomSettings []*loom.SettingDef

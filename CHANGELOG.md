@@ -14,6 +14,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **Settings: declared, typed, and every change with a reason.**
+  `setting build_cap: int @default(2)` declares a value a person may
+  change while the service runs (`string`, `int`, `bool`, `float` or an
+  enum). `loom generate` writes a typed reader, `loomgen.SettingBuildCap`.
+  A namespace reads its own value, else the one set for every namespace
+  (`loom.EveryNamespace`), else the default. `Client.SetSetting` and
+  `ResetSetting` refuse an empty reason (`loom.ErrNoReason`) and a value
+  of the wrong type, and keep every change: who, when, why, and the
+  value before and after (`Client.SettingHistory`). The gateway serves
+  `settings`, `settingHistory`, `setSetting` and `resetSetting` for any
+  service that declares a setting, under its own rules. New tables
+  `loom_settings` and `loom_setting_changes`. Regenerate `loomgen/`.
+
 - **A signed export of a service's events, for audit.**
   `Client.ExportEvents(ctx, w, ExportOptions{Signer})` writes the log,
   or one namespace or a range of it, as lines of JSON: each event

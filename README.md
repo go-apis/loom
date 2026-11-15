@@ -1500,6 +1500,45 @@ another key. `Signer` is an interface: a product signs with the key its
 identity service issued it. Events are exported as stored, so a `@pii`
 field leaves sealed.
 
+## Settings
+
+A value the service's behaviour reads and a person may change while it
+runs — a cap, a switch, a choice — is declared in the schema:
+
+```
+/// How many builds run at once.
+setting build_cap: int @default(2)
+
+setting tier: Tier @default(gold)   // an enum
+setting paused: bool                // no default: the type's zero
+```
+
+Types are `string`, `int`, `bool`, `float` and enums. `loom generate`
+writes a typed reader for each (`loomgen.SettingBuildCap(ctx, cli,
+namespace)`), and the client reads and changes them:
+
+```go
+cap, _ := loomgen.SettingBuildCap(ctx, cli, "acme")           // 2
+err := cli.SetSetting(ctx, "acme", "build_cap", 4, "two more runners arrived")
+err = cli.SetSetting(ctx, loom.EveryNamespace, "build_cap", 3, "the new default for all")
+err = cli.ResetSetting(ctx, "acme", "build_cap", "back with everyone else")
+```
+
+- **A change says why.** An empty reason is `loom.ErrNoReason`, and
+  nothing changes.
+- **A change is kept.** `Client.SettingHistory` lists who made each
+  (the context's `Metadata.Actor`), when, why, and the value before and
+  after.
+- **A namespace reads its own value**, else the one set for every
+  namespace (`"*"`), else the default; `Client.SettingValue` says which.
+- **A value of the wrong type is refused**, as is a setting the schema
+  does not declare.
+
+Through the gateway, a service that declares a setting gets `settings`
+and `settingHistory` to read and `setSetting` and `resetSetting` to
+change, under the gateway's own rules, with the caller as the actor —
+and so through the MCP tools too.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service

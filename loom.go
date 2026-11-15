@@ -143,8 +143,11 @@ type Registry struct {
 	Tables      []*TableDef
 	Joins       []*JoinDef
 	Enums       []*EnumDef
-	Schedules   []*ScheduleDef
-	Types       []*TypeDef
+	// Settings is the values a person may change while the service
+	// runs (settings.go).
+	Settings  []*SettingDef
+	Schedules []*ScheduleDef
+	Types     []*TypeDef
 }
 
 // Rule is one @allow alternative from the schema: who may call an

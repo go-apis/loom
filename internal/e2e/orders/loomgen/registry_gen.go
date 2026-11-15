@@ -271,6 +271,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 				},
 			},
 		},
+		Settings: loomSettingDefs(),
 		Projections: []*loom.ProjectionDef{
 			{
 				Name:            "customerSpend",
@@ -345,6 +346,14 @@ func loomRegisterOwners(impl Impl, r *loom.Registry) {
 		o.register(impl, h, r)
 	}
 	sort.Slice(r.Events, func(i, j int) bool { return r.Events[i].Name < r.Events[j].Name })
+}
+
+// loomSettingDefs is the service's settings in name order, never init
+// order.
+func loomSettingDefs() []*loom.SettingDef {
+	out := append([]*loom.SettingDef(nil), loomSettings...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func asAny[T any](in []T) []any {

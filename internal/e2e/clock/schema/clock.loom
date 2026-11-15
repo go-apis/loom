@@ -52,3 +52,22 @@ process coolAnvil @retry(4, 100ms..200ms) {
 process impatient {
   on AnvilStruck
 }
+
+// settings: the fixture for `setting`
+
+enum Heat { cold warm hot }
+
+/// How many strikes an anvil takes before it is rested.
+setting strike_cap: int @default(3)
+
+/// Whether the forge takes work.
+setting forge_open: bool @default(true)
+
+/// What drives the bellows.
+setting bellows: string @default("hand")
+
+/// How hot the forge is kept.
+setting heat: Heat @default(warm)
+
+// no default: the type's zero
+setting draught: float

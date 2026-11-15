@@ -172,6 +172,16 @@ names the operation and the principal whose view changed. Re-record it
 and say so in the pull request: the file's diff is the review. A new
 kind of principal goes into the suite the day the policy names it.
 
+## A value someone may change is a setting
+
+A cap, a switch or a choice that a person changes while the service
+runs is declared `setting <name>: <type> @default(<value>)` and read
+with its generated reader, `loomgen.Setting<Name>(ctx, cli, namespace)`.
+Do not read it from an environment variable or keep it in a table of
+your own: a setting is changed with a reason and keeps its history, and
+the gateway serves it. Change one with `cli.SetSetting(ctx, namespace,
+name, value, reason)`; the reason is not optional.
+
 ## Work that recurs is a schedule
 
 A look, a sweep or a reconcile that runs every so often is declared
