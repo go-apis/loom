@@ -341,6 +341,13 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **`loom generate` writes no root `registry.go` when the registry is
+  built elsewhere.** A service that keeps its registry in a package of
+  its own (Tripline's `store/registry.go`) got a second `registry.go` at
+  the root on every regenerate. A non-test file anywhere in the module
+  that calls the generated package's `NewRegistry` is now reported kept
+  in its place.
+
 - **`loom generate` writes no stub for a type implemented in a file named
   otherwise.** A stub is named after its declaration (`order.go` for
   `Order`); an implementation the owner keeps in `model.go` got a second
