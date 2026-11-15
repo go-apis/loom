@@ -28,6 +28,69 @@ type Schema struct {
 	Schedules   []*Schedule   `yaml:"schedules,omitempty" json:"schedules,omitempty"`
 	Types       []*NamedType  `yaml:"types,omitempty" json:"types,omitempty"`
 	Enums       []*Enum       `yaml:"enums,omitempty" json:"enums,omitempty"`
+	Settings    []*Setting    `yaml:"settings,omitempty" json:"settings,omitempty"`
+}
+
+// Setting is a value the service's behaviour reads and a person may
+// change while it runs, per namespace:
+//
+//	/// How many builds run at once.
+//	setting build_cap: int @default(2)
+//
+// It has a type and a default, and every change to it is kept with who
+// made it, when, why and what it was before.
+type Setting struct {
+	Name string `yaml:"name" json:"name"`
+	// File is the path of the .loom source that declares it; empty for a
+	// lone unnamed source. Absent from the artifacts.
+	File string `yaml:"-" json:"-"`
+	// Doc — see Aggregate.Doc.
+	Doc string `yaml:"doc,omitempty" json:"-"`
+	// Type is string, int, bool, float, or the name of an enum.
+	Type string `yaml:"type" json:"type"`
+	// Default is the value as written in @default(...); empty with
+	// HasDefault false is the type's zero.
+	Default    string `yaml:"default,omitempty" json:"default,omitempty"`
+	HasDefault bool   `yaml:"has_default,omitempty" json:"has_default,omitempty"`
+}
+
+// DefaultValue is the setting's default as a Go value of its type:
+// string (an enum's too), int64, bool or float64.
+func (st *Setting) DefaultValue() (any, error) {
+	if !st.HasDefault {
+		switch st.Type {
+		case "int":
+			return int64(0), nil
+		case "bool":
+			return false, nil
+		case "float":
+			return float64(0), nil
+		}
+		return "", nil
+	}
+	switch st.Type {
+	case "int":
+		n, err := strconv.ParseInt(st.Default, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("setting %s: @default(%s) is not an int", st.Name, st.Default)
+		}
+		return n, nil
+	case "bool":
+		switch st.Default {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+		return nil, fmt.Errorf("setting %s: @default(%s) is not true or false", st.Name, st.Default)
+	case "float":
+		f, err := strconv.ParseFloat(st.Default, 64)
+		if err != nil {
+			return nil, fmt.Errorf("setting %s: @default(%s) is not a number", st.Name, st.Default)
+		}
+		return f, nil
+	}
+	return st.Default, nil
 }
 
 type Aggregate struct {
@@ -650,6 +713,7 @@ func (s *Schema) Sort() {
 		sort.Slice(a.Uploads, func(i, j int) bool { return a.Uploads[i].Name < a.Uploads[j].Name })
 	}
 	sort.Slice(s.Schedules, func(i, j int) bool { return s.Schedules[i].Name < s.Schedules[j].Name })
+	sort.Slice(s.Settings, func(i, j int) bool { return s.Settings[i].Name < s.Settings[j].Name })
 	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Name < s.Records[j].Name })
 	for _, r := range s.Records {
 		sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].Name < r.Commands[j].Name })
@@ -716,6 +780,31 @@ func (s *Schema) Validate() error {
 				fail("command %s declares @role %s twice", c.Name, r)
 			}
 			seen[r] = true
+		}
+	}
+	declared := map[string]bool{}
+	for _, st := range s.Settings {
+		if declared[st.Name] {
+			fail("setting %s is declared twice", st.Name)
+		}
+		declared[st.Name] = true
+		switch st.Type {
+		case "string", "int", "bool", "float":
+		default:
+			enum := s.FindEnum(st.Type)
+			if enum == nil {
+				fail("setting %s: type %s is not string, int, bool, float or an enum", st.Name, st.Type)
+				continue
+			}
+			if st.HasDefault && !containsString(enum.Values, st.Default) {
+				fail("setting %s: @default(%s) is not a value of %s", st.Name, st.Default, st.Type)
+			}
+			if !st.HasDefault {
+				fail("setting %s: an enum setting needs a @default(<value of %s>)", st.Name, st.Type)
+			}
+		}
+		if _, err := st.DefaultValue(); err != nil {
+			fail("%v", err)
 		}
 	}
 	scheduled := map[string]bool{}
@@ -1461,4 +1550,13 @@ func joinLines(lines []string) string {
 		out += l
 	}
 	return out
+}
+
+func containsString(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

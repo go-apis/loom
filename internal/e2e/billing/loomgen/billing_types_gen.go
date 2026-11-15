@@ -3,6 +3,7 @@
 package loomgen
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 )
 
 var (
+	_ context.Context
 	_ = fmt.Sprintf
 	_ = time.Time{}
 	_ = uuid.UUID{}

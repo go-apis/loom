@@ -296,6 +296,7 @@ func (g *generator) types(src string) string {
 	b.WriteString(header)
 	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
 	b.WriteString(`import (
+	"context"
 	"fmt"
 	"time"
 
@@ -304,6 +305,7 @@ func (g *generator) types(src string) string {
 )
 
 var (
+	_ context.Context
 	_ = fmt.Sprintf
 	_ = time.Time{}
 	_ = uuid.UUID{}
@@ -311,6 +313,10 @@ var (
 )
 
 `)
+	if src == "" {
+		// every schema file's settings add themselves here (settingDefs)
+		b.WriteString("// loomSettings is the service's settings, each added by the file of the\n// schema file that declares it.\nvar loomSettings []*loom.SettingDef\n\n")
+	}
 
 	for _, e := range g.s.Enums {
 		if e.File == src {
@@ -343,7 +349,68 @@ var (
 			fmt.Fprintf(&b, "func (*%s) LoomSeries() string { return %q }\n\n", sr.Name, sr.Name)
 		}
 	}
+	g.settingDefs(&b, src)
 	return b.String()
+}
+
+// settingDefs renders one schema file's settings: a typed reader for
+// each, and an init that adds their definitions to loomSettings, which
+// NewRegistry reads. No file lists the settings of the whole service.
+func (g *generator) settingDefs(b *strings.Builder, src string) {
+	var mine []*schema.Setting
+	for _, st := range g.s.Settings {
+		if st.File == src {
+			mine = append(mine, st)
+		}
+	}
+	if len(mine) == 0 {
+		return
+	}
+	for _, st := range mine {
+		goType, reader := "string", "SettingString"
+		switch st.Type {
+		case "int":
+			goType, reader = "int64", "SettingInt"
+		case "bool":
+			goType, reader = "bool", "SettingBool"
+		case "float":
+			goType, reader = "float64", "SettingFloat"
+		}
+		name := "Setting" + exported(st.Name)
+		about := ""
+		if st.Doc != "" {
+			about = ": " + strings.TrimSuffix(st.Doc, ".")
+		}
+		fmt.Fprintf(b, "// %sName names the setting %s%s.\nconst %sName = %q\n\n", name, st.Name, about, name, st.Name)
+		if enum := g.s.FindEnum(st.Type); enum != nil {
+			fmt.Fprintf(b, "// %s reads the setting %s for a namespace.\nfunc %s(ctx context.Context, c *loom.Client, namespace string) (%s, error) {\n\tv, err := c.SettingString(ctx, namespace, %sName)\n\treturn %s(v), err\n}\n\n",
+				name, st.Name, name, enum.Name, name, enum.Name)
+			continue
+		}
+		fmt.Fprintf(b, "// %s reads the setting %s for a namespace.\nfunc %s(ctx context.Context, c *loom.Client, namespace string) (%s, error) {\n\treturn c.%s(ctx, namespace, %sName)\n}\n\n",
+			name, st.Name, name, goType, reader, name)
+	}
+	b.WriteString("func init() {\n\tloomSettings = append(loomSettings,\n")
+	for _, st := range mine {
+		def, _ := st.DefaultValue() // Validate has parsed it
+		typ, values := st.Type, ""
+		if enum := g.s.FindEnum(st.Type); enum != nil {
+			typ, values = "enum", fmt.Sprintf(" Values: %s,", stringSlice(enum.Values))
+		}
+		literal := fmt.Sprintf("%#v", def)
+		if n, ok := def.(int64); ok {
+			literal = fmt.Sprintf("int64(%d)", n)
+		}
+		if f, ok := def.(float64); ok {
+			literal = fmt.Sprintf("float64(%v)", f)
+		}
+		doc := ""
+		if st.Doc != "" {
+			doc = fmt.Sprintf(" Doc: %q,", st.Doc)
+		}
+		fmt.Fprintf(b, "\t\t&loom.SettingDef{Name: %q, Type: %q, Default: %s,%s%s},\n", st.Name, typ, literal, values, doc)
+	}
+	b.WriteString("\t)\n}\n")
 }
 
 // typesFiles maps each schema file that declares something types
@@ -375,6 +442,9 @@ func (g *generator) typesFiles() map[string]string {
 	}
 	for _, sr := range g.s.Series {
 		declares[sr.File] = true
+	}
+	for _, st := range g.s.Settings {
+		declares[st.File] = true
 	}
 	delete(declares, "") // no declaring file: models_gen.go
 	out := map[string]string{}
@@ -1296,6 +1366,7 @@ func loomErrNilEvent(eventType string) error {
 
 	g.tableDefs(&b)
 
+	b.WriteString("\t\tSettings: loomSettingDefs(),\n")
 	b.WriteString("\t\tProjections: []*loom.ProjectionDef{\n")
 	for _, p := range g.s.Projections {
 		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEntity: %q,\n\t\t\t\tEvents: %s,\n", p.Name, p.Entity, stringSlice(eventNames(p)))
@@ -1378,6 +1449,14 @@ func loomRegisterOwners(impl Impl, r *loom.Registry) {
 		o.register(impl, h, r)
 	}
 	sort.Slice(r.Events, func(i, j int) bool { return r.Events[i].Name < r.Events[j].Name })
+}
+
+// loomSettingDefs is the service's settings in name order, never init
+// order.
+func loomSettingDefs() []*loom.SettingDef {
+	out := append([]*loom.SettingDef(nil), loomSettings...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func asAny[T any](in []T) []any {

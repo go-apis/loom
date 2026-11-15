@@ -135,6 +135,30 @@ CREATE TABLE IF NOT EXISTS loom_event_floors (
 	PRIMARY KEY (service, event_type)
 );
 
+CREATE TABLE IF NOT EXISTS loom_settings (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	name       text NOT NULL,
+	value      jsonb NOT NULL,
+	actor      text NOT NULL DEFAULT '',
+	reason     text NOT NULL,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, name)
+);
+
+CREATE TABLE IF NOT EXISTS loom_setting_changes (
+	id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	service   text NOT NULL,
+	namespace text NOT NULL,
+	name      text NOT NULL,
+	old       jsonb,
+	new       jsonb,
+	actor     text NOT NULL DEFAULT '',
+	reason    text NOT NULL,
+	at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS loom_setting_changes_by_setting ON loom_setting_changes (service, namespace, name, id);
+
 CREATE TABLE IF NOT EXISTS loom_instances (
 	service    text NOT NULL,
 	instance   uuid NOT NULL,

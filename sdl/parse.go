@@ -166,6 +166,8 @@ func (p *parser) schema() error {
 			err = p.projection()
 		case "schedule":
 			err = p.schedule()
+		case "setting":
+			err = p.setting()
 		case "type":
 			err = p.typeDecl()
 		case "enum":
@@ -339,6 +341,39 @@ func (p *parser) schedule() error {
 		}
 	}
 	p.out.Schedules = append(p.out.Schedules, sc)
+	return nil
+}
+
+// setting parses a value a person may change while the service runs:
+//
+//	/// How many builds run at once.
+//	setting build_cap: int @default(2)
+//	setting tier: Tier @default(gold)
+func (p *parser) setting() error {
+	at := p.next()
+	name, err := p.ident()
+	if err != nil {
+		return err
+	}
+	if err := p.expect(":"); err != nil {
+		return p.errf(at, "setting %s: expected `: <type>` (string, int, bool, float or an enum)", name)
+	}
+	typ, err := p.ident()
+	if err != nil {
+		return err
+	}
+	dirs, err := p.directives()
+	if err != nil {
+		return err
+	}
+	st := &schema.Setting{Name: name, File: at.file, Doc: at.doc, Type: typ}
+	for d, args := range dirs {
+		if d != "default" || len(args) != 1 {
+			return p.errf(at, "setting %s: unknown or malformed directive @%s (settings take @default(<value>))", name, d)
+		}
+		st.Default, st.HasDefault = args[0], true
+	}
+	p.out.Settings = append(p.out.Settings, st)
 	return nil
 }
 
