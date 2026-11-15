@@ -14,6 +14,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A loop's scheduling rule, and `loomtest.Loop`.** When a `@loop`
+  aggregate's look is next made is one rule that reads no clock and no
+  store, `loom.LoopState.NextLook`: no later than a minute after the last
+  look (`LoopEvery`), within a second of an event that has arrived since
+  (`LoopSoon`), and at the first deadline among the loop's waits. A
+  `loom.Wait` has a name, an owner and a deadline, and a look reads why
+  it was called with `loom.LookingAt(ctx)`: whether an event arrived and
+  which waits have expired. `loomtest.Loop` runs a look under that rule
+  with no database, handling the commands it dispatches so a second look
+  sees what the first did. Nothing calls a look in a running service
+  yet.
+  ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md))
+
 - **`loomtest.Postgres`: a database of its own for a test.** For what
   the given/when/then harness cannot show because it needs the store — a
   client's `Migrate` and `Start`, dispatches that commit, runners —

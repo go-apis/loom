@@ -83,3 +83,25 @@ DESIGN.md's "Not yet built").
   (`gen/wire.go`).
 - Still to build, tracked on the issue: the runtime that calls each
   `Look<Name>` on an interval and waits between calls.
+
+
+## Since
+
+- **When to look is a pure rule** (`loop.go`). `LoopState` is what the
+  runtime has noted about a loop since its last look — when that was,
+  when the newest event arrived, what it is waiting on — and
+  `LoopState.NextLook` answers the earliest of `LoopEvery` (a minute)
+  after the last look, `LoopSoon` (a second) after an event that has
+  arrived since, and the first deadline among its waits. It reads no
+  clock and no store, so the runner and a test apply the same rule.
+- **A `Wait` has a name, an owner and a deadline.** A look is told why it
+  was called through `loom.LookingAt(ctx)`: whether an event arrived, the
+  waits that have expired and those still running. An expired wait is
+  told once and then dropped.
+- **`loomtest.Loop`** runs a look that way with no database: it says when
+  the look would next be made, calls it as the runtime would, runs the
+  commands it answers with through the registry's handlers and folds
+  their events into the reader's state, so a second look sees what the
+  first did (`loomtest/loop_test.go`).
+- Still to build: the runner that keeps `LoopState` in Postgres and
+  calls each look, and how a look sets a wait.
