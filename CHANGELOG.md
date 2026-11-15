@@ -14,6 +14,12 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`loomtest.Page`: a fake list read that pages as the store does.**
+  `loomtest.Page(rows, q)` answers the page of `rows` after the row
+  `q.After` names, at most `q.Limit` of them. It stands where a test's
+  fake sliced by `Query.Offset`, so code that walks a list with
+  `loom.Every` or `loom.Pages` is tested through the same cursor.
+
 - **`loom.Every` and `loom.Pages`: a list read walked to its end.**
   `Every(ctx, read, q)` answers every row of a list however many pages
   that takes, or an error and no rows; `Pages` yields a page at a time.
