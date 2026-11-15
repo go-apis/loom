@@ -191,10 +191,10 @@ func aggregateDefParcel(h ParcelHandlers) *loom.AggregateDef {
 
 // Parcel binds h as the Parcel aggregate's handlers. NewRegistry panics
 // if it is never called.
-func (impl *Impl) Parcel(h ParcelHandlers) { impl.bind("Parcel", h) }
+func (impl *Impl) Parcel(h ParcelHandlers) { impl.bind("aggregate:Parcel", h) }
 
 func init() {
-	loomRegister(loomOwner{kind: "aggregate", name: "Parcel", register: func(impl Impl, h any, r *loom.Registry) {
+	loomRegister(loomOwner{kind: "aggregate", name: "Parcel", bind: "Parcel", register: func(impl Impl, h any, r *loom.Registry) {
 		r.Aggregates = append(r.Aggregates, aggregateDefParcel(h.(ParcelHandlers)))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "ParcelDiscarded", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ParcelDiscarded{} }},

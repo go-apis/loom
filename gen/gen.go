@@ -92,6 +92,9 @@ func (g *generator) render() (map[string][]byte, error) {
 	for src, file := range g.typesFiles() {
 		files[filepath.Join(genDir, file)] = g.types(src)
 	}
+	for _, r := range g.reactors() {
+		files[filepath.Join(genDir, r.file)] = g.reactorFile(r)
+	}
 	if sql := g.tablesSQL(); sql != "" {
 		files[filepath.Join(genDir, "tables_gen.sql")] = sql
 	}
@@ -468,13 +471,17 @@ func (o owner) commands() []*schema.Command {
 // owners lists the aggregates, then the records, in schema order, each
 // with its file: <snake name>_gen.go. A name whose file is already taken —
 // by the shared models_gen.go or registry_gen.go, by a schema file's
-// types file, or by an earlier name that snakes the same way — takes its
+// types file, by a reactor's file, or by an earlier name that snakes the
+// same way — takes its
 // kind appended, then a number. The choice depends on the schema's
 // slices only, so it is the same on every run (ADR 0008).
 func (g *generator) owners() []owner {
 	taken := map[string]bool{}
 	for _, file := range g.typesFiles() {
 		taken[strings.TrimSuffix(file, "_gen.go")] = true
+	}
+	for _, r := range g.reactors() {
+		taken[strings.TrimSuffix(r.file, "_gen.go")] = true
 	}
 	return g.ownersIn(taken)
 }
@@ -658,9 +665,9 @@ func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	if o.rec != nil {
 		kind, field = "record", "Records"
 	}
-	fmt.Fprintf(b, "// %s binds h as the %s %s's handlers. NewRegistry panics\n// if it is never called.\nfunc (impl *Impl) %s(h %sHandlers) { impl.bind(%q, h) }\n\n", o.name, o.name, kind, o.name, o.name, o.name)
+	fmt.Fprintf(b, "// %s binds h as the %s %s's handlers. NewRegistry panics\n// if it is never called.\nfunc (impl *Impl) %s(h %sHandlers) { impl.bind(%q, h) }\n\n", o.name, o.name, kind, o.name, o.name, kind+":"+o.name)
 	b.WriteString("func init() {\n")
-	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name)
+	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name, o.name)
 	fmt.Fprintf(b, "\t\tr.%s = append(r.%s, %s(h.(%sHandlers)))\n", field, field, o.defFunc(), o.name)
 	owned := g.eventOwners()
 	var events []string
@@ -1137,25 +1144,8 @@ func loomErrNilEvent(eventType string) error {
 
 `)
 
-	// the aggregates' and records' Handlers interfaces live in their own files
-	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
-		fmt.Fprintf(&b, "type %sReactions interface {\n", exported(r.Name))
-		for _, sub := range r.Subscriptions {
-			fmt.Fprintf(&b, "\tOn%s(ctx context.Context, evt *loom.Event, data *%s) ([]loom.Command, error)\n", sub.Event, sub.Event)
-		}
-		b.WriteString("}\n\n")
-	}
-	// @fold projections: the fold is hand-written against this interface
-	for _, p := range g.s.Projections {
-		if !p.Fold {
-			continue
-		}
-		fmt.Fprintf(&b, "type %sFolds interface {\n", exported(p.Name))
-		for _, sub := range p.Subscriptions {
-			fmt.Fprintf(&b, "\tOn%s(state *%s, evt *loom.Event, data *%s) error\n", sub.Event, p.Entity, sub.Event)
-		}
-		b.WriteString("}\n\n")
-	}
+	// every Handlers, Reactions and Folds interface lives in the file of
+	// what it belongs to
 
 	// upcasts: the hand-written migration hops, one interface service-wide
 	if ups := g.upcastHops(); len(ups) > 0 {
@@ -1178,25 +1168,17 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("}\n\n")
 	}
 
-	// Impl: one field per reactor and @fold projection the developer
-	// implements; aggregates and records bind through methods their own
-	// files declare (impl.Order(h)), so adding one never edits this file
+	// Impl: aggregates, records, policies, processes and @fold projections
+	// bind through methods their own files declare (impl.Order(h),
+	// impl.ShipOnPayment(h)), so adding one never edits this file
 	b.WriteString("type Impl struct {\n")
-	for _, r := range append(append([]*schema.Reactor{}, g.s.Policies...), g.s.Processes...) {
-		fmt.Fprintf(&b, "\t%s %sReactions\n", g.implField(r.Name), exported(r.Name))
-	}
-	for _, p := range g.s.Projections {
-		if p.Fold {
-			fmt.Fprintf(&b, "\t%s %sFolds\n", g.implField(p.Name), exported(p.Name))
-		}
-	}
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\tUpcasts EventUpcasts\n")
 	}
 	if len(g.loopingAggregates()) > 0 {
 		b.WriteString("\tLook Look\n")
 	}
-	b.WriteString("\n\t// handlers holds what the aggregates' and records' binding methods set,\n\t// by name.\n\thandlers map[string]any\n}\n\n")
+	b.WriteString("\n\t// handlers holds what the binding methods set, by kind and name.\n\thandlers map[string]any\n}\n\n")
 
 	fmt.Fprintf(&b, "func NewRegistry(impl Impl) *loom.Registry {\n")
 	if len(g.upcastHops()) > 0 {
@@ -1226,8 +1208,8 @@ func loomErrNilEvent(eventType string) error {
 	}
 	b.WriteString("\t\t},\n")
 
-	g.reactorDefs(&b, "Policies", g.s.Policies)
-	g.reactorDefs(&b, "Processes", g.s.Processes)
+	// each policy and process adds its def from its own file
+	b.WriteString("\t\tPolicies: []*loom.ReactorDef{},\n\t\tProcesses: []*loom.ReactorDef{},\n")
 
 	if len(g.s.Schedules) > 0 {
 		b.WriteString("\t\tSchedules: []*loom.ScheduleDef{\n")
@@ -1296,55 +1278,23 @@ func loomErrNilEvent(eventType string) error {
 
 	g.tableDefs(&b)
 
+	// a @fold projection adds its def from its own file
 	b.WriteString("\t\tProjections: []*loom.ProjectionDef{\n")
 	for _, p := range g.s.Projections {
-		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEntity: %q,\n\t\t\t\tEvents: %s,\n", p.Name, p.Entity, stringSlice(eventNames(p)))
-		if ent := g.s.FindEntity(p.Entity); ent != nil {
-			if pii := ent.State.PIIFields(); len(pii) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\tPII: %s,\n", stringSlice(pii))
-			}
-			if len(ent.ReadRoles) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\tEntityReadRoles: %s,\n", stringSlice(ent.ReadRoles))
-			}
-			writeRules(&b, "\t\t\t\t", "EntityReadAllow", ent.ReadAllow)
-			writeFieldRules(&b, "\t\t\t\t", "EntityFieldAllow", ent.State)
-			writeDocs(&b, "\t\t\t\t", "EntityDoc", ent.Doc, "EntityFieldDocs", ent.State)
+		if !p.Fold {
+			g.projectionDef(&b, "{", p, "")
 		}
-		fmt.Fprintf(&b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
-		keyed := false
-		for _, sub := range p.Subscriptions {
-			keyed = keyed || sub.Key != ""
-		}
-		if keyed {
-			// key(field): child events land on the parent-keyed row
-			b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID {\n\t\t\t\t\tswitch e := evt.Data.(type) {\n")
-			for _, sub := range p.Subscriptions {
-				if sub.Key == "" {
-					continue
-				}
-				fmt.Fprintf(&b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn e.%s\n", sub.Event, exported(sub.Key))
-			}
-			b.WriteString("\t\t\t\t\t}\n\t\t\t\t\treturn evt.AggregateID\n\t\t\t\t},\n")
-		} else {
-			b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },\n")
-		}
-		if p.Fold {
-			fmt.Fprintf(&b, "\t\t\t\tFold: func(state loom.EntityState, evt *loom.Event) error {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
-			for _, sub := range p.Subscriptions {
-				fmt.Fprintf(&b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn impl.%s.On%s(state.(*%s), evt, data)\n", sub.Event, g.implField(p.Name), sub.Event, p.Entity)
-			}
-			fmt.Fprintf(&b, "\t\t\t\t\t}\n\t\t\t\t\treturn fmt.Errorf(\"projection %s: unroutable event %%s\", evt.Type)\n\t\t\t\t},\n", p.Name)
-		}
-		b.WriteString("\t\t\t},\n")
 	}
 	b.WriteString("\t\t},\n\t}\n\tloomRegisterOwners(impl, r)\n\treturn r\n}\n\n")
 
-	b.WriteString(`// loomOwner is one aggregate's or record's part of the registry. Each
-// <name>_gen.go adds its own to loomOwners in init, so this file never
-// lists them.
+	b.WriteString(`// loomOwner is one declaration's part of the registry: an aggregate, a
+// record, a policy, a process or a @fold projection. Each adds its own to
+// loomOwners in its file's init, so this file never lists them.
 type loomOwner struct {
-	kind     string // "aggregate" or "record"
-	name     string
+	kind string // "aggregate", "record", "policy", "process" or "projection"
+	name string
+	// bind is the Impl method that hands it its implementation
+	bind     string
 	register func(impl Impl, h any, r *loom.Registry)
 }
 
@@ -1352,28 +1302,31 @@ var loomOwners []loomOwner
 
 func loomRegister(o loomOwner) { loomOwners = append(loomOwners, o) }
 
-func (impl *Impl) bind(name string, h any) {
+func (impl *Impl) bind(key string, h any) {
 	if impl.handlers == nil {
 		impl.handlers = map[string]any{}
 	}
-	impl.handlers[name] = h
+	impl.handlers[key] = h
 }
 
-// loomRegisterOwners adds every aggregate, then every record, in name
-// order — never init order — so the registry is the same on every boot.
-// An owner whose handlers were never bound panics with its name.
+var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "process": 3, "projection": 4}
+
+// loomRegisterOwners adds every aggregate, then every record, policy,
+// process and @fold projection, each kind in name order — never init
+// order — so the registry is the same on every boot. One whose
+// implementation was never bound panics with its name.
 func loomRegisterOwners(impl Impl, r *loom.Registry) {
 	owners := append([]loomOwner(nil), loomOwners...)
 	sort.Slice(owners, func(i, j int) bool {
 		if owners[i].kind != owners[j].kind {
-			return owners[i].kind == "aggregate"
+			return loomKindOrder[owners[i].kind] < loomKindOrder[owners[j].kind]
 		}
 		return owners[i].name < owners[j].name
 	})
 	for _, o := range owners {
-		h := impl.handlers[o.name]
+		h := impl.handlers[o.kind+":"+o.name]
 		if h == nil {
-			panic(fmt.Sprintf("loomgen: %s %s has no handlers — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.name))
+			panic(fmt.Sprintf("loomgen: %s %s has no implementation — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.bind))
 		}
 		o.register(impl, h, r)
 	}
@@ -1405,6 +1358,51 @@ func checkDispatches(reactor, event string, allowed []string, cmds []loom.Comman
 }
 `)
 	return b.String()
+}
+
+// projectionDef renders one projection's registry entry, opened with
+// open ("{" inside a slice literal, "&loom.ProjectionDef{" on its own).
+// folds is the expression holding a @fold projection's hand-written
+// folds.
+func (g *generator) projectionDef(b *strings.Builder, open string, p *schema.Projection, folds string) {
+	fmt.Fprintf(b, "\t\t\t%s\n\t\t\t\tName: %q,\n\t\t\t\tEntity: %q,\n\t\t\t\tEvents: %s,\n", open, p.Name, p.Entity, stringSlice(eventNames(p)))
+	if ent := g.s.FindEntity(p.Entity); ent != nil {
+		if pii := ent.State.PIIFields(); len(pii) > 0 {
+			fmt.Fprintf(b, "\t\t\t\tPII: %s,\n", stringSlice(pii))
+		}
+		if len(ent.ReadRoles) > 0 {
+			fmt.Fprintf(b, "\t\t\t\tEntityReadRoles: %s,\n", stringSlice(ent.ReadRoles))
+		}
+		writeRules(b, "\t\t\t\t", "EntityReadAllow", ent.ReadAllow)
+		writeFieldRules(b, "\t\t\t\t", "EntityFieldAllow", ent.State)
+		writeDocs(b, "\t\t\t\t", "EntityDoc", ent.Doc, "EntityFieldDocs", ent.State)
+	}
+	fmt.Fprintf(b, "\t\t\t\tNewState: func() loom.EntityState { return &%s{} },\n", p.Entity)
+	keyed := false
+	for _, sub := range p.Subscriptions {
+		keyed = keyed || sub.Key != ""
+	}
+	if keyed {
+		// key(field): child events land on the parent-keyed row
+		b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID {\n\t\t\t\t\tswitch e := evt.Data.(type) {\n")
+		for _, sub := range p.Subscriptions {
+			if sub.Key == "" {
+				continue
+			}
+			fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn e.%s\n", sub.Event, exported(sub.Key))
+		}
+		b.WriteString("\t\t\t\t\t}\n\t\t\t\t\treturn evt.AggregateID\n\t\t\t\t},\n")
+	} else {
+		b.WriteString("\t\t\t\tEntityID: func(evt *loom.Event) uuid.UUID { return evt.AggregateID },\n")
+	}
+	if p.Fold {
+		fmt.Fprintf(b, "\t\t\t\tFold: func(state loom.EntityState, evt *loom.Event) error {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
+		for _, sub := range p.Subscriptions {
+			fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n\t\t\t\t\t\treturn %s.On%s(state.(*%s), evt, data)\n", sub.Event, folds, sub.Event, p.Entity)
+		}
+		fmt.Fprintf(b, "\t\t\t\t\t}\n\t\t\t\t\treturn fmt.Errorf(\"projection %s: unroutable event %%s\", evt.Type)\n\t\t\t\t},\n", p.Name)
+	}
+	b.WriteString("\t\t\t},\n")
 }
 
 // tableDefs renders the registry entries for @table entities and
@@ -1558,45 +1556,144 @@ func (g *generator) ownerUploads(owner string, commands []*schema.Command, uploa
 	return b.String()
 }
 
-func (g *generator) reactorDefs(b *strings.Builder, field string, reactors []*schema.Reactor) {
-	fmt.Fprintf(b, "\t\t%s: []*loom.ReactorDef{\n", field)
-	for _, r := range reactors {
-		var events []string
-		for _, sub := range r.Subscriptions {
-			events = append(events, sub.Event)
+// --- one file per policy, process and @fold projection ---
+
+// reactor is a policy, a process or a @fold projection and the loomgen
+// file it is rendered into. Exactly one of r and p is set.
+type reactor struct {
+	kind string // "policy", "process" or "projection"
+	name string
+	file string
+	r    *schema.Reactor
+	p    *schema.Projection
+}
+
+// reactors lists the policies, then the processes, then the @fold
+// projections, in schema order, each with its file:
+// <snake name>_<kind>_gen.go. Two names that snake the same way take a
+// number. The choice depends on the schema's slices only, so it is the
+// same on every run.
+func (g *generator) reactors() []reactor {
+	taken := map[string]bool{}
+	pick := func(name, kind string) string {
+		base := toSnake(name) + "_" + kind
+		file := base
+		for n := 2; taken[file]; n++ {
+			file = fmt.Sprintf("%s_%d", base, n)
 		}
-		fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEvents: %s,\n", r.Name, stringSlice(events))
-		b.WriteString("\t\t\t\tSubs: []loom.SubscriptionDef{\n")
-		for _, sub := range r.Subscriptions {
-			fmt.Fprintf(b, "\t\t\t\t\t{Event: %q, Dispatches: %s},\n", sub.Event, stringSlice(sub.Dispatches))
-		}
-		b.WriteString("\t\t\t\t},\n")
-		if len(r.Effects) > 0 {
-			fmt.Fprintf(b, "\t\t\t\tEffects: %s,\n", stringSlice(r.Effects))
-		}
-		if len(r.Idempotent) > 0 {
-			fmt.Fprintf(b, "\t\t\t\tIdempotentEffects: %s,\n", stringSlice(r.Idempotent))
-		}
-		if r.From != "" {
-			fmt.Fprintf(b, "\t\t\t\tFrom: %q,\n", r.From)
-		}
-		if r.Retry != nil {
-			// Validate has parsed the bounds; emit them as nanoseconds so
-			// the generated file needs no time import
-			lo, hi, _ := r.Retry.Durations()
-			fmt.Fprintf(b, "\t\t\t\tRetry: &loom.RetryPolicy{Max: %d, Min: %d, MaxBackoff: %d}, // @retry(%d, %s..%s)\n",
-				r.Retry.Max, int64(lo), int64(hi), r.Retry.Max, r.Retry.Min, r.Retry.MaxBackoff)
-		}
-		fmt.Fprintf(b, "\t\t\t\tReact: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
-		for _, sub := range r.Subscriptions {
-			fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n", sub.Event)
-			fmt.Fprintf(b, "\t\t\t\t\t\tcmds, err := impl.%s.On%s(ctx, evt, data)\n", g.implField(r.Name), sub.Event)
-			fmt.Fprintf(b, "\t\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t\treturn nil, err\n\t\t\t\t\t\t}\n")
-			fmt.Fprintf(b, "\t\t\t\t\t\treturn cmds, checkDispatches(%q, %q, %s, cmds)\n", r.Name, sub.Event, stringSlice(sub.Dispatches))
-		}
-		b.WriteString("\t\t\t\t\t}\n\t\t\t\t\treturn nil, fmt.Errorf(\"unroutable event %s\", evt.Type)\n\t\t\t\t},\n\t\t\t},\n")
+		taken[file] = true
+		return file + "_gen.go"
 	}
-	b.WriteString("\t\t},\n")
+	var out []reactor
+	for _, r := range g.s.Policies {
+		out = append(out, reactor{kind: "policy", name: r.Name, file: pick(r.Name, "policy"), r: r})
+	}
+	for _, r := range g.s.Processes {
+		out = append(out, reactor{kind: "process", name: r.Name, file: pick(r.Name, "process"), r: r})
+	}
+	for _, p := range g.s.Projections {
+		if p.Fold {
+			out = append(out, reactor{kind: "projection", name: p.Name, file: pick(p.Name, "projection"), p: p})
+		}
+	}
+	return out
+}
+
+// reactorFile renders one policy's, process's or @fold projection's
+// file: the interface its implementation satisfies, its binding method
+// on Impl, and an init that adds its definition to the registry. Nothing
+// else names it, so adding one adds this file and edits none.
+func (g *generator) reactorFile(x reactor) string {
+	var b strings.Builder
+	b.WriteString(header)
+	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
+	b.WriteString(`import (
+	"context"
+	"fmt"
+
+	"github.com/go-apis/loom"
+	"github.com/google/uuid"
+)
+
+var (
+	_ context.Context
+	_ = fmt.Sprintf
+	_ = uuid.UUID{}
+)
+
+`)
+	bind := g.implField(x.name)
+	if x.p != nil {
+		iface := exported(x.name) + "Folds"
+		fmt.Fprintf(&b, "type %s interface {\n", iface)
+		for _, sub := range x.p.Subscriptions {
+			fmt.Fprintf(&b, "\tOn%s(state *%s, evt *loom.Event, data *%s) error\n", sub.Event, x.p.Entity, sub.Event)
+		}
+		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "// %s binds h as the projection %s's folds. NewRegistry panics if it is\n// never called.\nfunc (impl *Impl) %s(h %s) { impl.bind(%q, h) }\n\n", bind, x.name, bind, iface, "projection:"+x.name)
+		b.WriteString("func init() {\n")
+		fmt.Fprintf(&b, "\tloomRegister(loomOwner{kind: \"projection\", name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", x.name, bind)
+		fmt.Fprintf(&b, "\t\tfolds := h.(%s)\n\t\tr.Projections = append(r.Projections,\n", iface)
+		g.projectionDef(&b, "&loom.ProjectionDef{", x.p, "folds")
+		b.WriteString("\t\t)\n\t}})\n}\n")
+		return b.String()
+	}
+	iface := exported(x.name) + "Reactions"
+	fmt.Fprintf(&b, "type %s interface {\n", iface)
+	for _, sub := range x.r.Subscriptions {
+		fmt.Fprintf(&b, "\tOn%s(ctx context.Context, evt *loom.Event, data *%s) ([]loom.Command, error)\n", sub.Event, sub.Event)
+	}
+	b.WriteString("}\n\n")
+	field := "Policies"
+	if x.kind == "process" {
+		field = "Processes"
+	}
+	fmt.Fprintf(&b, "// %s binds h as the %s %s's reactions. NewRegistry panics if it is\n// never called.\nfunc (impl *Impl) %s(h %s) { impl.bind(%q, h) }\n\n", bind, x.kind, x.name, bind, iface, x.kind+":"+x.name)
+	b.WriteString("func init() {\n")
+	fmt.Fprintf(&b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", x.kind, x.name, bind)
+	fmt.Fprintf(&b, "\t\treactions := h.(%s)\n\t\tr.%s = append(r.%s,\n", iface, field, field)
+	g.reactorDef(&b, x.r)
+	b.WriteString("\t\t)\n\t}})\n}\n")
+	return b.String()
+}
+
+// reactorDef renders a policy's or process's registry entry, its React
+// calling through reactions, the bound implementation.
+func (g *generator) reactorDef(b *strings.Builder, r *schema.Reactor) {
+	var events []string
+	for _, sub := range r.Subscriptions {
+		events = append(events, sub.Event)
+	}
+	fmt.Fprintf(b, "\t\t\t&loom.ReactorDef{\n\t\t\t\tName: %q,\n\t\t\t\tEvents: %s,\n", r.Name, stringSlice(events))
+	b.WriteString("\t\t\t\tSubs: []loom.SubscriptionDef{\n")
+	for _, sub := range r.Subscriptions {
+		fmt.Fprintf(b, "\t\t\t\t\t{Event: %q, Dispatches: %s},\n", sub.Event, stringSlice(sub.Dispatches))
+	}
+	b.WriteString("\t\t\t\t},\n")
+	if len(r.Effects) > 0 {
+		fmt.Fprintf(b, "\t\t\t\tEffects: %s,\n", stringSlice(r.Effects))
+	}
+	if len(r.Idempotent) > 0 {
+		fmt.Fprintf(b, "\t\t\t\tIdempotentEffects: %s,\n", stringSlice(r.Idempotent))
+	}
+	if r.From != "" {
+		fmt.Fprintf(b, "\t\t\t\tFrom: %q,\n", r.From)
+	}
+	if r.Retry != nil {
+		// Validate has parsed the bounds; emit them as nanoseconds so
+		// the generated file needs no time import
+		lo, hi, _ := r.Retry.Durations()
+		fmt.Fprintf(b, "\t\t\t\tRetry: &loom.RetryPolicy{Max: %d, Min: %d, MaxBackoff: %d}, // @retry(%d, %s..%s)\n",
+			r.Retry.Max, int64(lo), int64(hi), r.Retry.Max, r.Retry.Min, r.Retry.MaxBackoff)
+	}
+	fmt.Fprintf(b, "\t\t\t\tReact: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {\n\t\t\t\t\tswitch data := evt.Data.(type) {\n")
+	for _, sub := range r.Subscriptions {
+		fmt.Fprintf(b, "\t\t\t\t\tcase *%s:\n", sub.Event)
+		fmt.Fprintf(b, "\t\t\t\t\t\tcmds, err := reactions.On%s(ctx, evt, data)\n", sub.Event)
+		fmt.Fprintf(b, "\t\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t\treturn nil, err\n\t\t\t\t\t\t}\n")
+		fmt.Fprintf(b, "\t\t\t\t\t\treturn cmds, checkDispatches(%q, %q, %s, cmds)\n", r.Name, sub.Event, stringSlice(sub.Dispatches))
+	}
+	b.WriteString("\t\t\t\t\t}\n\t\t\t\t\treturn nil, fmt.Errorf(\"unroutable event %s\", evt.Type)\n\t\t\t\t},\n\t\t\t},\n")
 }
 
 // --- stubs ---
@@ -1771,26 +1868,28 @@ func (g *generator) stubs() map[string]string {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "\t%q\n)\n\n", genImport)
-	fmt.Fprintf(&b, "// NewRegistry wires implementations into the generated registry. Yours\n// to edit.\nfunc NewRegistry() *loom.Registry {\n\timpl := %s.Impl{\n", g.genPkg)
+	fmt.Fprintf(&b, "// NewRegistry wires implementations into the generated registry. Yours\n// to edit.\nfunc NewRegistry() *loom.Registry {\n\timpl := %s.Impl{", g.genPkg)
+	// what no kind package holds stays a field
+	var fields []string
+	if len(g.upcastHops()) > 0 {
+		fields = append(fields, "Upcasts: &Upcasts{}")
+	}
+	if len(g.loopingAggregates()) > 0 {
+		fields = append(fields, "Look: &Look{}")
+	}
+	b.WriteString(strings.Join(fields, ", ") + "}\n")
+	// every declaration binds through its method on Impl (ADR 0008)
 	for _, r := range g.s.Policies {
-		fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(r.Name), g.qualify(kindPolicies, exported(r.Name)))
+		fmt.Fprintf(&b, "\timpl.%s(%s)\n", g.implField(r.Name), g.qualify(kindPolicies, exported(r.Name)))
 	}
 	for _, r := range g.s.Processes {
-		fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(r.Name), g.qualify(kindProcesses, exported(r.Name)))
+		fmt.Fprintf(&b, "\timpl.%s(%s)\n", g.implField(r.Name), g.qualify(kindProcesses, exported(r.Name)))
 	}
 	for _, p := range g.s.Projections {
 		if p.Fold {
-			fmt.Fprintf(&b, "\t\t%s: %s,\n", g.implField(p.Name), g.qualify(kindProjections, exported(p.Name)))
+			fmt.Fprintf(&b, "\timpl.%s(%s)\n", g.implField(p.Name), g.qualify(kindProjections, exported(p.Name)))
 		}
 	}
-	if len(g.upcastHops()) > 0 {
-		b.WriteString("\t\tUpcasts: &Upcasts{},\n")
-	}
-	if len(g.loopingAggregates()) > 0 {
-		b.WriteString("\t\tLook: &Look{},\n")
-	}
-	b.WriteString("\t}\n")
-	// aggregates and records bind through their methods on Impl (ADR 0008)
 	for _, a := range g.s.Aggregates {
 		fmt.Fprintf(&b, "\timpl.%s(%s)\n", a.Name, g.qualify(kindAggregates, a.Name))
 	}

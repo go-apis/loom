@@ -170,7 +170,11 @@ everything into `loom.Registry`. Each aggregate and record gets its own
 fold, its `Handlers` interface, its def function, and its binding method on
 `Impl` (`impl.Order(h)`). It registers itself, in `init`, into a table that
 `NewRegistry` reads in kind-then-name order. An owner left unbound panics at
-boot with its name. Each schema file gets `<its name>_types_gen.go`
+boot with its name. Each policy, process and `@fold` projection gets a file
+the same way, `<snake name>_<kind>_gen.go`: its `Reactions` or `Folds`
+interface, its binding method on `Impl` (`impl.ShipOnPayment(h)`), and an
+`init` that registers its definition. So policies reacting to one event run
+in name order. Each schema file gets `<its name>_types_gen.go`
 (`goal.loom` → `goal_types_gen.go`): the enums, named types, entities and
 series it declares, and the events it declares that several aggregates emit
 or none does. So an edit to one schema file's types changes that file's
@@ -178,13 +182,14 @@ generated file and no other schema file's. A name a Go file cannot carry is
 rewritten, and two schema files of one name take a number, in path order.
 `models_gen.go` holds only what no schema file declares: everything, for a
 schema parsed from a lone unnamed source, and nothing otherwise.
-`registry_gen.go` holds what is shared, and names no aggregate or record, so
-adding an aggregate adds one file and edits none. It still lists every enum's
+`registry_gen.go` holds what is shared, and names no aggregate, record,
+policy, process or `@fold` projection, so adding one adds one file and edits
+none. It still lists every enum's
 values and every type's required fields, so a change to those edits it too.
 `generate` removes a generated file the schema no longer
 produces (ADR 0008). Stubs (once, then yours): one file per aggregate and
-reactor implementing the generated interfaces, plus `registry.go`, which sets
-reactor fields on `Impl` and binds each aggregate and record.
+reactor implementing the generated interfaces, plus `registry.go`, which
+binds each of them through its method on `Impl`.
 `layout: folders` puts stubs in per-kind packages (aggregates/, records/,
 policies/, processes/) with registry.go at the root; flat stays the
 default. Dependency structs are the user's to place — a leaf package like

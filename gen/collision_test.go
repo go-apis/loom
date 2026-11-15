@@ -60,9 +60,9 @@ process plain {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the reactors' Impl fields and wiring are shared, in registry_gen.go;
-	// each aggregate's Handlers interface and its binding method on Impl
-	// are in its own file (ADR 0008)
+	// every declaration's interface and its binding method on Impl are in
+	// its own file (ADR 0008); a reactor named like an aggregate binds
+	// under its name with its kind appended
 	read := func(name string) string {
 		t.Helper()
 		raw, err := os.ReadFile(filepath.Join(dir, "loomgen", name))
@@ -73,9 +73,13 @@ process plain {
 	}
 	registry := read("registry_gen.go")
 	for file, decls := range map[string][]string{
-		"fleet_stall_gen.go":    {"type FleetStallHandlers interface", "func (impl *Impl) FleetStall(h FleetStallHandlers)"},
-		"org_membership_gen.go": {"type OrgMembershipHandlers interface", "func (impl *Impl) OrgMembership(h OrgMembershipHandlers)"},
-		"snapshot_gen.go":       {"type SnapshotHandlers interface", "func (impl *Impl) Snapshot(h SnapshotHandlers)"},
+		"fleet_stall_gen.go":           {"type FleetStallHandlers interface", "func (impl *Impl) FleetStall(h FleetStallHandlers)"},
+		"org_membership_gen.go":        {"type OrgMembershipHandlers interface", "func (impl *Impl) OrgMembership(h OrgMembershipHandlers)"},
+		"snapshot_gen.go":              {"type SnapshotHandlers interface", "func (impl *Impl) Snapshot(h SnapshotHandlers)"},
+		"fleet_stall_process_gen.go":   {"type FleetStallReactions interface", "func (impl *Impl) FleetStallProcess(h FleetStallReactions)", "reactions.OnOpened("},
+		"org_membership_policy_gen.go": {"type OrgMembershipReactions interface", "func (impl *Impl) OrgMembershipPolicy(h OrgMembershipReactions)", "reactions.OnJoined("},
+		"snapshot_projection_gen.go":   {"type SnapshotFolds interface", "func (impl *Impl) SnapshotProjection(h SnapshotFolds)", "folds.OnTaken("},
+		"plain_process_gen.go":         {"type PlainReactions interface", "func (impl *Impl) Plain(h PlainReactions)", "reactions.OnTaken("},
 	} {
 		for _, d := range decls {
 			if !strings.Contains(read(file), d) {
@@ -83,19 +87,7 @@ process plain {
 			}
 		}
 	}
-	for _, want := range []string{
-		"FleetStallProcess FleetStallReactions",
-		"OrgMembershipPolicy OrgMembershipReactions",
-		"SnapshotProjection SnapshotFolds",
-		"Plain PlainReactions",
-		"impl.FleetStallProcess.OnOpened(", "impl.OrgMembershipPolicy.OnJoined(", "impl.SnapshotProjection.OnTaken(", "impl.Plain.OnTaken(",
-		"type FleetStallReactions interface", "type OrgMembershipReactions interface", "type SnapshotFolds interface",
-	} {
-		if !strings.Contains(registry, want) {
-			t.Fatalf("registry_gen.go has no %q", want)
-		}
-	}
-	for _, unwanted := range []string{"impl.FleetStall.OnOpened(", "impl.OrgMembership.OnJoined(", "PlainProcess", "FleetStall FleetStallHandlers"} {
+	for _, unwanted := range []string{"Reactions interface", "Folds interface", "FleetStall", "OrgMembership", "PlainProcess"} {
 		if strings.Contains(registry, unwanted) {
 			t.Fatalf("registry_gen.go has %q", unwanted)
 		}
@@ -104,7 +96,7 @@ process plain {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"FleetStallProcess: &processes.FleetStall{}", "OrgMembershipPolicy: &policies.OrgMembership{}", "SnapshotProjection: &projections.Snapshot{}", "impl.FleetStall(&aggregates.FleetStall{})"} {
+	for _, want := range []string{"impl.FleetStallProcess(&processes.FleetStall{})", "impl.OrgMembershipPolicy(&policies.OrgMembership{})", "impl.SnapshotProjection(&projections.Snapshot{})", "impl.FleetStall(&aggregates.FleetStall{})"} {
 		if !strings.Contains(strings.Join(strings.Fields(string(reg)), " "), strings.Join(strings.Fields(want), " ")) {
 			t.Fatalf("registry.go has no %q:\n%s", want, reg)
 		}

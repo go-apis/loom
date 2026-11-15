@@ -122,6 +122,8 @@ myservice/
   loomgen/              # generated, regenerated every run
     registry_gen.go     # shared: Impl, NewRegistry, reactor interfaces
     <aggregate>_gen.go  # one per aggregate and record: order_gen.go, …
+    <name>_<kind>_gen.go  # one per policy, process and @fold projection:
+                        # ship_on_payment_process_gen.go, …
     <schema file>_types_gen.go  # one per .loom file: its enums, types,
                         # shared events, entities and series
     models_gen.go       # only what no schema file declares
@@ -130,26 +132,33 @@ myservice/
   records/
   policies/
   processes/
-  registry.go           # Impl{Y: &processes.Y{}}, impl.X(&aggregates.X{}), …
+  registry.go           # impl.X(&aggregates.X{}), impl.Y(&processes.Y{}), …
 ```
 
 Each aggregate and record has its own `loomgen/<snake name>_gen.go`
 (`LedgerEntry` → `ledger_entry_gen.go`). It holds the aggregate's commands,
 the events only it emits, its state and fold, its `Handlers` interface, and
 its binding method on `Impl`. It registers itself with `NewRegistry`.
-The shared files name no aggregate or record. Adding one adds only its own
-file, so two branches that each add an aggregate do not conflict in
+Each policy, process and `@fold` projection has its own file the same way
+(`shipOnPayment` → `ship_on_payment_process_gen.go`): its `Reactions` or
+`Folds` interface, its binding method and its definition.
+The shared files name none of them. Adding one adds only its own
+file, so two branches that each add an aggregate or a process do not
+conflict in
 `loomgen/` ([ADR 0008](docs/adr/0008-one-generated-file-per-aggregate.md)).
 `registry.go` binds each one by its method:
 
 ```go
-impl := loomgen.Impl{ShipOnPayment: &ShipOnPayment{}} // reactors and @fold projections
-impl.Order(&Order{})                                  // one call per aggregate and record
+impl := loomgen.Impl{}
+impl.Order(&Order{})                 // one call per aggregate and record
+impl.ShipOnPayment(&ShipOnPayment{}) // and per policy, process and @fold projection
 return loomgen.NewRegistry(impl)
 ```
 
-`NewRegistry` adds aggregates, then records, in name order. One whose
-handlers were never bound panics at boot, naming the call to add
+`NewRegistry` adds aggregates, then records, policies, processes and
+`@fold` projections, each kind in name order, so policies reacting to one
+event run in name order. One whose
+implementation was never bound panics at boot, naming the call to add
 (`loomgen: aggregate Payee has no handlers — call impl.Payee(...)`).
 
 ## Wiring by convention
@@ -169,7 +178,7 @@ wire: wire
 
 ```
 wire/order_aggregate_gen.go          impl.Order(&aggregates.Order{})
-wire/shiponpayment_process_gen.go    impl.ShipOnPayment = processes.NewShipOnPayment(deps)
+wire/shiponpayment_process_gen.go    impl.ShipOnPayment(processes.NewShipOnPayment(deps))
 wire/wire_gen.go                     Impl(deps), Configure
 ```
 
@@ -223,21 +232,26 @@ If a rebase or merge conflicts under `loomgen/`, resolve the `.loom` files,
 take either side of each generated file, regenerate, and commit what the
 generator wrote. Never hand-merge generated code.
 
-**Upgrading to one file per aggregate.** The first regenerate moves each
-aggregate's and record's code into its own file. `Impl` loses its
-aggregate and record fields, so a `registry.go` that sets them no longer
-compiles. Move each to a binding call, keeping the reactor fields in the
-literal:
+**Upgrading to one file per declaration.** The first regenerate moves each
+aggregate's, record's, policy's, process's and `@fold` projection's code
+into its own file. `Impl` loses the field it had for each, so a
+`registry.go` that sets them no longer compiles. Move each to a binding
+call of the same name; only `Upcasts` stays a field:
 
 ```go
 // before
 return loomgen.NewRegistry(loomgen.Impl{Order: &Order{}, ShipOnPayment: &ShipOnPayment{}})
 
 // after
-impl := loomgen.Impl{ShipOnPayment: &ShipOnPayment{}}
+impl := loomgen.Impl{}
 impl.Order(&Order{})
+impl.ShipOnPayment(&ShipOnPayment{})
 return loomgen.NewRegistry(impl)
 ```
+
+Code that read a reactor back off the `Impl` (`impl.ShipOnPayment.X`) keeps
+its own reference to it instead. Policies that react to the same event now
+run in name order, where they ran in schema order.
 
 Or delete `registry.go` and run `go tool loom generate` to get a fresh stub.
 Type names and the `Handlers` interfaces are unchanged.

@@ -9,11 +9,10 @@ import (
 // NewRegistry wires implementations into the generated registry. Yours
 // to edit.
 func NewRegistry() *loom.Registry {
-	impl := loomgen.Impl{
-		RaiseOnOrder:  &RaiseOnOrder{},
-		CaptureOnPaid: &CaptureOnPaid{},
-		PostLedger:    &PostLedger{},
-	}
+	impl := loomgen.Impl{}
+	impl.PostLedger(&PostLedger{})
+	impl.RaiseOnOrder(&RaiseOnOrder{})
+	impl.CaptureOnPaid(&CaptureOnPaid{})
 	impl.Invoice(&Invoice{})
 	impl.Payee(&Payee{})
 	impl.LedgerEntry(&LedgerEntry{})

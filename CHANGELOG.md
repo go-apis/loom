@@ -46,6 +46,24 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **Policies, processes and `@fold` projections register themselves.**
+  Each gets its own generated file, `loomgen/<snake name>_<kind>_gen.go`
+  (`shipOnPayment` → `ship_on_payment_process_gen.go`), holding its
+  `Reactions` or `Folds` interface, a binding method on `Impl` and its
+  definition, as aggregates and records already had. `registry_gen.go`
+  no longer names any of them, so adding a policy or a process adds one
+  generated file and changes none. One never bound panics when the
+  registry is built, naming the call to add, where a nil field used to
+  fail at its first event.
+
+  **Migration:** regenerate `loomgen/`. `Impl` loses its field for each
+  policy, process and `@fold` projection: in `registry.go`, move each
+  out of the literal into a call of the same name —
+  `impl.ShipOnPayment(&ShipOnPayment{})` for
+  `Impl{ShipOnPayment: &ShipOnPayment{}}`. `Upcasts` stays a field. A
+  service using `wire:` only regenerates. Policies that react to the
+  same event now run in name order, where they ran in schema order.
+
 - **Each schema file's types are generated into their own file.**
   `loom generate` writes the enums, named types, entities and series a
   `.loom` file declares, and the events it declares that no single
