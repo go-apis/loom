@@ -417,7 +417,10 @@ func listPath(op, typeName string) map[string]any {
 		map[string]any{"name": "namespace", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
 		map[string]any{"name": "order", "in": "query", "schema": map[string]any{"type": "string"}},
 		map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer"}},
-		map[string]any{"name": "offset", "in": "query", "schema": map[string]any{"type": "integer"}},
+		// the page past a row (ADR 0014): its id and its order column's value
+		map[string]any{"name": "after_id", "in": "query", "schema": map[string]any{"type": "string"}},
+		map[string]any{"name": "after_value", "in": "query", "schema": map[string]any{"type": "string"}},
+		map[string]any{"name": "after_null", "in": "query", "schema": map[string]any{"type": "string", "enum": []string{"1"}}},
 	}
 	item := map[string]any{
 		"type": "object",

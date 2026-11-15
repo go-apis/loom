@@ -11,7 +11,7 @@ import (
 	"github.com/go-apis/loom/internal/e2e/orders"
 )
 
-// TestQueryEntitiesCursorPagesEveryRowOnce proves ADR 0012's fix: an
+// TestQueryEntitiesCursorPagesEveryRowOnce proves ADR 0014's fix: an
 // OFFSET-paged list read could skip or repeat rows whenever the ORDER BY
 // column (updated_at, by default) tied across a page boundary, because
 // OFFSET only counts rows, and Postgres is free to order tied rows

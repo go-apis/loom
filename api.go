@@ -907,7 +907,7 @@ func seriesQueryFromURL(r *http.Request) (SeriesQuery, error) {
 
 // queryFromURL turns query params into a Query: reserved keys aside, every
 // param is a filter — `status=shipped`, `total_cents.gte=1000`. Paging
-// past a page is a cursor (ADR 0012), not an offset: after_id (plus
+// past a page is a cursor (ADR 0014), not an offset: after_id (plus
 // after_value, or after_null=1 for a NULL order-column boundary) comes
 // from the previous page's last Row's own Cursor.
 func queryFromURL(r *http.Request) (Query, error) {

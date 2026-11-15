@@ -1,11 +1,11 @@
 ---
-title: "ADR 0012 — list reads page by cursor with an id tie-breaker"
+title: "ADR 0014 — list reads page by cursor with an id tie-breaker"
 status: accepted
 date: 2026-11-14
-summary: tableListSQL and docsListSQL drop OFFSET and page by keyset instead — ORDER BY now always tie-breaks on id, and Query gains After *Cursor (built from the previous page's last Row via Row.Cursor); a client walks pages by feeding each page's last row's cursor into the next Query, which visits every row exactly once no matter how many rows tie on the order column, a guarantee OFFSET pagination never had; GraphQL's list args still take an offset, now a no-op, and giving them a cursor argument is a deferred follow-up.
+summary: tableListSQL and docsListSQL drop OFFSET and page by keyset instead — ORDER BY now always tie-breaks on id, and Query gains After *Cursor (built from the previous page's last Row via Row.Cursor); a client walks pages by feeding each page's last row's cursor into the next Query, which visits every row exactly once no matter how many rows tie on the order column, a guarantee OFFSET pagination never had; the gateway's lists take `after` (a row's opaque `cursor`) in place of `offset`, which they no longer accept.
 ---
 
-# ADR 0012 — list reads page by cursor with an id tie-breaker
+# ADR 0014 — list reads page by cursor with an id tie-breaker
 
 ## Context
 
@@ -70,13 +70,19 @@ two.
   `after_null=1` for a NULL-valued boundary) instead of `offset`**
   (`queryFromURL`, `api.go`) — the same three fields a `Cursor` carries,
   since URL query params have no natural way to carry a struct.
-- **GraphQL's list args keep `offset` in the schema, but it is now a
-  no-op** (`listArgs`, `queryFromArgs` in `graphql/graphql.go`) —
-  `loom.Query` has nowhere to put it any more. Giving GraphQL's list
-  fields a cursor argument to replace `offset` is a deferred follow-up;
-  this ADR's scope is the SQL-level list-read path (`QueryEntities`,
-  `QueryRecords`, and the HTTP API built directly on `Query`), not the
-  GraphQL surface over it.
+- **The gateway's lists take `after` and each row carries its
+  `cursor`** (`listArgs`, `queryFromArgs`, `rowDocs` in
+  `graphql/graphql.go`). `after: String` is the `cursor` of the last row
+  of the previous page of the same list, with the same order and filters.
+  A cursor is opaque: the order column's value, whether it was null, and
+  the id, encoded. Every row type has a nullable `cursor` field, set on
+  the rows of a list for the order it was read in and null on a single
+  read. A narrowed read keeps the order column among the fields it
+  fetches, since the cursor is built from it. `offset` is gone from the
+  list arguments: a query that passes it is refused by the schema, where
+  silently answering page 1 would have looked like a short list.
+  Series lists, which are ordered by time and ranged with `since` and
+  `until`, keep `offset`.
 
 ## Consequences
 
@@ -91,10 +97,9 @@ two.
 - A caller that only ever reads page 1 (`After` nil) sees no behavior
   change beyond the `ORDER BY` clause itself now naming `id` — the
   `LIMIT` and row contents are identical to before.
-- GraphQL list fields that passed `offset` to skip into the middle of a
-  list silently get page 1 instead of an error; existing queries that
-  only ever passed `limit` are unaffected. Replacing GraphQL's `offset`
-  with a cursor argument is tracked as a follow-up, not done here.
+- A GraphQL query that passes `offset` to a list no longer validates:
+  the client moves to `after`. Queries that only pass `limit` are
+  unaffected. The emitted SDL and OpenAPI say the same.
 - A caller building its own `Cursor` for a custom `OrderBy` field needs
   that field in the page's `Fields` (or `Fields` left nil) — `Row.Cursor`
   reads the value out of `Row.Data`, which a narrowed read that left the

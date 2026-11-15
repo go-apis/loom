@@ -104,7 +104,7 @@ func TestListSQLOmitsUnaskedColumns(t *testing.T) {
 	}
 }
 
-// TestListSQLKeysetPagesByCursor covers the shape ADR 0012 introduced:
+// TestListSQLKeysetPagesByCursor covers the shape ADR 0014 introduced:
 // no OFFSET ever, ORDER BY always tie-broken by id, and a keyset WHERE
 // predicate appears only once Query.After is set — built from the
 // boundary row's Cursor, carrying both the order value and its id.
