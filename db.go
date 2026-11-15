@@ -127,6 +127,14 @@ CREATE TABLE IF NOT EXISTS loom_idempotency (
 );
 CREATE INDEX IF NOT EXISTS loom_idempotency_at ON loom_idempotency (service, at);
 
+CREATE TABLE IF NOT EXISTS loom_event_floors (
+	service     text NOT NULL,
+	event_type  text NOT NULL,
+	release     bigint NOT NULL,
+	recorded_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, event_type)
+);
+
 CREATE TABLE IF NOT EXISTS loom_instances (
 	service    text NOT NULL,
 	instance   uuid NOT NULL,
@@ -217,6 +225,9 @@ func (c *Client) Migrate(ctx context.Context) error {
 	if _, err := c.db.Exec(ctx, ddl); err != nil {
 		return err
 	}
+	if err := c.seedFloors(ctx); err != nil {
+		return err
+	}
 	if err := c.migrateTables(ctx); err != nil {
 		return err
 	}
@@ -291,6 +302,10 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 		if err := c.lockLog(ctx, tx); err != nil {
 			return err
 		}
+	}
+	// the release that first writes an event type is its floor (floor.go)
+	if err := c.recordFloors(ctx, tx, evts); err != nil {
+		return err
 	}
 	for _, e := range evts {
 		data, err := json.Marshal(e.Data)

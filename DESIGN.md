@@ -233,6 +233,17 @@ generated switches, folds from generated assignments.
   revision name's number, which Cloud Run does not assign in deploy order)
   takes the lease: the leader yields between events, or has its
   session ended if it does not answer (ADR 0010).
+- **An event type has a floor.** The release that first writes an event
+  type is recorded with that event, in `loom_event_floors`, on the
+  appending transaction: first write wins. `Start` refuses, with a
+  `*FloorError`, a build whose `Config.Release` (else `LOOM_RELEASE`) is
+  older than any floor in the store, naming the type and the release to
+  start instead, because it could not decode what its runners would
+  read. A release is the code's number, the same on every deploy of one
+  build; a generation is the deploy's, and a rollback gets a new one. A
+  build that states no release writes floors of zero and is never
+  refused; so are the types a log held before floors were kept, seeded
+  at zero by the first `Migrate` (`floor.go`, ADR 0013).
 - **One connection per caller.** Nothing waits for a pooled connection
   while it holds one: rows are read in full and closed before the
   events or rows in them are opened, a data-key read or mint runs on the

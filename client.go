@@ -94,6 +94,18 @@ type Config struct {
 	// Revision names this instance's build on its lease session and in
 	// the election's logs. Default: K_REVISION, which Cloud Run sets.
 	Revision string
+
+	// Release numbers this build among the service's releases, for the
+	// event floor (floor.go): the store remembers the release that first
+	// wrote each event type, and a Client of an older Release refuses to
+	// Start against it, since it could not decode what is stored. It
+	// belongs to the code, not the deploy: the same number every time
+	// one build is deployed, a rollback included, and a larger one for
+	// every later build — a build number, a commit count. That is what
+	// Generation is not: a rollback deploys an old Release under a new
+	// Generation. Zero (the default) takes LOOM_RELEASE; with neither,
+	// the build writes floors of zero and is never refused.
+	Release int64
 }
 
 type Client struct {
@@ -112,6 +124,8 @@ type Client struct {
 	runnerIdlePoll  time.Duration  // Config.RunnerIdlePoll
 	leader          leaderFlag     // this instance holds the service's process lease (election.go)
 	gen             generation     // Config.Generation, Config.Revision as the election orders them
+	release         int64          // Config.Release, or LOOM_RELEASE
+	floors          floors         // what is known of loom_event_floors (floor.go)
 	genOnce         sync.Once      // the generation is resolved once, by whichever runner needs it first
 	superseded      atomic.Bool    // a newer generation is alive: this instance leaves the service's work to it (instances.go)
 	beaten          chan struct{}  // closed after the instance's first beat; nil until Start
@@ -192,6 +206,7 @@ func New(cfg Config) (*Client, error) {
 		reconcile:      cfg.Reconcile,
 		seriesAhead:    cfg.SeriesPartitionAhead,
 		gen:            generationFrom(cfg.Generation, cfg.Revision),
+		release:        releaseFrom(cfg.Release),
 	}
 	if c.seriesAhead <= 0 {
 		c.seriesAhead = defaultSeriesPartitionAhead
