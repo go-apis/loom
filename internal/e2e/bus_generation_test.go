@@ -34,7 +34,10 @@ func (h *countingRaise) OnOrderPlaced(ctx context.Context, evt *loom.Event, data
 }
 
 func billingRegistry(raise billinggen.RaiseOnOrderReactions) *loom.Registry {
-	impl := billinggen.Impl{RaiseOnOrder: raise, CaptureOnPaid: &billing.CaptureOnPaid{}, PostLedger: &billing.PostLedger{}}
+	impl := billinggen.Impl{}
+	impl.PostLedger(&billing.PostLedger{})
+	impl.RaiseOnOrder(raise)
+	impl.CaptureOnPaid(&billing.CaptureOnPaid{})
 	impl.Invoice(&billing.Invoice{})
 	impl.Payee(&billing.Payee{})
 	impl.LedgerEntry(&billing.LedgerEntry{})

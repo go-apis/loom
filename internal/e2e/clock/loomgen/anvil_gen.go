@@ -97,10 +97,10 @@ func aggregateDefAnvil(h AnvilHandlers) *loom.AggregateDef {
 
 // Anvil binds h as the Anvil aggregate's handlers. NewRegistry panics
 // if it is never called.
-func (impl *Impl) Anvil(h AnvilHandlers) { impl.bind("Anvil", h) }
+func (impl *Impl) Anvil(h AnvilHandlers) { impl.bind("aggregate:Anvil", h) }
 
 func init() {
-	loomRegister(loomOwner{kind: "aggregate", name: "Anvil", register: func(impl Impl, h any, r *loom.Registry) {
+	loomRegister(loomOwner{kind: "aggregate", name: "Anvil", bind: "Anvil", register: func(impl Impl, h any, r *loom.Registry) {
 		r.Aggregates = append(r.Aggregates, aggregateDefAnvil(h.(AnvilHandlers)))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "AnvilCooled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &AnvilCooled{} }},

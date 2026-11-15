@@ -28,7 +28,7 @@ import (
 // own per declaration, in a generated package (wire/ by default):
 //
 //	wire/order_aggregate_gen.go          impl.Order(&aggregates.Order{})
-//	wire/shiponpayment_process_gen.go    impl.ShipOnPayment = processes.NewShipOnPayment(deps)
+//	wire/shiponpayment_process_gen.go    impl.ShipOnPayment(processes.NewShipOnPayment(deps))
 //	wire/wire_gen.go                     Impl(deps), Configure — never changes with the schema
 //
 // The implementation of a declaration X is, in its kind's package, the
@@ -171,7 +171,7 @@ func (g *generator) wireEntries() []wireEntry {
 		out = append(out, wireEntry{strings.ToLower(r.Name) + "_record_gen.go", kindRecords, r.Name, "impl." + r.Name + "(h)"})
 	}
 	reactor := func(kind, suffix string, r *schema.Reactor) {
-		out = append(out, wireEntry{strings.ToLower(r.Name) + "_" + suffix + "_gen.go", kind, exported(r.Name), "impl." + g.implField(r.Name) + " = h"})
+		out = append(out, wireEntry{strings.ToLower(r.Name) + "_" + suffix + "_gen.go", kind, exported(r.Name), "impl." + g.implField(r.Name) + "(h)"})
 	}
 	for _, r := range g.s.Policies {
 		reactor(kindPolicies, "policy", r)
@@ -181,7 +181,7 @@ func (g *generator) wireEntries() []wireEntry {
 	}
 	for _, p := range g.s.Projections {
 		if p.Fold {
-			out = append(out, wireEntry{strings.ToLower(p.Name) + "_projection_gen.go", kindProjections, exported(p.Name), "impl." + g.implField(p.Name) + " = h"})
+			out = append(out, wireEntry{strings.ToLower(p.Name) + "_projection_gen.go", kindProjections, exported(p.Name), "impl." + g.implField(p.Name) + "(h)"})
 		}
 	}
 	return out

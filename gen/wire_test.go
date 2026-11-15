@@ -110,9 +110,9 @@ func TestWireByConvention(t *testing.T) {
 	for file, want := range map[string]string{
 		"cart_aggregate_gen.go":     "h := &aggregates.Cart{}\n\t\tconfigure(h, deps)\n\t\timpl.Cart(h)",
 		"wallet_record_gen.go":      "h := &records.Wallet{}\n\t\tconfigure(h, deps)\n\t\timpl.Wallet(h)",
-		"tidy_policy_gen.go":        "h := &policies.Tidy{}\n\t\tconfigure(h, deps)\n\t\timpl.Tidy = h",
-		"notify_process_gen.go":     "h := &processes.Notify{}\n\t\tconfigure(h, deps)\n\t\timpl.Notify = h",
-		"cartrow_projection_gen.go": "h := &projections.CartRow{}\n\t\tconfigure(h, deps)\n\t\timpl.CartRow = h",
+		"tidy_policy_gen.go":        "h := &policies.Tidy{}\n\t\tconfigure(h, deps)\n\t\timpl.Tidy(h)",
+		"notify_process_gen.go":     "h := &processes.Notify{}\n\t\tconfigure(h, deps)\n\t\timpl.Notify(h)",
+		"cartrow_projection_gen.go": "h := &projections.CartRow{}\n\t\tconfigure(h, deps)\n\t\timpl.CartRow(h)",
 		"wire_gen.go":               "type Deps = struct{}",
 	} {
 		if !strings.Contains(files[file], want) {
@@ -207,17 +207,26 @@ import (
 )
 
 func TestImpl(t *testing.T) {
+	greeting := ""
+	Configure(func(n *processes.Notify, deps Deps) { greeting = n.Services.Greeting })
 	impl := Impl(&processes.Services{Greeting: "hello"})
-	if n, ok := impl.Notify.(*processes.Notify); !ok || n.Services.Greeting != "hello" {
-		t.Fatalf("the process was not built with deps: %#v", impl.Notify)
+	if greeting != "hello" {
+		t.Fatalf("the process was not built with deps: its greeting is %q", greeting)
 	}
-	if impl.Tidy == nil || impl.CartRow == nil {
-		t.Fatalf("a policy or projection is not bound: %#v", impl)
-	}
-	// NewRegistry refuses an Impl with an aggregate or record unbound
+	// NewRegistry refuses an Impl with anything unbound: it answering
+	// says the aggregate, record, policy, process and projection are
 	reg := loomgen.NewRegistry(impl)
-	if len(reg.Aggregates) != 1 || len(reg.Records) != 1 {
-		t.Fatalf("registry: %d aggregates, %d records", len(reg.Aggregates), len(reg.Records))
+	if len(reg.Aggregates) != 1 || len(reg.Records) != 1 || len(reg.Policies) != 1 || len(reg.Processes) != 1 {
+		t.Fatalf("registry: %d aggregates, %d records, %d policies, %d processes", len(reg.Aggregates), len(reg.Records), len(reg.Policies), len(reg.Processes))
+	}
+	folds := 0
+	for _, p := range reg.Projections {
+		if p.Fold != nil {
+			folds++
+		}
+	}
+	if folds != 1 {
+		t.Fatalf("registry: %d projections with hand-written folds, want 1", folds)
 	}
 	if configured != 5 {
 		t.Fatalf("Configure saw a *aggregates.Cart with Limit %d, want 5", configured)

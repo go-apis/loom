@@ -213,11 +213,11 @@ func TestGenerateCheckClean(t *testing.T) {
 
 func TestGenerateCheckStaleRegistry(t *testing.T) {
 	dir, write, read, check := checkFixture(t)
-	// a policy adds a reactions interface to the registry only
+	// a policy adds its own file and leaves the registry as it was
 	write("schema/orders.loom", checkSchema+"\npolicy autoCancel {\n  on OrderPlaced -> CancelOrder\n}\n")
 	before := snapshot(t, dir)
 	out, err := check()
-	if err == nil || strings.TrimSpace(out) != "stale   loomgen/registry_gen.go" {
+	if err == nil || strings.TrimSpace(out) != "missing loomgen/auto_cancel_policy_gen.go" {
 		t.Fatalf("schema edit: err %v, out %q", err, out)
 	}
 	if !reflect.DeepEqual(before, snapshot(t, dir)) {

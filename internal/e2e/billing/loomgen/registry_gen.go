@@ -20,25 +20,9 @@ func loomErrNilEvent(eventType string) error {
 	return fmt.Errorf("nil payload for event %s", eventType)
 }
 
-type PostLedgerReactions interface {
-	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
-}
-
-type CaptureOnPaidReactions interface {
-	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
-}
-
-type RaiseOnOrderReactions interface {
-	OnOrderPlaced(ctx context.Context, evt *loom.Event, data *OrderPlaced) ([]loom.Command, error)
-}
-
 type Impl struct {
-	PostLedger    PostLedgerReactions
-	CaptureOnPaid CaptureOnPaidReactions
-	RaiseOnOrder  RaiseOnOrderReactions
 
-	// handlers holds what the aggregates' and records' binding methods set,
-	// by name.
+	// handlers holds what the binding methods set, by kind and name.
 	handlers map[string]any
 }
 
@@ -50,66 +34,9 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Events: []*loom.EventDef{
 			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "orders", Aliases: nil, New: func() any { return &OrderPlaced{} }},
 		},
-		Policies: []*loom.ReactorDef{
-			{
-				Name:   "postLedger",
-				Events: []string{"InvoicePaid"},
-				Subs: []loom.SubscriptionDef{
-					{Event: "InvoicePaid", Dispatches: []string{"PostLedgerEntry"}},
-				},
-				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
-					switch data := evt.Data.(type) {
-					case *InvoicePaid:
-						cmds, err := impl.PostLedger.OnInvoicePaid(ctx, evt, data)
-						if err != nil {
-							return nil, err
-						}
-						return cmds, checkDispatches("postLedger", "InvoicePaid", []string{"PostLedgerEntry"}, cmds)
-					}
-					return nil, fmt.Errorf("unroutable event %s", evt.Type)
-				},
-			},
-		},
-		Processes: []*loom.ReactorDef{
-			{
-				Name:   "captureOnPaid",
-				Events: []string{"InvoicePaid"},
-				Subs: []loom.SubscriptionDef{
-					{Event: "InvoicePaid", Dispatches: nil},
-				},
-				Effects: []string{"gateway_capture"},
-				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
-					switch data := evt.Data.(type) {
-					case *InvoicePaid:
-						cmds, err := impl.CaptureOnPaid.OnInvoicePaid(ctx, evt, data)
-						if err != nil {
-							return nil, err
-						}
-						return cmds, checkDispatches("captureOnPaid", "InvoicePaid", nil, cmds)
-					}
-					return nil, fmt.Errorf("unroutable event %s", evt.Type)
-				},
-			},
-			{
-				Name:   "raiseOnOrder",
-				Events: []string{"OrderPlaced"},
-				Subs: []loom.SubscriptionDef{
-					{Event: "OrderPlaced", Dispatches: []string{"RaiseInvoice"}},
-				},
-				React: func(ctx context.Context, evt *loom.Event) ([]loom.Command, error) {
-					switch data := evt.Data.(type) {
-					case *OrderPlaced:
-						cmds, err := impl.RaiseOnOrder.OnOrderPlaced(ctx, evt, data)
-						if err != nil {
-							return nil, err
-						}
-						return cmds, checkDispatches("raiseOnOrder", "OrderPlaced", []string{"RaiseInvoice"}, cmds)
-					}
-					return nil, fmt.Errorf("unroutable event %s", evt.Type)
-				},
-			},
-		},
-		Types: []*loom.TypeDef{},
+		Policies:  []*loom.ReactorDef{},
+		Processes: []*loom.ReactorDef{},
+		Types:     []*loom.TypeDef{},
 		Joins: []*loom.JoinDef{
 			{OnEntity: "InvoiceSummary", Field: "spend", Service: "orders", Entity: "CustomerSpend", List: false, Via: "customer_id"},
 		},
@@ -136,12 +63,14 @@ func NewRegistry(impl Impl) *loom.Registry {
 	return r
 }
 
-// loomOwner is one aggregate's or record's part of the registry. Each
-// <name>_gen.go adds its own to loomOwners in init, so this file never
-// lists them.
+// loomOwner is one declaration's part of the registry: an aggregate, a
+// record, a policy, a process or a @fold projection. Each adds its own to
+// loomOwners in its file's init, so this file never lists them.
 type loomOwner struct {
-	kind     string // "aggregate" or "record"
-	name     string
+	kind string // "aggregate", "record", "policy", "process" or "projection"
+	name string
+	// bind is the Impl method that hands it its implementation
+	bind     string
 	register func(impl Impl, h any, r *loom.Registry)
 }
 
@@ -149,28 +78,31 @@ var loomOwners []loomOwner
 
 func loomRegister(o loomOwner) { loomOwners = append(loomOwners, o) }
 
-func (impl *Impl) bind(name string, h any) {
+func (impl *Impl) bind(key string, h any) {
 	if impl.handlers == nil {
 		impl.handlers = map[string]any{}
 	}
-	impl.handlers[name] = h
+	impl.handlers[key] = h
 }
 
-// loomRegisterOwners adds every aggregate, then every record, in name
-// order — never init order — so the registry is the same on every boot.
-// An owner whose handlers were never bound panics with its name.
+var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "process": 3, "projection": 4}
+
+// loomRegisterOwners adds every aggregate, then every record, policy,
+// process and @fold projection, each kind in name order — never init
+// order — so the registry is the same on every boot. One whose
+// implementation was never bound panics with its name.
 func loomRegisterOwners(impl Impl, r *loom.Registry) {
 	owners := append([]loomOwner(nil), loomOwners...)
 	sort.Slice(owners, func(i, j int) bool {
 		if owners[i].kind != owners[j].kind {
-			return owners[i].kind == "aggregate"
+			return loomKindOrder[owners[i].kind] < loomKindOrder[owners[j].kind]
 		}
 		return owners[i].name < owners[j].name
 	})
 	for _, o := range owners {
-		h := impl.handlers[o.name]
+		h := impl.handlers[o.kind+":"+o.name]
 		if h == nil {
-			panic(fmt.Sprintf("loomgen: %s %s has no handlers — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.name))
+			panic(fmt.Sprintf("loomgen: %s %s has no implementation — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.bind))
 		}
 		o.register(impl, h, r)
 	}

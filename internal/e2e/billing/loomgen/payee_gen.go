@@ -88,10 +88,10 @@ func aggregateDefPayee(h PayeeHandlers) *loom.AggregateDef {
 
 // Payee binds h as the Payee aggregate's handlers. NewRegistry panics
 // if it is never called.
-func (impl *Impl) Payee(h PayeeHandlers) { impl.bind("Payee", h) }
+func (impl *Impl) Payee(h PayeeHandlers) { impl.bind("aggregate:Payee", h) }
 
 func init() {
-	loomRegister(loomOwner{kind: "aggregate", name: "Payee", register: func(impl Impl, h any, r *loom.Registry) {
+	loomRegister(loomOwner{kind: "aggregate", name: "Payee", bind: "Payee", register: func(impl Impl, h any, r *loom.Registry) {
 		r.Aggregates = append(r.Aggregates, aggregateDefPayee(h.(PayeeHandlers)))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"bank_token", "tin"}, New: func() any { return &PayeeRegistered{} }},
