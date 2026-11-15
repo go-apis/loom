@@ -227,6 +227,11 @@ type Validator interface {
 }
 
 func (c *Client) Dispatch(ctx context.Context, cmds ...Command) (err error) {
+	// a handler or reaction a plan is running returns its commands; one
+	// that dispatched them itself would do what the plan only works out
+	if Planning(ctx) {
+		return errors.New("loom: Dispatch while planning: a plan runs nothing — return the commands from the reaction")
+	}
 	names := make([]string, len(cmds))
 	for i, cmd := range cmds {
 		names[i] = cmd.LoomCommand()
@@ -290,76 +295,9 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 		return err
 	}
 
-	published := false
-	batched := false
-	type queued struct {
-		cmd   Command
-		cause string
-	}
-	queue := make([]queued, 0, len(cmds))
-	for _, cmd := range cmds {
-		queue = append(queue, queued{cmd: cmd, cause: meta.CausationID})
-	}
-
-	for depth := 0; len(queue) > 0; depth++ {
-		if depth > maxPolicyDepth {
-			return fmt.Errorf("loom: policy chain exceeded depth %d — schema cycle?", maxPolicyDepth)
-		}
-		batch := queue
-		queue = nil
-
-		for _, q := range batch {
-			cmdMeta := Metadata{
-				CorrelationID: meta.CorrelationID,
-				CausationID:   q.cause,
-				Actor:         meta.Actor,
-			}
-			// timer and batch wrappers join the transaction instead of
-			// executing
-			switch w := q.cmd.(type) {
-			case *scheduledCommand:
-				if err := c.writeTimer(ctx, tx, w, cmdMeta); err != nil {
-					return err
-				}
-				continue
-			case *cancelTimer:
-				if err := c.deleteTimer(ctx, tx, w); err != nil {
-					return err
-				}
-				continue
-			case *asBatch:
-				ns, _ := w.CommandTarget()
-				id := w.id
-				if id == uuid.Nil {
-					id = uuid.New()
-				}
-				if err := c.enqueueBatchTx(ctx, tx, id, ns, w.cmds); err != nil {
-					return err
-				}
-				batched = true
-				continue
-			}
-			newEvents, err := c.handleCommand(ctx, tx, q.cmd, cmdMeta)
-			if err != nil {
-				return err
-			}
-			for _, evt := range newEvents {
-				def := c.reg.eventDef(evt.Type)
-				if def != nil && def.Publish {
-					if err := c.enqueueOutbox(ctx, tx, evt); err != nil {
-						return err
-					}
-					published = true
-				}
-				followups, err := c.runPolicies(ctx, evt)
-				if err != nil {
-					return err
-				}
-				for _, f := range followups {
-					queue = append(queue, queued{cmd: f, cause: fmt.Sprintf("evt:%d", evt.GlobalSeq)})
-				}
-			}
-		}
+	published, batched, err := c.runUnit(ctx, tx, cmds, meta, nil)
+	if err != nil {
+		return err
 	}
 
 	// NOTIFY inside the transaction: postgres delivers it atomically with
@@ -381,6 +319,94 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 		c.nudgeBatches()
 	}
 	return nil
+}
+
+// runUnit is a unit of work's body on tx: each command handled, its
+// events appended and queued for the bus, every subscribed policy run on
+// each event, and the commands the policies answer with handled in turn,
+// to maxPolicyDepth. Dispatch commits what it wrote; a plan (plans.go)
+// passes the scope it records under and rolls it back.
+func (c *Client) runUnit(ctx context.Context, tx pgx.Tx, cmds []Command, meta Metadata, plan *planScope) (published, batched bool, err error) {
+	type queued struct {
+		cmd   Command
+		cause string
+		// by is the policy whose answer this command is; empty for the
+		// unit's own commands
+		by string
+	}
+	queue := make([]queued, 0, len(cmds))
+	for _, cmd := range cmds {
+		queue = append(queue, queued{cmd: cmd, cause: meta.CausationID})
+	}
+
+	for depth := 0; len(queue) > 0; depth++ {
+		if depth > maxPolicyDepth {
+			return false, false, fmt.Errorf("loom: policy chain exceeded depth %d — schema cycle?", maxPolicyDepth)
+		}
+		batch := queue
+		queue = nil
+
+		for _, q := range batch {
+			cmdMeta := Metadata{
+				CorrelationID: meta.CorrelationID,
+				CausationID:   q.cause,
+				Actor:         meta.Actor,
+			}
+			// timer and batch wrappers join the transaction instead of
+			// executing
+			switch w := q.cmd.(type) {
+			case *scheduledCommand:
+				if err := c.writeTimer(ctx, tx, w, cmdMeta); err != nil {
+					return false, false, err
+				}
+				continue
+			case *cancelTimer:
+				if err := c.deleteTimer(ctx, tx, w); err != nil {
+					return false, false, err
+				}
+				continue
+			case *asBatch:
+				ns, _ := w.CommandTarget()
+				id := w.id
+				if id == uuid.Nil {
+					id = uuid.New()
+				}
+				if err := c.enqueueBatchTx(ctx, tx, id, ns, w.cmds); err != nil {
+					return false, false, err
+				}
+				batched = true
+				continue
+			}
+			newEvents, err := c.handleCommand(ctx, tx, q.cmd, cmdMeta)
+			if err != nil {
+				return false, false, err
+			}
+			for _, evt := range newEvents {
+				def := c.reg.eventDef(evt.Type)
+				if def != nil && def.Publish {
+					if err := c.enqueueOutbox(ctx, tx, evt); err != nil {
+						return false, false, err
+					}
+					published = true
+				}
+				planned := plan.emitted(evt, q.cmd, q.by)
+				for _, p := range c.reg.Policies {
+					if !contains(p.Events, evt.Type) {
+						continue
+					}
+					followups, err := p.React(ctx, evt)
+					if err != nil {
+						return false, false, fmt.Errorf("policy %s on %s: %w", p.Name, evt.Type, err)
+					}
+					planned.decided("policy", p.Name, followups)
+					for _, f := range followups {
+						queue = append(queue, queued{cmd: f, cause: fmt.Sprintf("evt:%d", evt.GlobalSeq), by: "policy " + p.Name})
+					}
+				}
+			}
+		}
+	}
+	return published, batched, nil
 }
 
 func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta Metadata) ([]*Event, error) {
@@ -598,24 +624,6 @@ func (c *Client) record(ctx context.Context, q querier, record, namespace string
 		return state, nil
 	}
 	return nil, fmt.Errorf("loom: unknown record %s", record)
-}
-
-// runPolicies reacts to one new event with every subscribed policy, inside
-// the same transaction. Policies see committed-with-us state and their
-// commands join the unit atomically.
-func (c *Client) runPolicies(ctx context.Context, evt *Event) ([]Command, error) {
-	var out []Command
-	for _, p := range c.reg.Policies {
-		if !contains(p.Events, evt.Type) {
-			continue
-		}
-		cmds, err := p.React(ctx, evt)
-		if err != nil {
-			return nil, fmt.Errorf("policy %s on %s: %w", p.Name, evt.Type, err)
-		}
-		out = append(out, cmds...)
-	}
-	return out, nil
 }
 
 // Load folds and returns an aggregate's current state and version, outside

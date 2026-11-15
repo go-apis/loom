@@ -314,7 +314,7 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 		t.Errorf("describe discardParcel does not say it plans: %s", text)
 	}
 	text, refused = call(courier, "dispatch", map[string]any{"name": "discardParcel", "args": map[string]any{"input": map[string]any{"aggregateId": parcel, "namespace": "acme"}}})
-	if refused || !strings.Contains(text, `"events":[{"data":{"discarded":true},"published":false,"reactions":[],"type":"ParcelDiscarded"}]`) {
+	if refused || !strings.Contains(text, `"events":[{"aggregate":"Parcel","aggregateId":"`+parcel+`","cause":null,"command":"DiscardParcel","data":{"discarded":true},"published":false,"reactions":[],"type":"ParcelDiscarded"}]`) {
 		t.Fatalf("dispatch discardParcel = %s", text)
 	}
 	one = map[string]any{"name": "parcel", "args": map[string]any{"namespace": "acme", "id": parcel}}

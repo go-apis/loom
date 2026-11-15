@@ -1189,9 +1189,9 @@ Some commands should not be run on a caller's first word. Mark one
 command DiscardParcel @plan -> ParcelDiscarded
 ```
 
-Its mutation now runs nothing. It decides the command against the
-state as it stands and answers a `Plan`: the events the handler would
-emit, the target and its version, an expiry, and an id.
+Its mutation now changes nothing. It works out what running the
+command would lead to and answers a `Plan`: the events, the target and
+its version, an expiry, and an id.
 `runPlan(namespace, id)` runs that plan — exactly the command that was
 planned, since the plan's id is all it takes:
 
@@ -1208,13 +1208,39 @@ planned, since the plan's id is all it takes:
   may run.
 
 A command its handler refuses is refused at planning, with the
-handler's error. Beside each event it would emit, a plan names what the
-schema says reacts to it: policies with the commands they may dispatch,
-processes with the outside calls they declare, projections with the
-read model they update, other services' processes on the same gateway
-that consume it, and whether it goes to the bus at all. That is who
-reacts, read from the schema — not what each would decide, which is
-not known until it runs, and no reaction is run to find out. `@plan` holds
+handler's error. Otherwise the plan runs the command, its policies and
+its processes on a transaction it rolls back, and answers what that
+came to:
+
+- **Every event, in order.** The command's own, then those of the
+  commands its reactions decide on. Each names the command that emits
+  it and the reaction that dispatches that command (`cause`: "policy
+  postLedger", "process coolAnvil"), and whether it goes to the bus.
+- **What each reaction decided.** Beside each event is what reacts to
+  it, with an `outcome`. A policy is `decided`, with the `commands` it
+  dispatches: run at once, set as a timer (with when it fires), or
+  queued as a batch. Timers and batches are shown and not followed. A
+  policy that fails, or whose command is refused, fails the plan, as it
+  would fail the command.
+- **Processes, as far as the outside.** A process is run too, and what
+  it dispatches is run in its turn. One that reaches an outside call
+  (`loom.Once`) stops there with outcome `calls` and the call's name:
+  the call is not made, so what the process does with its answer is not
+  known. One that returns an error or dispatches a refused command is
+  `fails`; `loom.NotYet` is `not_yet`. A plan follows processes ten
+  deep and for two seconds; past that they are `not_followed`.
+- **Who else reacts.** Projections with the read model they update, and
+  other services' processes on the same gateway that consume the event,
+  are named from the schema and not run.
+
+Three things to know. A plan runs your handlers and reactions for
+something that has not happened, so anything they do outside the
+transaction must go through `loom.Once`, or check `loom.Planning(ctx)`
+first; `Client.Dispatch` under a plan's context is refused. A real
+process runs after the commit, beside the others; a plan runs them one
+after another on its own transaction. And `runPlan` checks that the
+command's own target has not moved, not everything its reactions read,
+so what they decide at the run may differ from the plan. `@plan` holds
 back only the gateway, and so the MCP tools; in-process `Dispatch`
 (processes, timers, your own code) runs the command as any other, and
 `Client.Plan` / `Client.RunPlan` are there to call directly.

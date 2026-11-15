@@ -89,6 +89,9 @@ type effectScope struct {
 	c     *Client
 	p     *ReactorDef
 	scope string
+	// plan is set while a plan runs the reaction: the calls it reaches
+	// are noted and not made (plans.go)
+	plan *plannedEffects
 }
 
 type effectScopeKey struct{}
@@ -115,6 +118,13 @@ func Once[T any](ctx context.Context, key string, fn func(context.Context) (T, e
 	}
 	if !es.p.declaresEffect(key) {
 		return zero, fmt.Errorf("loom: process %s does not declare effect %q — add `effect %s` to its schema block", es.p.Name, key, effectName(key))
+	}
+
+	// a plan makes no outside call: it notes the one it reached, and the
+	// reaction ends here
+	if es.plan != nil {
+		es.plan.reached = append(es.plan.reached, key)
+		return zero, &errPlannedEffect{key: key}
 	}
 
 	tel := es.c.tel
