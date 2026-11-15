@@ -177,6 +177,11 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **`loom.Every` keeps every row of a newest-first read.** With
+  `OrderBy: "-updated_at"` it reads oldest first and answers in reverse:
+  walked from the newest down, a row written to while the pages were
+  read moved behind the walk and was lost.
+
 - **List reads page by cursor, with an id tie-breaker.** Every list
   read orders by its column and then by id, so rows that tie on the
   column have one order, and pages past a row with a keyset in place of

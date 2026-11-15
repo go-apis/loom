@@ -961,7 +961,8 @@ for page, err := range loom.Pages(ctx, cli.ListEntities("WorkItemIndex"), loom.Q
 that changes place in the order while the pages are read is read where
 it stands: order by a field that does not change, or leave `OrderBy`
 empty in `Every`, which reads ascending by `updated_at` so a row written
-to meanwhile is met again and answered once.
+to meanwhile is met again and answered once. `Every` reads
+`-updated_at` the same way and answers it in reverse.
 
 In a test, a fake list read answers `loomtest.Page(rows, q)`: the rows
 after the one `q.After` names, at most `q.Limit`.
