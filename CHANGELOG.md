@@ -14,6 +14,21 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **Package `contract`: every operation, as every principal.**
+  `contract.Run(t, Suite{Gateway, Principals, Namespaces, Golden})` reads
+  the gateway's own schema and, for each kind of principal the service
+  names, records who may run each query and mutation, which rows each
+  list shows it in each namespace, and which fields are hidden from it.
+  The record is a JSON file committed beside the code; `Run` fails for
+  every operation and principal that differs from it, naming both, until
+  it is recorded again with `LOOM_CONTRACT_UPDATE=1`. A policy that skips
+  a rule for one kind of principal changes that principal's rows and
+  fails. With `Suite.Asks` (`contract.ReadAsks`, the shape of a client's
+  published `gateway-asks.json`) every query, mutation and field the
+  client asks must be served to every principal it serves; a refusal
+  names the ask and the principal. Mutations and reads that take more
+  than a namespace are probed, not run.
+
 - **`wire:` in loom.yml: implementations wired by convention.** With
   `layout: folders`, `wire: wire` has `loom generate` write one wiring
   file per declaration into a generated package —
