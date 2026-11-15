@@ -39,7 +39,7 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
    `impl.ShipOnPayment(&ShipOnPayment{})`.
    Each has its own `loomgen/<snake name>_gen.go` (a reactor's carries
    its kind: `ship_on_payment_process_gen.go`).
-   The shared `registry_gen.go` never names one, so a new aggregate adds
+   The fixed `loom_gen.go` never names one, so a new aggregate adds
    one generated file and changes none. Each schema file has its own
    `loomgen/<schema file>_types_gen.go` for the enums, types, entities
    and shared events it declares, so declare a type in the schema file
@@ -239,7 +239,7 @@ projections, timers and batches are end-to-end territory.
 
 ## When the generated code does not compile
 
-- `X redeclared` in `registry_gen.go`: a reactor collides with an
+- `X redeclared` in `loomgen/`: a reactor collides with an
   aggregate and the generator predates loom ADR 0006 — bump loom, do not
   edit the file.
 - A missing method on `…Handlers` or `…Reactions`: a new command or
@@ -247,6 +247,9 @@ projections, timers and batches are end-to-end territory.
 - `generate --check` lists files: regenerate with `go tool loom generate`
   and commit them. An orphan (a renamed or removed aggregate's
   `_gen.go`) is listed as stale, and `generate` removes it.
+- `loomgen/registry_gen.go` is gone after a regenerate: it is no longer
+  written. `Impl` and `NewRegistry` are in `loom_gen.go`, and each
+  declaration registers itself from its own file. Commit the removal.
 - `unknown field Order in struct literal of type loomgen.Impl`: the
   `registry.go` predates per-declaration registration (loom ADR 0008).
   Move every aggregate, record, policy, process and `@fold` projection
@@ -261,11 +264,10 @@ The generated files are the generator's output, never a merge of two
 people's lines. Two branches that each add an aggregate write disjoint
 `<name>_gen.go` files and should not conflict. Two that change types in
 different schema files write different `<schema file>_types_gen.go`
-files. Two that change declarations in the same schema file, or a
-reactor, a projection, a `@table`, an enum's values or a type's required
-fields, can conflict: they rewrite the same `_types_gen.go`,
-`registry_gen.go` or `tables_gen.sql`, and no line-by-line resolution of
-those is right.
+files. Two that change declarations in the same schema file, the same
+aggregate or reactor, or any `@table`, can conflict: they rewrite the
+same `_types_gen.go`, the same `<name>_gen.go`, or `tables_gen.sql`, and
+no line-by-line resolution of those is right.
 
 1. Resolve only the **sources** — the `.loom` schema files and
    `loom.yml`. A conflict there is real: keep both sides' declarations

@@ -77,11 +77,21 @@ func SettingStrikeCap(ctx context.Context, c *loom.Client, namespace string) (in
 }
 
 func init() {
-	loomSettings = append(loomSettings,
-		&loom.SettingDef{Name: "bellows", Type: "string", Default: "hand", Doc: "What drives the bellows."},
-		&loom.SettingDef{Name: "draught", Type: "float", Default: float64(0)},
-		&loom.SettingDef{Name: "forge_open", Type: "bool", Default: true, Doc: "Whether the forge takes work."},
-		&loom.SettingDef{Name: "heat", Type: "enum", Default: "warm", Values: []string{"cold", "warm", "hot"}, Doc: "How hot the forge is kept."},
-		&loom.SettingDef{Name: "strike_cap", Type: "int", Default: int64(3), Doc: "How many strikes an anvil takes before it is rested."},
-	)
+	loomStatic(func(impl Impl, r *loom.Registry) {
+		r.Settings = append(r.Settings,
+			&loom.SettingDef{Name: "bellows", Type: "string", Default: "hand", Doc: "What drives the bellows."},
+			&loom.SettingDef{Name: "draught", Type: "float", Default: float64(0)},
+			&loom.SettingDef{Name: "forge_open", Type: "bool", Default: true, Doc: "Whether the forge takes work."},
+			&loom.SettingDef{Name: "heat", Type: "enum", Default: "warm", Values: []string{"cold", "warm", "hot"}, Doc: "How hot the forge is kept."},
+			&loom.SettingDef{Name: "strike_cap", Type: "int", Default: int64(3), Doc: "How many strikes an anvil takes before it is rested."},
+		)
+	})
+}
+
+func init() {
+	loomStatic(func(impl Impl, r *loom.Registry) {
+		r.Enums = append(r.Enums, []*loom.EnumDef{
+			{Name: "Heat", Values: []string{"cold", "warm", "hot"}},
+		}...)
+	})
 }

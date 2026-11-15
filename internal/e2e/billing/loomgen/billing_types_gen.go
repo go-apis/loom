@@ -68,3 +68,14 @@ func (s *PayeeDirectory) Fold(eventType string, data any) error {
 	}
 	return nil
 }
+
+func init() {
+	loomStatic(func(impl Impl, r *loom.Registry) {
+		r.Events = append(r.Events, []*loom.EventDef{
+			{Name: "OrderPlaced", SchemaVersion: 1, Publish: true, Service: "orders", Aliases: nil, New: func() any { return &OrderPlaced{} }},
+		}...)
+		r.Joins = append(r.Joins, []*loom.JoinDef{
+			{OnEntity: "InvoiceSummary", Field: "spend", Service: "orders", Entity: "CustomerSpend", List: false, Via: "customer_id"},
+		}...)
+	})
+}

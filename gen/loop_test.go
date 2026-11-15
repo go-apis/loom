@@ -32,20 +32,24 @@ aggregate Order @loop {
 		t.Fatal(err)
 	}
 
-	registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "registry_gen.go"))
+	registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "look_gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(registry), "type Look interface {") {
-		t.Errorf("registry_gen.go missing the Look interface")
+		t.Errorf("look_gen.go missing the Look interface")
 	}
 	if !strings.Contains(string(registry), "LookOrder(ctx context.Context) ([]loom.Command, error)") {
 		t.Errorf("Look interface missing LookOrder: %s", registry)
 	}
-	if !strings.Contains(string(registry), "Look Look\n") {
+	scaffold, err := os.ReadFile(filepath.Join(dir, "loomgen", "loom_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(scaffold), "Look Look\n") {
 		t.Errorf("Impl missing a Look field")
 	}
-	if !strings.Contains(string(registry), `panic("loomgen: the schema declares @loop`) {
+	if !strings.Contains(string(scaffold), `panic("loomgen: the schema declares @loop`) {
 		t.Errorf("NewRegistry missing the @loop nil-check panic")
 	}
 
@@ -92,12 +96,12 @@ aggregate Order {
 	if _, err := gen.Generate(s, cfg); err != nil {
 		t.Fatal(err)
 	}
-	registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "registry_gen.go"))
+	registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "loom_gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(registry), "Look") {
-		t.Errorf("no @loop aggregate declared, but registry_gen.go mentions Look: %s", registry)
+		t.Errorf("no @loop aggregate declared, but loom_gen.go mentions Look: %s", registry)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "look.go")); !os.IsNotExist(err) {
 		t.Errorf("no @loop aggregate declared, but look.go was written")

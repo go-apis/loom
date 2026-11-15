@@ -361,7 +361,9 @@ entity WorkItem @table {
 		}
 		renders = append(renders, []byte(all.String()))
 
-		registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "registry_gen.go"))
+		// the entity's TableDef is registered by the file that holds the
+		// entity
+		registry, err := os.ReadFile(filepath.Join(dir, "loomgen", "models_gen.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
