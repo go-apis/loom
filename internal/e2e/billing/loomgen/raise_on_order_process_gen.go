@@ -20,9 +20,18 @@ type RaiseOnOrderReactions interface {
 	OnOrderPlaced(ctx context.Context, evt *loom.Event, data *OrderPlaced) ([]loom.Command, error)
 }
 
-// RaiseOnOrder binds h as the process raiseOnOrder's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) RaiseOnOrder(h RaiseOnOrderReactions) { impl.bind("process:raiseOnOrder", h) }
+// RaiseOnOrder binds h as the process raiseOnOrder's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) RaiseOnOrder(h RaiseOnOrderReactions) *Impl {
+	impl.bind("process:raiseOnOrder", h)
+	return impl
+}
+
+// RaiseOnOrder is what is bound as the process raiseOnOrder's reactions, nil when nothing is.
+func (b Bound) RaiseOnOrder() RaiseOnOrderReactions {
+	h, _ := b.impl.handlers["process:raiseOnOrder"].(RaiseOnOrderReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "raiseOnOrder", bind: "RaiseOnOrder", register: func(impl Impl, h any, r *loom.Registry) {

@@ -122,9 +122,18 @@ func aggregateDefKiln(h KilnHandlers) *loom.AggregateDef {
 	}
 }
 
-// Kiln binds h as the Kiln aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Kiln(h KilnHandlers) { impl.bind("aggregate:Kiln", h) }
+// Kiln binds h as the aggregate Kiln's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Kiln(h KilnHandlers) *Impl {
+	impl.bind("aggregate:Kiln", h)
+	return impl
+}
+
+// Kiln is what is bound as the aggregate Kiln's handlers, nil when nothing is.
+func (b Bound) Kiln() KilnHandlers {
+	h, _ := b.impl.handlers["aggregate:Kiln"].(KilnHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Kiln", bind: "Kiln", register: func(impl Impl, h any, r *loom.Registry) {

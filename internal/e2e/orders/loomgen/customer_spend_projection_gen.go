@@ -20,9 +20,18 @@ type CustomerSpendFolds interface {
 	OnOrderPlaced(state *CustomerSpend, evt *loom.Event, data *OrderPlaced) error
 }
 
-// CustomerSpend binds h as the projection customerSpend's folds. NewRegistry panics if it is
-// never called.
-func (impl *Impl) CustomerSpend(h CustomerSpendFolds) { impl.bind("projection:customerSpend", h) }
+// CustomerSpend binds h as the projection customerSpend's folds, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) CustomerSpend(h CustomerSpendFolds) *Impl {
+	impl.bind("projection:customerSpend", h)
+	return impl
+}
+
+// CustomerSpend is what is bound as the projection customerSpend's folds, nil when nothing is.
+func (b Bound) CustomerSpend() CustomerSpendFolds {
+	h, _ := b.impl.handlers["projection:customerSpend"].(CustomerSpendFolds)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "projection", name: "customerSpend", bind: "CustomerSpend", register: func(impl Impl, h any, r *loom.Registry) {

@@ -86,9 +86,18 @@ func aggregateDefPayee(h PayeeHandlers) *loom.AggregateDef {
 	}
 }
 
-// Payee binds h as the Payee aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Payee(h PayeeHandlers) { impl.bind("aggregate:Payee", h) }
+// Payee binds h as the aggregate Payee's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Payee(h PayeeHandlers) *Impl {
+	impl.bind("aggregate:Payee", h)
+	return impl
+}
+
+// Payee is what is bound as the aggregate Payee's handlers, nil when nothing is.
+func (b Bound) Payee() PayeeHandlers {
+	h, _ := b.impl.handlers["aggregate:Payee"].(PayeeHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Payee", bind: "Payee", register: func(impl Impl, h any, r *loom.Registry) {

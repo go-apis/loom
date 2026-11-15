@@ -20,9 +20,18 @@ type PostLedgerReactions interface {
 	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
 }
 
-// PostLedger binds h as the policy postLedger's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) PostLedger(h PostLedgerReactions) { impl.bind("policy:postLedger", h) }
+// PostLedger binds h as the policy postLedger's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) PostLedger(h PostLedgerReactions) *Impl {
+	impl.bind("policy:postLedger", h)
+	return impl
+}
+
+// PostLedger is what is bound as the policy postLedger's reactions, nil when nothing is.
+func (b Bound) PostLedger() PostLedgerReactions {
+	h, _ := b.impl.handlers["policy:postLedger"].(PostLedgerReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "policy", name: "postLedger", bind: "PostLedger", register: func(impl Impl, h any, r *loom.Registry) {

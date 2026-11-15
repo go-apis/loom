@@ -20,10 +20,17 @@ type ScheduleAutoCancelReactions interface {
 	OnOrderPlaced(ctx context.Context, evt *loom.Event, data *OrderPlaced) ([]loom.Command, error)
 }
 
-// ScheduleAutoCancel binds h as the policy scheduleAutoCancel's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) ScheduleAutoCancel(h ScheduleAutoCancelReactions) {
+// ScheduleAutoCancel binds h as the policy scheduleAutoCancel's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) ScheduleAutoCancel(h ScheduleAutoCancelReactions) *Impl {
 	impl.bind("policy:scheduleAutoCancel", h)
+	return impl
+}
+
+// ScheduleAutoCancel is what is bound as the policy scheduleAutoCancel's reactions, nil when nothing is.
+func (b Bound) ScheduleAutoCancel() ScheduleAutoCancelReactions {
+	h, _ := b.impl.handlers["policy:scheduleAutoCancel"].(ScheduleAutoCancelReactions)
+	return h
 }
 
 func init() {

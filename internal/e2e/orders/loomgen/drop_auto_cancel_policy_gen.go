@@ -20,9 +20,18 @@ type DropAutoCancelReactions interface {
 	OnOrderShipped(ctx context.Context, evt *loom.Event, data *OrderShipped) ([]loom.Command, error)
 }
 
-// DropAutoCancel binds h as the policy dropAutoCancel's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) DropAutoCancel(h DropAutoCancelReactions) { impl.bind("policy:dropAutoCancel", h) }
+// DropAutoCancel binds h as the policy dropAutoCancel's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) DropAutoCancel(h DropAutoCancelReactions) *Impl {
+	impl.bind("policy:dropAutoCancel", h)
+	return impl
+}
+
+// DropAutoCancel is what is bound as the policy dropAutoCancel's reactions, nil when nothing is.
+func (b Bound) DropAutoCancel() DropAutoCancelReactions {
+	h, _ := b.impl.handlers["policy:dropAutoCancel"].(DropAutoCancelReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "policy", name: "dropAutoCancel", bind: "DropAutoCancel", register: func(impl Impl, h any, r *loom.Registry) {

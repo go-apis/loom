@@ -20,9 +20,18 @@ type ImpatientReactions interface {
 	OnAnvilStruck(ctx context.Context, evt *loom.Event, data *AnvilStruck) ([]loom.Command, error)
 }
 
-// Impatient binds h as the process impatient's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) Impatient(h ImpatientReactions) { impl.bind("process:impatient", h) }
+// Impatient binds h as the process impatient's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Impatient(h ImpatientReactions) *Impl {
+	impl.bind("process:impatient", h)
+	return impl
+}
+
+// Impatient is what is bound as the process impatient's reactions, nil when nothing is.
+func (b Bound) Impatient() ImpatientReactions {
+	h, _ := b.impl.handlers["process:impatient"].(ImpatientReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "impatient", bind: "Impatient", register: func(impl Impl, h any, r *loom.Registry) {

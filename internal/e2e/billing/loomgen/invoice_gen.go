@@ -116,9 +116,18 @@ func aggregateDefInvoice(h InvoiceHandlers) *loom.AggregateDef {
 	}
 }
 
-// Invoice binds h as the Invoice aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Invoice(h InvoiceHandlers) { impl.bind("aggregate:Invoice", h) }
+// Invoice binds h as the aggregate Invoice's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Invoice(h InvoiceHandlers) *Impl {
+	impl.bind("aggregate:Invoice", h)
+	return impl
+}
+
+// Invoice is what is bound as the aggregate Invoice's handlers, nil when nothing is.
+func (b Bound) Invoice() InvoiceHandlers {
+	h, _ := b.impl.handlers["aggregate:Invoice"].(InvoiceHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Invoice", bind: "Invoice", register: func(impl Impl, h any, r *loom.Registry) {
