@@ -14,6 +14,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A signed export of a service's events, for audit.**
+  `Client.ExportEvents(ctx, w, ExportOptions{Signer})` writes the log,
+  or one namespace or a range of it, as lines of JSON: each event
+  carries a hash chained from the one before, and the footer — the
+  count and the last chain — is signed. `loom.VerifyExport`, and
+  `loom verify-export --key <public key> <file>` on the command line,
+  check an export away from the service and name the first event that
+  does not check: a changed, dropped, added or moved event, a file cut
+  short, or another key's signature all fail. `Ed25519Signer` and
+  `Ed25519Verifier` cover a key in hand; a product signs with the key
+  its identity service issued by implementing `Signer`. Events are
+  exported as stored: a `@pii` field leaves sealed.
+
 - **A build older than a stored event type refuses to start.** The store
   records, with each event type's first event, the release that wrote it
   (`loom_event_floors`; first write wins). `Start` returns a

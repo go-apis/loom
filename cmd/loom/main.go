@@ -55,6 +55,8 @@ func main() {
 		err = runEmit(os.Args[2:], "access.md", gen.Access)
 	case "rewrap":
 		err = runRewrap(os.Args[2:])
+	case "verify-export":
+		err = runVerifyExport(os.Args[2:], os.Stdout)
 	default:
 		usage()
 	}
@@ -73,6 +75,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom access [--dir <service dir>] [--out access.md] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom rewrap --db <dsn> (--from-local <hex>|--from-kms <key>) (--to-local <hex>|--to-kms <key>)")
+	fmt.Fprintln(os.Stderr, "       loom verify-export --key <ed25519 public key, base64, or a file holding it> <export file>")
 	os.Exit(2)
 }
 

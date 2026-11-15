@@ -1472,6 +1472,34 @@ tenant, so under `DefaultPolicy` only `All` access reads it; let your
 operators in from your `Policy` by its field name. Through `mcp.New` an
 agent finds it with `search` and reads it with `list`.
 
+## Audit: a signed export of the log
+
+The log is the record of what a service did. `Client.ExportEvents`
+writes it out for someone who must check it without the service:
+
+```go
+summary, err := cli.ExportEvents(ctx, file, loom.ExportOptions{
+    Namespace: "acme",                        // or every namespace
+    Signer:    loom.Ed25519Signer("audit-2026", key),
+})
+```
+
+The export is lines of JSON: a header, one line an event in log order,
+and a footer. Each event line carries a hash chained from the line
+before, and the footer — the count and the last chain — is signed. So
+`loom.VerifyExport`, or from a shell
+
+```
+loom verify-export --key audit.pub export.jsonl
+verified: 1204 events of orders (namespace acme), ending at 88213, exported 2026-11-15T05:00:00Z, signed by audit-2026
+```
+
+fails on an event that was changed, dropped, added or moved, naming the
+first one that does not check, and on a file cut short or signed by
+another key. `Signer` is an interface: a product signs with the key its
+identity service issued it. Events are exported as stored, so a `@pii`
+field leaves sealed.
+
 ## The console
 
 Every service carries its ops UI: open `/console` on any mounted service
