@@ -122,3 +122,8 @@ DESIGN.md's "Not yet built").
   name, owner or deadline is refused. It lives in its instance's row, its
   deadline is a time the instance is looked at, and an expiry is told to
   the look once.
+- **An approval is a wait with a record** (`approval.go`): what is
+  asked, the role that may answer, the deadline, and the action at the
+  deadline. Answered in time by someone holding the role, or settled by
+  its deadline action, it calls its instance's look, which reads the
+  outcome from `LookingAt(ctx).Approval(name)`.

@@ -116,6 +116,9 @@ type Looking struct {
 	Expired []Wait
 	// Waiting is the waits still running.
 	Waiting []Wait
+	// Approvals is the instance's approvals as they stand: open, or
+	// settled by an answer or by their deadline (approval.go).
+	Approvals []ApprovalRecord
 }
 
 // ExpiredWait is the expired wait of that name, if there is one.
@@ -150,6 +153,8 @@ type lookSaid struct {
 	// waits the look started, and the names of those it ended (wait.go)
 	waits   []Wait
 	stopped []string
+	// approvals the look asked for (approval.go)
+	approvals []Approval
 }
 
 type lookSaidKey struct{}

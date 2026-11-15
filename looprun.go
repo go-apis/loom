@@ -208,6 +208,15 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	}
 	told := l.state.Look(start)
 	told.Aggregate, told.Namespace, told.ID = l.aggregate, l.namespace, l.id
+	// an approval nobody answered takes its deadline action before the
+	// look that is told its wait has expired
+	if err := c.settleAtDeadline(ctx, l.aggregate, l.namespace, l.id, told.Expired); err != nil {
+		return err
+	}
+	var err error
+	if told.Approvals, err = c.approvalsOf(ctx, l.aggregate, l.namespace, l.id); err != nil {
+		return err
+	}
 	said := &lookSaid{}
 	lctx := withReader(ctx, c)
 	lctx = WithLooking(lctx, told)
@@ -232,6 +241,11 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	// again
 	if lookErr != nil {
 		told, said = Looking{}, &lookSaid{}
+	}
+	if len(said.approvals) > 0 {
+		if err := c.writeApprovals(ctx, c.db, l.aggregate, l.namespace, l.id, said.approvals); err != nil {
+			return err
+		}
 	}
 	if err := c.looked(ctx, l, start, told, said); err != nil {
 		return err

@@ -283,6 +283,20 @@ generated switches, folds from generated assignments.
   wait still open, the instance's look is called and told the wait has
   expired (`Looking.Expired`), once, and the wait is dropped. A look that
   fails is told again (`wait.go`, ADR 0012).
+- **An approval is a wait on a person's yes or no.** It says what is
+  asked, the role that may answer, the deadline, and what it becomes at
+  the deadline if nobody has answered (`approve`, `reject` or `expire`);
+  one that leaves any of those out is refused. It is a row of
+  `loom_approvals`, so what is waiting on whom can be listed
+  (`Client.Approvals`), and a wait on its instance, so the loop is called
+  when it is settled. `AnswerApproval` takes an answer from someone
+  holding the role, before the deadline, records who and why, ends the
+  wait and brings the instance's next look to now. At the deadline the
+  runner gives an open approval its declared action, by `deadline`,
+  before the look that is told the wait has expired. The look reads how
+  it came out with `LookingAt(ctx).Approval(name)`. The gateway serves
+  `approvals` and `answerApproval`, and checks the caller's role in the
+  namespace (`approval.go`, `graphql/approvals.go`).
 - **An event type has a floor.** The release that first writes an event
   type is recorded with that event, in `loom_event_floors`, on the
   appending transaction: first write wins. `Start` refuses, with a

@@ -172,6 +172,25 @@ CREATE TABLE IF NOT EXISTS loom_loop_due (
 );
 CREATE INDEX IF NOT EXISTS loom_loop_due_next ON loom_loop_due (service, next_look);
 
+CREATE TABLE IF NOT EXISTS loom_approvals (
+	service        text NOT NULL,
+	aggregate_type text NOT NULL,
+	namespace      text NOT NULL,
+	aggregate_id   uuid NOT NULL,
+	name           text NOT NULL,
+	what           text NOT NULL,
+	role           text NOT NULL,
+	deadline       timestamptz NOT NULL,
+	at_deadline    text NOT NULL,
+	status         text NOT NULL DEFAULT 'open',
+	answered_by    text NOT NULL DEFAULT '',
+	reason         text NOT NULL DEFAULT '',
+	asked_at       timestamptz NOT NULL DEFAULT now(),
+	answered_at    timestamptz,
+	PRIMARY KEY (service, aggregate_type, namespace, aggregate_id, name)
+);
+CREATE INDEX IF NOT EXISTS loom_approvals_waiting ON loom_approvals (service, namespace, status, deadline);
+
 CREATE TABLE IF NOT EXISTS loom_instances (
 	service    text NOT NULL,
 	instance   uuid NOT NULL,
