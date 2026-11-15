@@ -105,6 +105,8 @@ func (b *builder) objectFor(name string, sample any) (*gql.Object, error) {
 		"id":        {Type: scalarUUID, Resolve: mapField("id")},
 		"namespace": {Type: scalarNamespace, Resolve: mapField("namespace")},
 		"updatedAt": {Type: scalarTime, Resolve: mapField("updatedAt")},
+		// set on the rows of a list: what the list's `after` takes
+		"cursor": {Type: gql.String, Resolve: mapField("cursor"), Description: "In a list, this row's place in it: pass it as the list's `after` to read the page past this row. Null outside a list."},
 	}
 	for _, f := range fields {
 		out, err := b.outputType(f.t)

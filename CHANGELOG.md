@@ -109,6 +109,22 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **List reads page by cursor, with an id tie-breaker.** Every list
+  read orders by its column and then by id, so rows that tie on the
+  column have one order, and pages past a row with a keyset in place of
+  `OFFSET`: a page walk visits every row once however many tie (a tie of
+  113 rows stalled runsheet's merge queue on 17 Oct). `loom.Query.Offset`
+  is replaced by `Query.After *Cursor`, built from a page's last row
+  with `Row.Cursor(orderBy)`. Through the gateway, each row of a list
+  carries a `cursor` and the list takes `after: String`; over HTTP, the
+  list endpoints take `after_id` with `after_value` or `after_null=1`.
+  ([ADR 0014](docs/adr/0014-list-reads-page-by-cursor.md))
+
+  **Migration:** a caller that pages with `offset` moves to the cursor.
+  The gateway's lists no longer accept `offset`, so a query that passes
+  it fails validation; one that passes only `limit` is unaffected.
+  Series lists keep `offset`.
+
 - **No generated file lists the whole registry.** `loomgen/registry_gen.go`
   is no longer written. Every declaration registers itself from the
   file that holds it: enums, types, shared events, `@table` entities

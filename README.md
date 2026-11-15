@@ -1593,7 +1593,9 @@ external assets (the topology layout is ~80 lines of hand-rolled layered
 SVG), auth is whatever wraps the mount.
 
 Filters are `field=value` with `.gte .lte .gt .lt .ne .like` suffixes,
-compiled to parameterized jsonb SQL; `order`, `limit`, `offset` paginate.
+compiled to parameterized jsonb SQL; `order` and `limit` shape a page,
+and `after_id` with `after_value` (or `after_null=1`) reads the page
+past a row.
 These per-service surfaces are ops-private by design — keep them off the
 public edge (the gateway carries the public authorization model).
 

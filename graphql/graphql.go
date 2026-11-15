@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -75,8 +76,13 @@ type Field struct {
 
 // Docs renders rows the way generated list resolvers do: doc maps keyed
 // by json field names with id/namespace/updatedAt injected — the shape
-// a custom Field resolver returns for object types.
-func Docs(rows []loom.Row) []map[string]any { return rowDocs(rows) }
+// a custom Field resolver returns for object types. Each row's cursor is
+// for the default order, by updatedAt; DocsOrdered gives it for another.
+func Docs(rows []loom.Row) []map[string]any { return rowDocs(rows, "") }
+
+// DocsOrdered is Docs for rows read in the order orderBy names
+// (loom.Query.OrderBy): each row's cursor pages past it in that order.
+func DocsOrdered(rows []loom.Row, orderBy string) []map[string]any { return rowDocs(rows, orderBy) }
 
 type Config struct {
 	Services []*loom.Client
@@ -917,6 +923,7 @@ var metaFields = map[string]bool{
 	"id":         true,
 	"namespace":  true,
 	"updatedAt":  true,
+	"cursor":     true,
 	"__typename": true,
 }
 
@@ -1044,8 +1051,36 @@ func listArgs() gql.FieldConfigArgument {
 		"where":     {Type: gql.NewList(gql.NewNonNull(filterInput))},
 		"order":     {Type: gql.String},
 		"limit":     {Type: gql.Int},
-		"offset":    {Type: gql.Int},
+		// the page after a row: that row's `cursor`, as an earlier page
+		// of the same list (same order and filters) gave it (ADR 0014)
+		"after": {Type: gql.String, Description: "Page past a row: the `cursor` of the last row of the previous page of this same list (same order and filters)."},
 	}
+}
+
+// encodeCursor is a row's page boundary as the gateway hands it out:
+// opaque to the caller, and only good for the list and order it came
+// from.
+func encodeCursor(c loom.Cursor) string {
+	raw, _ := json.Marshal([]any{c.Value, c.Null, c.ID})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeCursor(s string) (*loom.Cursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	var parts []any
+	if err == nil {
+		err = json.Unmarshal(raw, &parts)
+	}
+	if err != nil || len(parts) != 3 {
+		return nil, fmt.Errorf("after: not a cursor this gateway gave out — pass a row's `cursor` as it was returned")
+	}
+	value, _ := parts[0].(string)
+	null, _ := parts[1].(bool)
+	id, _ := parts[2].(string)
+	if id == "" {
+		return nil, fmt.Errorf("after: not a cursor this gateway gave out — pass a row's `cursor` as it was returned")
+	}
+	return &loom.Cursor{Value: value, Null: null, ID: id}, nil
 }
 
 func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
@@ -1069,8 +1104,12 @@ func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
 	if limit, ok := args["limit"].(int); ok {
 		q.Limit = limit
 	}
-	if offset, ok := args["offset"].(int); ok {
-		q.Offset = offset
+	if after, ok := args["after"].(string); ok && after != "" {
+		c, err := decodeCursor(after)
+		if err != nil {
+			return loom.Query{}, err
+		}
+		q.After = c
 	}
 	if where, ok := args["where"].([]any); ok {
 		for _, w := range where {
@@ -1095,7 +1134,9 @@ func queryFromArgs(p gql.ResolveParams, g gate) (loom.Query, error) {
 	return q, nil
 }
 
-func rowDocs(rows []loom.Row) []map[string]any {
+// rowDocs renders a list's rows. Each carries its cursor for the order
+// the list was read in: what `after` takes to read the page past it.
+func rowDocs(rows []loom.Row, orderBy string) []map[string]any {
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		doc := map[string]any{}
@@ -1103,9 +1144,27 @@ func rowDocs(rows []loom.Row) []map[string]any {
 		doc["id"] = r.ID
 		doc["namespace"] = r.Namespace
 		doc["updatedAt"] = r.UpdatedAt.Format(time.RFC3339Nano)
+		if c, err := r.Cursor(orderBy); err == nil {
+			doc["cursor"] = encodeCursor(c)
+		}
 		out = append(out, doc)
 	}
 	return out
+}
+
+// withOrderField keeps the order column among the fields a narrowed
+// read fetches: a row's cursor is built from its value.
+func withOrderField(fields []string, orderBy string) []string {
+	field := strings.TrimPrefix(orderBy, "-")
+	if fields == nil || field == "" || field == "updated_at" {
+		return fields
+	}
+	for _, f := range fields {
+		if f == field {
+			return fields
+		}
+	}
+	return append(fields, field)
 }
 
 func docList(obj *gql.Object, g gate, query func(ctx context.Context, q loom.Query) ([]loom.Row, error), narrow func([]string) []string) *gql.Field {
@@ -1117,12 +1176,12 @@ func docList(obj *gql.Object, g gate, query func(ctx context.Context, q loom.Que
 			if err != nil {
 				return nil, err
 			}
-			q.Fields = narrow(listFields(p))
+			q.Fields = withOrderField(narrow(listFields(p)), q.OrderBy)
 			rows, err := query(p.Context, q)
 			if err != nil {
 				return nil, err
 			}
-			return rowDocs(rows), nil
+			return rowDocs(rows, q.OrderBy), nil
 		},
 	}
 }
@@ -1144,7 +1203,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, g gate, query func(ctx conte
 			if err != nil {
 				return nil, err
 			}
-			q.Fields = narrow(listFields(p))
+			q.Fields = withOrderField(narrow(listFields(p)), q.OrderBy)
 			ctx := p.Context
 			out := make(chan any)
 			go func() {
@@ -1159,7 +1218,7 @@ func listChanged(cli *loom.Client, obj *gql.Object, g gate, query func(ctx conte
 					if err != nil {
 						return false
 					}
-					docs := rowDocs(rows)
+					docs := rowDocs(rows, q.OrderBy)
 					raw, err := json.Marshal(docs)
 					if err != nil || bytes.Equal(raw, last) {
 						return err == nil

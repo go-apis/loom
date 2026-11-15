@@ -179,26 +179,26 @@ type SeriesRetractResult {
 		subscriptions = append(subscriptions, fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!%s", lowerFirst(a.Name), a.Name, gate))
 		if a.Table {
 			// @table: the state mirror serves entity-style list reads
-			queries = append(queries, fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(a.Name), a.Name, gate))
-			subscriptions = append(subscriptions, fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(a.Name), a.Name, gate))
+			queries = append(queries, fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, after: String): [%s!]!%s", lowerFirst(a.Name), a.Name, gate))
+			subscriptions = append(subscriptions, fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, after: String): [%s!]!%s", lowerFirst(a.Name), a.Name, gate))
 		}
 	}
 	for _, r := range s.Records {
 		gate := rolesDirective(r.ReadRoles)
 		queries = append(queries,
 			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s%s", lowerFirst(r.Name), r.Name, gate),
-			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(r.Name), r.Name, gate))
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, after: String): [%s!]!%s", lowerFirst(r.Name), r.Name, gate))
 		subscriptions = append(subscriptions,
-			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(r.Name), r.Name, gate))
+			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, after: String): [%s!]!%s", lowerFirst(r.Name), r.Name, gate))
 	}
 	for _, e := range s.Entities {
 		gate := rolesDirective(e.ReadRoles)
 		queries = append(queries,
 			fmt.Sprintf("  %s(namespace: Namespace!, id: UUID!): %s%s", lowerFirst(e.Name), e.Name, gate),
-			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(e.Name), e.Name, gate))
+			fmt.Sprintf("  %ss(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, after: String): [%s!]!%s", lowerFirst(e.Name), e.Name, gate))
 		subscriptions = append(subscriptions,
 			fmt.Sprintf("  %sChanged(namespace: Namespace!, id: UUID!): %s!%s", lowerFirst(e.Name), e.Name, gate),
-			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, offset: Int): [%s!]!%s", lowerFirst(e.Name), e.Name, gate))
+			fmt.Sprintf("  %ssChanged(namespace: Namespace!, where: [FilterInput!], order: String, limit: Int, after: String): [%s!]!%s", lowerFirst(e.Name), e.Name, gate))
 	}
 
 	for _, sr := range s.Series {
