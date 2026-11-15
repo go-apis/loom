@@ -71,3 +71,34 @@ setting heat: Heat @default(warm)
 
 // no default: the type's zero
 setting draught: float
+
+/// A kiln, lit and then watched until its load is fired: the fixture for
+/// `@loop`.
+aggregate Kiln @loop {
+  state {
+    lit: bool
+    fired: bool
+    stokes: int
+  }
+
+  /// Light the kiln.
+  command LightKiln -> KilnLit
+
+  /// Add fuel.
+  command StokeKiln -> KilnStoked
+
+  /// Record that the load is fired.
+  command RecordKilnFired -> KilnFired
+
+  event KilnLit {
+    lit: bool!
+  }
+
+  event KilnStoked {
+    stokes: int!
+  }
+
+  event KilnFired {
+    fired: bool!
+  }
+}

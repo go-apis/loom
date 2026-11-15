@@ -850,7 +850,12 @@ func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	fmt.Fprintf(b, "// %s binds h as the %s %s's handlers. NewRegistry panics\n// if it is never called.\nfunc (impl *Impl) %s(h %sHandlers) { impl.bind(%q, h) }\n\n", o.name, o.name, kind, o.name, o.name, kind+":"+o.name)
 	b.WriteString("func init() {\n")
 	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name, o.name)
-	fmt.Fprintf(b, "\t\tr.%s = append(r.%s, %s(h.(%sHandlers)))\n", field, field, o.defFunc(), o.name)
+	if o.agg != nil && o.agg.Loop {
+		// the loop's look is one method of the service-wide Look
+		fmt.Fprintf(b, "\t\tdef := %s(h.(%sHandlers))\n\t\tdef.Look = impl.Look.%s\n\t\tr.%s = append(r.%s, def)\n", o.defFunc(), o.name, lookMethod(o.agg), field, field)
+	} else {
+		fmt.Fprintf(b, "\t\tr.%s = append(r.%s, %s(h.(%sHandlers)))\n", field, field, o.defFunc(), o.name)
+	}
 	owned := g.eventOwners()
 	var events []string
 	for _, e := range g.s.Events {

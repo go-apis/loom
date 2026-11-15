@@ -18,6 +18,8 @@ func loomErrNilEvent(eventType string) error {
 // file declares (impl.Order(h), impl.ShipOnPayment(h)), so adding one
 // never edits this file.
 type Impl struct {
+	// Look is the recurring look each @loop aggregate declares (look_gen.go).
+	Look Look
 
 	// handlers holds what the binding methods set, by kind and name.
 	handlers map[string]any
@@ -26,6 +28,9 @@ type Impl struct {
 // NewRegistry builds the service's registry from what each generated
 // file registered for itself: no file lists the whole of it.
 func NewRegistry(impl Impl) *loom.Registry {
+	if impl.Look == nil {
+		panic("loomgen: the schema declares @loop — wire Impl.Look (see the Look stub; your registry.go predates it)")
+	}
 	r := &loom.Registry{
 		Service:     "clock",
 		Aggregates:  []*loom.AggregateDef{},

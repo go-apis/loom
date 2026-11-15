@@ -158,6 +158,19 @@ CREATE TABLE IF NOT EXISTS loom_setting_changes (
 	at        timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS loom_setting_changes_by_setting ON loom_setting_changes (service, namespace, name, id);
+CREATE TABLE IF NOT EXISTS loom_loop_due (
+	service        text NOT NULL,
+	aggregate_type text NOT NULL,
+	namespace      text NOT NULL,
+	aggregate_id   uuid NOT NULL,
+	next_look      timestamptz NOT NULL,
+	looked_at      timestamptz,
+	event_at       timestamptz,
+	waits          jsonb NOT NULL DEFAULT '[]',
+	leased_until   timestamptz,
+	PRIMARY KEY (service, aggregate_type, namespace, aggregate_id)
+);
+CREATE INDEX IF NOT EXISTS loom_loop_due_next ON loom_loop_due (service, next_look);
 
 CREATE TABLE IF NOT EXISTS loom_instances (
 	service    text NOT NULL,
@@ -356,7 +369,9 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 		}
 		c.tel.count(ctx, c.tel.appended, 1, attribute.String("loom.event", e.Type))
 	}
-	return nil
+	// an event for an instance of a @loop aggregate brings its next look
+	// forward, on the transaction that appends it (looprun.go)
+	return c.noteLoopEvents(ctx, tx, evts)
 }
 
 // defaultLogLockWait is Config.LogLockWait's default.
