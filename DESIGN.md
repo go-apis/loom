@@ -115,7 +115,15 @@ Rules enforced at parse/validate time:
   `Look<Name>(ctx) ([]loom.Command, error)` method per looping aggregate —
   and a once-only stub, the same shape as `EventUpcasts`/`Upcasts`; the
   wait between calls is the runtime's to keep, not the implementation's to
-  hand-roll ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md))
+  hand-roll ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md)).
+  When to look is one rule that reads no clock and no store
+  (`loom.LoopState.NextLook`, `loop.go`): no later than `LoopEvery` (a
+  minute) after the last look, within `LoopSoon` (a second) of an event
+  that has arrived since, and at the first deadline among the loop's
+  `Wait`s (a name, an owner, a deadline). A look reads why it was called
+  with `loom.LookingAt(ctx)`: whether an event arrived, and which waits
+  have expired. `loomtest.Loop` runs a look under that rule with no
+  database
 - an `upload` needs an `on uploaded` command; both lifecycle commands must
   belong to the enclosing aggregate/record and carry exactly one required
   `file` field (loom fills it); upload names are service-unique — they
@@ -659,6 +667,7 @@ gpub (migration on-ramp), persisted process state + timeouts, upcasters
 beyond aliases, given/when/then harness generation, `loom extract` (legacy
 on-ramp, returning from tag `m1-extraction`), replay-parity harness, table
 migrator, OTel, TypeScript target, the runtime that calls an `@loop`
-aggregate's `Look<Name>` on an interval and owns the wait between calls
-(ADR 0012; today `@loop` reaches only the schema and the generated
-interface/stub).
+aggregate's `Look<Name>` by the rule in `loop.go` and keeps its waits
+(ADR 0012; today `@loop` reaches the schema, the generated
+interface/stub, the scheduling rule and its `loomtest` harness, and
+nothing calls a look in a running service).
