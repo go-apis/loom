@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +19,7 @@ import (
 	billinggen "github.com/go-apis/loom/internal/e2e/billing/loomgen"
 	"github.com/go-apis/loom/internal/e2e/orders"
 	ordersgen "github.com/go-apis/loom/internal/e2e/orders/loomgen"
+	"github.com/go-apis/loom/loomtest"
 )
 
 // TestOrderBillingLoop drives the full cross-service flow on a real
@@ -594,49 +594,10 @@ func getJSON(t *testing.T, ctx context.Context, url string, into any) {
 	}
 }
 
+// testDB is a fresh database for one test (loomtest.Postgres).
 func testDB(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
-	admin := os.Getenv("LOOM_TEST_PG")
-	if admin == "" {
-		admin = "postgres://postgres:mysecret@localhost:5432/postgres"
-	}
-	adminPool, err := pgxpool.New(ctx, admin)
-	if err != nil {
-		t.Skipf("no postgres available: %v", err)
-	}
-	if err := adminPool.Ping(ctx); err != nil {
-		t.Skipf("no postgres available: %v", err)
-	}
-	name := "loom_e2e_" + uuid.NewString()[:8]
-	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		cleanCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_, _ = adminPool.Exec(cleanCtx, "DROP DATABASE "+name+" WITH (FORCE)")
-		adminPool.Close()
-	})
-
-	cfg, err := pgxpool.ParseConfig(admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.Database = name
-	// Every running client parks two connections for the life of the
-	// process: one on LISTEN, one holding the process lease. These tests
-	// run two services off a single pool, so four connections are gone
-	// before a query is issued. pgx sizes a pool at max(NumCPU, 4), which
-	// is exactly four on a CI runner -- every Load and Dispatch then
-	// blocks on the pool until the test's context expires. Size the pool
-	// for the harness rather than for the host's core count.
-	cfg.MaxConns = 20
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return loomtest.Postgres(t)
 }
 
 func waitFor(t *testing.T, ctx context.Context, what string, cond func() bool) {
