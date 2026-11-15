@@ -329,3 +329,125 @@ func TestMCPReachesTheGatewayUnderItsRules(t *testing.T) {
 		t.Errorf("the plan ran and the parcel is not discarded: %s", text)
 	}
 }
+
+// TestMCPListMatchesTheSameGraphQLQuery: Parcel's @allow(kind: courier,
+// depot_id: caller.depot) rule narrows a list the same way for every
+// caller of the gateway, MCP included. For a courier, the list tool's
+// rows and a plain GraphQL parcels(...) query's rows name exactly the
+// same labels — the courier's own depot's parcel, and none of the
+// other depot's.
+func TestMCPListMatchesTheSameGraphQLQuery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Bus: loom.NewMemoryBus(), Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Start(ctx, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+
+	depot, other := uuid.NewString(), uuid.NewString()
+	tokens := map[string]loomgql.Access{
+		"admin":   {Namespaces: []string{"acme"}, Mutate: true, Attrs: map[string]string{"kind": "admin"}},
+		"courier": {Namespaces: []string{"acme"}, Mutate: true, Attrs: map[string]string{"kind": "courier", "depot": depot}},
+	}
+	gateway, err := loomgql.New(loomgql.Config{
+		Services: []*loom.Client{cli},
+		Auth: func(r *http.Request) (loomgql.Access, error) {
+			a, ok := tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+			if !ok {
+				return loomgql.Access{}, fmt.Errorf("bad token")
+			}
+			return a, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := loommcp.New(loommcp.Config{Gateway: gateway, Name: "orders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(agents)
+	defer srv.Close()
+
+	ex, _ := loomgql.AsExecutor(gateway)
+	direct := func(token, doc string, vars map[string]any) loomgql.Result {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		r, err := ex.Authenticate(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ex.Exec(r.Context(), doc, vars)
+	}
+
+	// register one parcel at the courier's own depot and one at
+	// another, both as admin so the setup does not depend on the rule
+	// under test
+	mine, theirs := uuid.NewString(), uuid.NewString()
+	register := `mutation($in: RegisterParcelInput!) { registerParcel(input: $in) { status } }`
+	reg := func(id, depot, label string) map[string]any {
+		return map[string]any{"in": map[string]any{"aggregateId": id, "namespace": "acme", "depotId": depot, "label": label}}
+	}
+	if res := direct("admin", register, reg(mine, depot, "mine")); len(res.Errors) > 0 {
+		t.Fatalf("register at the courier's depot: %v", res.Errors)
+	}
+	if res := direct("admin", register, reg(theirs, other, "theirs")); len(res.Errors) > 0 {
+		t.Fatalf("register at the other depot: %v", res.Errors)
+	}
+
+	c := sdk.NewClient(&sdk.Implementation{Name: "test"}, nil)
+	cs, err := c.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: srv.URL, HTTPClient: &http.Client{Transport: bearer{"courier"}}, DisableStandaloneSSE: true}, nil)
+	if err != nil {
+		t.Fatalf("connect as courier: %v", err)
+	}
+	defer cs.Close()
+
+	res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "list", Arguments: map[string]any{
+		"name": "parcels", "args": map[string]any{"namespace": "acme"}, "fields": []any{"label"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("list parcels: no content")
+	}
+	mcpText := res.Content[0].(*sdk.TextContent).Text
+
+	gqlRes := direct("courier", `query { parcels(namespace: "acme", order: "label") { label } }`, nil)
+	if len(gqlRes.Errors) > 0 {
+		t.Fatalf("parcels via GraphQL: %v", gqlRes.Errors)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(mcpText), &rows); err != nil {
+		t.Fatalf("list parcels is not a list: %s", mcpText)
+	}
+	var mcpLabels []string
+	for _, row := range rows {
+		mcpLabels = append(mcpLabels, fmt.Sprint(row["label"]))
+	}
+	var gqlLabels []string
+	for _, row := range gqlRes.Data["parcels"].([]any) {
+		gqlLabels = append(gqlLabels, fmt.Sprint(row.(map[string]any)["label"]))
+	}
+
+	want := []string{"mine"}
+	if fmt.Sprint(mcpLabels) != fmt.Sprint(want) {
+		t.Errorf("MCP list parcels = %v, want %v", mcpLabels, want)
+	}
+	if fmt.Sprint(gqlLabels) != fmt.Sprint(want) {
+		t.Errorf("GraphQL parcels = %v, want %v", gqlLabels, want)
+	}
+	if fmt.Sprint(mcpLabels) != fmt.Sprint(gqlLabels) {
+		t.Errorf("MCP list and GraphQL parcels disagree: %v vs %v", mcpLabels, gqlLabels)
+	}
+}
