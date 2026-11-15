@@ -341,6 +341,13 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **`loom generate` writes no stub for a type implemented in a file named
+  otherwise.** A stub is named after its declaration (`order.go` for
+  `Order`); an implementation the owner keeps in `model.go` got a second
+  `order.go` declaring `Order` on every regenerate, which did not
+  compile. The generator now reads the stub's directory first, and a
+  file there that declares the stub's type or function is reported kept.
+
 - **Two processes migrating one database no longer collide.** `Migrate`
   holds a lock for the database while it runs. `CREATE ... IF NOT EXISTS`
   does not stop two sessions creating the same table, or the same day's
