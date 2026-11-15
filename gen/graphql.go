@@ -211,7 +211,17 @@ type SeriesRetractResult {
 	}
 
 	if usesPlans(s) {
-		b.WriteString(`"""one thing the schema says reacts to a planned event"""
+		b.WriteString(`"""one command a reaction decided to dispatch when the plan ran it"""
+type PlannedDispatch {
+  command: String!
+  data: Map
+  namespace: Namespace!
+  targetId: UUID!
+  how: String!
+  at: Time
+}
+
+"""one thing that reacts to a planned event, and what it decided when the plan ran it"""
 type PlannedReaction {
   kind: String!
   name: String!
@@ -219,12 +229,20 @@ type PlannedReaction {
   dispatches: [String!]!
   effects: [String!]!
   entity: String
+  outcome: String
+  detail: String
+  commands: [PlannedDispatch!]!
+  calls: [String!]!
 }
 
-"""one event a planned command would emit"""
+"""one event running a planned command would lead to"""
 type PlannedEvent {
   type: String!
   data: Map
+  aggregate: String!
+  aggregateId: UUID!
+  command: String!
+  cause: String
   published: Boolean!
   reactions: [PlannedReaction!]!
 }

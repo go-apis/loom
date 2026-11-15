@@ -46,6 +46,29 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **A plan says what its reactions decide.** `Client.Plan` now runs the
+  command, its policies and its processes on a transaction it rolls
+  back, where it used to run the handler alone and list who reacts from
+  the schema. `Plan.Events` is every event the run would lead to, in
+  order — the command's own, then those of the commands its reactions
+  dispatch — each with the command that emits it, the reaction that
+  caused it (`Cause`) and the stream it is written to. Each
+  `PlannedReaction` carries an `Outcome`: `decided`, with the
+  `Commands` it dispatches (run, timer with its time, cancelled timer,
+  batch); `calls`, for a process that reached a `loom.Once` call, which
+  a plan does not make; `fails`; `not_yet`; or `not_followed`, past ten
+  processes deep or two seconds. A policy that fails now fails the
+  plan, as it fails the command. The gateway's `Plan` type and the MCP
+  `dispatch` answer carry the same. A plan takes no log lock, so it
+  holds up no dispatch but one to a stream it has written to.
+
+  On upgrade: a plan now runs reaction code for something that has not
+  happened. A reaction that reaches outside its transaction other than
+  through `loom.Once` checks the new `loom.Planning(ctx)`;
+  `Client.Dispatch` under a plan's context is refused. `runPlan` still
+  checks only the command's own target, so what reactions decide at the
+  run may differ from the plan.
+
 - **The newest build alive publishes the outbox and consumes the bus.**
   On an in-process bus a relay delivers to its own instance's
   consumers, so an older build's relay handed every event to the older

@@ -284,8 +284,13 @@ type storedEvent struct {
 // bind, the escape hatch is a commit-visibility barrier on the read
 // side, not dropping this lock.
 func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) error {
-	if err := c.lockLog(ctx, tx); err != nil {
-		return err
+	// a plan's appends are rolled back, never committed: there is no
+	// commit order to keep, and it holds up no dispatch but one to a
+	// stream it has written to
+	if !Planning(ctx) {
+		if err := c.lockLog(ctx, tx); err != nil {
+			return err
+		}
 	}
 	for _, e := range evts {
 		data, err := json.Marshal(e.Data)

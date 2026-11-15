@@ -147,9 +147,16 @@ when to use it. Keep reasons, history and implementation notes in plain
 
 A command that deletes, archives, revokes or otherwise cannot be taken
 back is declared `@plan`. At the gateway its mutation then answers a
-plan of what it would emit and runs nothing; `runPlan` with the plan's
-id runs it, once, while its target is unchanged. Handlers need nothing
-special: the plan is the handler's own decision, not yet written.
+plan of what running it would lead to and changes nothing; `runPlan`
+with the plan's id runs it, once, while its target is unchanged.
+
+The plan runs the handler, the policies and the processes on a
+transaction it rolls back, to say what each would decide. So a handler
+or reaction may be run for something that never happens. Return
+commands; never dispatch them yourself. Make every outside call through
+`loom.Once`, which a plan does not call. Anything else that reaches
+outside the transaction (a counter, a cache, a log of record) checks
+`loom.Planning(ctx)` first.
 
 ## Work that recurs is a schedule
 
