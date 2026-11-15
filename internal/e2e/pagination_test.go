@@ -98,4 +98,17 @@ func TestQueryEntitiesCursorPagesEveryRowOnce(t *testing.T) {
 			t.Fatalf("id %s was never inserted", id)
 		}
 	}
+
+	// loom.Every walks the same tie to its end by itself
+	every, err := loom.Every(ctx, cli.ListEntities("OrderSummary"), loom.Query{Namespace: "default", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	walked := map[string]bool{}
+	for _, r := range every {
+		walked[r.ID] = true
+	}
+	if len(every) != total || len(walked) != total {
+		t.Fatalf("Every answered %d rows, %d distinct, want %d of each", len(every), len(walked), total)
+	}
 }
