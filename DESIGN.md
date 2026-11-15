@@ -50,6 +50,7 @@ directives  := "@snapshot(N)" | "@publish" | "@v(N)" | "@alias(A, B)"
              | "@retired"
              | "@from(head|origin)"      // process start position
              | "@retry(N, DUR..DUR)"     // process durable retry: max, min..max backoff
+             | "@loop"                   // aggregate only: one recurring look per type
 ```
 
 Rules enforced at parse/validate time:
@@ -108,6 +109,13 @@ Rules enforced at parse/validate time:
   unmarshal-as-is behavior so additive changes stay free. Commands at
   rest (timers, batch items) have no stored version — command-shape
   migration is deliberately out of scope
+- `@loop` belongs to aggregates only (rejected on a record, naming the file
+  and line); it declares one recurring look for the aggregate TYPE, not its
+  instances. `loom generate` emits a service-wide `Look` interface — one
+  `Look<Name>(ctx) ([]loom.Command, error)` method per looping aggregate —
+  and a once-only stub, the same shape as `EventUpcasts`/`Upcasts`; the
+  wait between calls is the runtime's to keep, not the implementation's to
+  hand-roll ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md))
 - an `upload` needs an `on uploaded` command; both lifecycle commands must
   belong to the enclosing aggregate/record and carry exactly one required
   `file` field (loom fills it); upload names are service-unique — they
@@ -650,4 +658,7 @@ Console topology graph + Performance tab, old-envelope compat codec for
 gpub (migration on-ramp), persisted process state + timeouts, upcasters
 beyond aliases, given/when/then harness generation, `loom extract` (legacy
 on-ramp, returning from tag `m1-extraction`), replay-parity harness, table
-migrator, OTel, TypeScript target.
+migrator, OTel, TypeScript target, the runtime that calls an `@loop`
+aggregate's `Look<Name>` on an interval and owns the wait between calls
+(ADR 0012; today `@loop` reaches only the schema and the generated
+interface/stub).
