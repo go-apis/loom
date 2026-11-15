@@ -283,7 +283,8 @@ func configure(h any, deps Deps) {
 
 // Impl builds the generated Impl with every implementation the schema
 // declares, each constructed by convention and set up by Configure.
-// Upcasts, which no kind package holds, is left for the caller to set.
+// Upcasts and Look, which no kind package holds, are left for the
+// caller to set.
 func Impl(deps Deps) %[1]s.Impl {
 	impl := %[1]s.Impl{}
 	for _, e := range entries {

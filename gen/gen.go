@@ -1166,6 +1166,18 @@ func loomErrNilEvent(eventType string) error {
 		b.WriteString("}\n\n")
 	}
 
+	// @loop: one recurring look per aggregate type, one interface
+	// service-wide — loom calls each method on an interval and waits
+	// between calls, built in, so an implementation never hand-rolls the
+	// wait a process does with NotYet and @retry (ADR 0012)
+	if loopers := g.loopingAggregates(); len(loopers) > 0 {
+		b.WriteString("// Look drives the recurring look each @loop aggregate declares: loom\n// calls the aggregate's method on an interval and waits between calls —\n// the wait is built in — until it has commands to dispatch.\ntype Look interface {\n")
+		for _, a := range loopers {
+			fmt.Fprintf(&b, "\t%s(ctx context.Context) ([]loom.Command, error)\n", lookMethod(a))
+		}
+		b.WriteString("}\n\n")
+	}
+
 	// Impl: one field per reactor and @fold projection the developer
 	// implements; aggregates and records bind through methods their own
 	// files declare (impl.Order(h)), so adding one never edits this file
@@ -1181,6 +1193,9 @@ func loomErrNilEvent(eventType string) error {
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\tUpcasts EventUpcasts\n")
 	}
+	if len(g.loopingAggregates()) > 0 {
+		b.WriteString("\tLook Look\n")
+	}
 	b.WriteString("\n\t// handlers holds what the aggregates' and records' binding methods set,\n\t// by name.\n\thandlers map[string]any\n}\n\n")
 
 	fmt.Fprintf(&b, "func NewRegistry(impl Impl) *loom.Registry {\n")
@@ -1188,6 +1203,9 @@ func loomErrNilEvent(eventType string) error {
 		// an older hand-owned registry.go compiles with the new field unset;
 		// fail at boot with a pointed message instead of a nil-deref later
 		b.WriteString("\tif impl.Upcasts == nil {\n\t\tpanic(\"loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)\")\n\t}\n")
+	}
+	if len(g.loopingAggregates()) > 0 {
+		b.WriteString("\tif impl.Look == nil {\n\t\tpanic(\"loomgen: the schema declares @loop — wire Impl.Look (see the Look stub; your registry.go predates it)\")\n\t}\n")
 	}
 	fmt.Fprintf(&b, "\tr := &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
 
@@ -1503,6 +1521,21 @@ func (g *generator) upcastHops() []upcastHop {
 	return out
 }
 
+func lookMethod(a *schema.Aggregate) string { return "Look" + exported(a.Name) }
+
+// loopingAggregates lists every aggregate declaring @loop, in schema
+// order (schema order is name order — Sort runs before generation) —
+// the shape behind the service-wide Look interface and stub.
+func (g *generator) loopingAggregates() []*schema.Aggregate {
+	var out []*schema.Aggregate
+	for _, a := range g.s.Aggregates {
+		if a.Loop {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // ownerUploads renders the registry entries for one owner's `upload`
 // blocks; the file-field json names come from the shape Validate enforced.
 func (g *generator) ownerUploads(owner string, commands []*schema.Command, uploads []*schema.Upload) string {
@@ -1678,6 +1711,19 @@ func (g *generator) stubs() map[string]string {
 		out["upcasts.go"] = b.String()
 	}
 
+	// look stub: service-wide, at the root in both layouts (one Look
+	// implements every @loop aggregate's method, like Upcasts)
+	if loopers := g.loopingAggregates(); len(loopers) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "import (\n\t\"context\"\n\n\t\"github.com/go-apis/loom\"\n)\n\n")
+		fmt.Fprintf(&b, "// Look implements %s.Look — each @loop aggregate's recurring look.\n// loom calls the aggregate's method on an interval and waits between\n// calls (the wait is built in); return commands to dispatch, or none\n// while there is nothing to do yet. Yours to edit.\ntype Look struct{}\n\n", g.genPkg)
+		for _, a := range loopers {
+			fmt.Fprintf(&b, "func (l *Look) %s(ctx context.Context) ([]loom.Command, error) {\n\tpanic(\"not implemented\")\n}\n\n", lookMethod(a))
+		}
+		out["look.go"] = b.String()
+	}
+
 	// with wire on, the convention does the listing: registry.go only
 	// builds the registry from it, and no declaration ever edits it
 	if g.cfg.Wire != "" {
@@ -1688,6 +1734,9 @@ func (g *generator) stubs() map[string]string {
 		fmt.Fprintf(&b, "func NewRegistry(deps %s.Deps) *loom.Registry {\n\timpl := %s.Impl(deps)\n", wirePkg, wirePkg)
 		if len(g.upcastHops()) > 0 {
 			b.WriteString("\timpl.Upcasts = &Upcasts{}\n")
+		}
+		if len(g.loopingAggregates()) > 0 {
+			b.WriteString("\timpl.Look = &Look{}\n")
 		}
 		fmt.Fprintf(&b, "\treturn %s.NewRegistry(impl)\n}\n", g.genPkg)
 		out["registry.go"] = b.String()
@@ -1736,6 +1785,9 @@ func (g *generator) stubs() map[string]string {
 	}
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\t\tUpcasts: &Upcasts{},\n")
+	}
+	if len(g.loopingAggregates()) > 0 {
+		b.WriteString("\t\tLook: &Look{},\n")
 	}
 	b.WriteString("\t}\n")
 	// aggregates and records bind through their methods on Impl (ADR 0008)

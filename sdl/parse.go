@@ -354,8 +354,8 @@ func (p *parser) aggregate() error {
 	}
 	agg := &schema.Aggregate{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "snapshot" && d != "table" && d != "role" && d != "allow" {
-			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role)", name, d)
+		if d != "snapshot" && d != "table" && d != "role" && d != "allow" && d != "loop" {
+			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role, @loop)", name, d)
 		}
 	}
 	// @role on the block gates the aggregate's generated READS (get +
@@ -375,6 +375,9 @@ func (p *parser) aggregate() error {
 	}
 	if _, ok := dirs["table"]; ok {
 		agg.Table = true
+	}
+	if _, ok := dirs["loop"]; ok {
+		agg.Loop = true
 	}
 
 	if err := p.expect("{"); err != nil {
@@ -422,6 +425,7 @@ func (p *parser) record() error {
 	if err != nil {
 		return err
 	}
+	t := p.peek()
 	dirs, err := p.directives()
 	if err != nil {
 		return err
@@ -429,7 +433,7 @@ func (p *parser) record() error {
 	rec := &schema.Record{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
 		if d != "role" && d != "allow" {
-			return fmt.Errorf("record %s: unknown directive @%s (records take @role)", name, d)
+			return p.errf(t, "record %s: unknown directive @%s (records take @role; @loop belongs to aggregates only)", name, d)
 		}
 	}
 	if args, ok := dirs["role"]; ok {

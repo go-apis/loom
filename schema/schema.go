@@ -43,7 +43,14 @@ type Aggregate struct {
 	// fields) into a typed per-aggregate table, written in the same
 	// transaction as the events — a queryable state mirror with no
 	// projection lag and no entity+projection boilerplate.
-	Table    bool       `yaml:"table,omitempty" json:"table,omitempty"`
+	Table bool `yaml:"table,omitempty" json:"table,omitempty"`
+	// Loop (@loop) gives the aggregate TYPE one recurring look, driven by
+	// the service-wide Look interface's method for it: loom calls it on
+	// an interval and waits between calls, built in, so an implementation
+	// never hand-rolls the wait the way a process does with NotYet and
+	// @retry. One loop per aggregate type, not per instance — see
+	// ADR 0012.
+	Loop     bool       `yaml:"loop,omitempty" json:"loop,omitempty"`
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
