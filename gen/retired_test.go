@@ -31,7 +31,8 @@ aggregate Order {
 	if _, err := gen.Generate(s, gen.Config{Dir: dir, Package: "orders", Module: "example.com/orders"}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "loomgen", "registry_gen.go"))
+	// an event no aggregate owns is registered where its struct is
+	raw, err := os.ReadFile(filepath.Join(dir, "loomgen", "models_gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

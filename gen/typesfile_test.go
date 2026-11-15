@@ -103,7 +103,7 @@ func TestTypesAreWrittenToTheirSchemaFilesFile(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	if got, want := strings.Join(names, " "), "a_types_gen.go b_types_gen.go cart_gen.go models_gen.go registry_gen.go shipment_gen.go"; got != want {
+	if got, want := strings.Join(names, " "), "a_types_gen.go b_types_gen.go cart_gen.go carts_projection_gen.go loom_gen.go models_gen.go shipment_gen.go"; got != want {
 		t.Fatalf("generated %s, want %s", got, want)
 	}
 	holds := map[string][]string{
@@ -196,7 +196,7 @@ func TestEditsToDifferentSchemaFilesTouchNoGeneratedFileInCommon(t *testing.T) {
 		}
 		return strings.Replace(src, "type W { v: V }", "type W {\n  v: V\n  weight: int\n}", 1)
 	}))
-	if got := strings.Join(enumBranch, " "); got != "a_types_gen.go registry_gen.go" && got != "a_types_gen.go" {
+	if got := strings.Join(enumBranch, " "); got != "a_types_gen.go" {
 		t.Errorf("adding an enum value in a.loom changed %s", got)
 	}
 	if got := strings.Join(typeBranch, " "); got != "b_types_gen.go" {

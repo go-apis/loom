@@ -139,3 +139,158 @@ type SkuPrice struct {
 }
 
 func (*SkuPrice) LoomSeries() string { return "SkuPrice" }
+
+func init() {
+	loomStatic(func(impl Impl, r *loom.Registry) {
+		r.Enums = append(r.Enums, []*loom.EnumDef{
+			{Name: "OrderStatus", Values: []string{"placed", "shipped", "cancelled"}},
+			{Name: "Priority", Values: []string{"standard", "rush"}, Doc: "How soon an order ships."},
+		}...)
+		r.Types = append(r.Types, []*loom.TypeDef{
+			{Name: "Fulfilment", Required: []string{"windows"}},
+			{Name: "FulfilmentWindow", Required: []string{"starts_at"}},
+			{Name: "GiftNote", Required: []string{"text"}},
+			{
+				Name:     "OrderItem",
+				Required: []string{"price_cents", "quantity", "sku"},
+				Doc:      "One line of an order.",
+				FieldDocs: map[string]string{
+					"sku": "The stock-keeping unit being bought.",
+				},
+			},
+		}...)
+		r.Events = append(r.Events, []*loom.EventDef{
+			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},
+		}...)
+		r.Joins = append(r.Joins, []*loom.JoinDef{
+			{OnEntity: "CustomerSpend", Field: "orders", Service: "", Entity: "OrderSummary", List: true, Via: "customer_id"},
+			{OnEntity: "CustomerSpend", Field: "invoices", Service: "billing", Entity: "InvoiceSummary", List: true, Via: "customer_id"},
+		}...)
+		r.Tables = append(r.Tables, []*loom.TableDef{
+			{
+				Entity: "OrderSummary",
+				Name:   "loom_t_orders_order_summary",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_t_orders_order_summary (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	id         uuid NOT NULL,
+	"currency" text,
+	"customer_id" uuid,
+	"items" jsonb,
+	"reason" text,
+	"status" text,
+	"total_cents" bigint,
+	updated_at timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, id)
+);`,
+				Columns: []loom.TableColumn{
+					{Name: "currency", Type: "text"},
+					{Name: "customer_id", Type: "uuid"},
+					{Name: "items", Type: "jsonb"},
+					{Name: "reason", Type: "text"},
+					{Name: "status", Type: "text"},
+					{Name: "total_cents", Type: "bigint"},
+				},
+				Values: func(state loom.EntityState) []any {
+					e := state.(*OrderSummary)
+					return []any{
+						e.Currency,
+						e.CustomerId,
+						loom.JSONValue(e.Items),
+						e.Reason,
+						e.Status,
+						e.TotalCents,
+					}
+				},
+				Indexes: []loom.TableIndex{
+					{Name: "idx_order_summary_service_namespace_customer_id_updated_at", DDL: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_order_summary_service_namespace_customer_id_updated_at ON loom_t_orders_order_summary ("service", "namespace", "customer_id", "updated_at" DESC NULLS LAST);`},
+					{Name: "idx_order_summary_status_updated_at_id", DDL: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_order_summary_status_updated_at_id ON loom_t_orders_order_summary ("status", "updated_at" DESC NULLS LAST, "id" DESC);`},
+				},
+			},
+		}...)
+		r.Series = append(r.Series, []*loom.SeriesDef{
+			{
+				Name:  "ReqSample",
+				Table: "loom_s_orders_req_sample",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"at" timestamptz NOT NULL,
+	"duration_ms" double precision,
+	"route" text NOT NULL,
+	"sample_id" uuid NOT NULL,
+	"status" bigint,
+	PRIMARY KEY (service, namespace, "sample_id", "at")
+);`,
+				Time:       "at",
+				Dims:       []string{"route"},
+				Keys:       []string{"sample_id"},
+				RetainDays: 30,
+				PartitionDDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_req_sample (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"at" timestamptz NOT NULL,
+	"duration_ms" double precision,
+	"route" text NOT NULL,
+	"sample_id" uuid NOT NULL,
+	"status" bigint,
+	PRIMARY KEY (service, namespace, "sample_id", "at")
+) PARTITION BY RANGE ("at");`,
+				Columns: []loom.TableColumn{
+					{Name: "at", Type: "timestamptz"},
+					{Name: "duration_ms", Type: "double precision"},
+					{Name: "route", Type: "text"},
+					{Name: "sample_id", Type: "uuid"},
+					{Name: "status", Type: "bigint"},
+				},
+				Required: []string{"at", "duration_ms", "route", "sample_id"},
+				New:      func() loom.SeriesRow { return &ReqSample{} },
+				Values: func(row loom.SeriesRow) []any {
+					e := row.(*ReqSample)
+					return []any{
+						e.At,
+						e.DurationMs,
+						e.Route,
+						e.SampleId,
+						e.Status,
+					}
+				},
+			},
+			{
+				Name:  "SkuPrice",
+				Table: "loom_s_orders_sku_price",
+				DDL: `CREATE TABLE IF NOT EXISTS loom_s_orders_sku_price (
+	service    text NOT NULL,
+	namespace  text NOT NULL,
+	"note" text,
+	"observed_at" timestamptz NOT NULL,
+	"price_cents" bigint,
+	"sku" text NOT NULL,
+	"source" text NOT NULL,
+	PRIMARY KEY (service, namespace, "sku", "source", "observed_at")
+);`,
+				Time: "observed_at",
+				Dims: []string{"sku", "source"},
+				Columns: []loom.TableColumn{
+					{Name: "note", Type: "text"},
+					{Name: "observed_at", Type: "timestamptz"},
+					{Name: "price_cents", Type: "bigint"},
+					{Name: "sku", Type: "text"},
+					{Name: "source", Type: "text"},
+				},
+				Required: []string{"observed_at", "price_cents", "sku", "source"},
+				New:      func() loom.SeriesRow { return &SkuPrice{} },
+				Values: func(row loom.SeriesRow) []any {
+					e := row.(*SkuPrice)
+					return []any{
+						e.Note,
+						e.ObservedAt,
+						e.PriceCents,
+						e.Sku,
+						e.Source,
+					}
+				},
+			},
+		}...)
+	})
+}

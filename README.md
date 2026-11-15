@@ -120,10 +120,12 @@ loom.yml gives each kind its own package instead —
 ```
 myservice/
   loomgen/              # generated, regenerated every run
-    registry_gen.go     # shared: Impl, NewRegistry, reactor interfaces
+    loom_gen.go         # fixed: Impl, NewRegistry; names nothing in the schema
+    upcasts_gen.go      # the EventUpcasts interface, once an upcast is declared
+    look_gen.go         # the Look interface, once an aggregate declares @loop
     <aggregate>_gen.go  # one per aggregate and record: order_gen.go, …
-    <name>_<kind>_gen.go  # one per policy, process and @fold projection:
-                        # ship_on_payment_process_gen.go, …
+    <name>_<kind>_gen.go  # one per policy, process, projection and
+                        # schedule: ship_on_payment_process_gen.go, …
     <schema file>_types_gen.go  # one per .loom file: its enums, types,
                         # shared events, entities and series
     models_gen.go       # only what no schema file declares
@@ -141,8 +143,13 @@ the events only it emits, its state and fold, its `Handlers` interface, and
 its binding method on `Impl`. It registers itself with `NewRegistry`.
 Each policy, process and `@fold` projection has its own file the same way
 (`shipOnPayment` → `ship_on_payment_process_gen.go`): its `Reactions` or
-`Folds` interface, its binding method and its definition.
-The shared files name none of them. Adding one adds only its own
+`Folds` interface, its binding method and its definition. A projection
+loom folds itself and a schedule each have a file with their definition
+alone. Enums, types, shared events, `@table` entities and series are
+registered by their schema file's `_types_gen.go`. No file lists the
+whole registry: `loom_gen.go` holds `Impl` and `NewRegistry`, and reads
+what each file registered for itself.
+The fixed files name none of them. Adding one adds only its own
 file, so two branches that each add an aggregate or a process do not
 conflict in
 `loomgen/` ([ADR 0008](docs/adr/0008-one-generated-file-per-aggregate.md)).
@@ -251,7 +258,10 @@ return loomgen.NewRegistry(impl)
 
 Code that read a reactor back off the `Impl` (`impl.ShipOnPayment.X`) keeps
 its own reference to it instead. Policies that react to the same event now
-run in name order, where they ran in schema order.
+run in name order, where they ran in schema order. The regenerate also
+removes `loomgen/registry_gen.go`: `Impl` and `NewRegistry` are in
+`loom_gen.go` now, under the same names, and the registry's lists (enums,
+types, projections, tables, schedules, series) come out in name order.
 
 Or delete `registry.go` and run `go tool loom generate` to get a fresh stub.
 Type names and the `Handlers` interfaces are unchanged.

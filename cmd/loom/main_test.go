@@ -226,13 +226,13 @@ func TestGenerateCheckStaleRegistry(t *testing.T) {
 
 	// hand edit, on a fresh tree
 	write("schema/orders.loom", checkSchema)
-	edited := read("loomgen/registry_gen.go") + "// hand edit\n"
-	write("loomgen/registry_gen.go", edited)
+	edited := read("loomgen/loom_gen.go") + "// hand edit\n"
+	write("loomgen/loom_gen.go", edited)
 	out, err = check()
-	if err == nil || strings.TrimSpace(out) != "stale   loomgen/registry_gen.go" {
+	if err == nil || strings.TrimSpace(out) != "stale   loomgen/loom_gen.go" {
 		t.Fatalf("hand edit: err %v, out %q", err, out)
 	}
-	if read("loomgen/registry_gen.go") != edited {
+	if read("loomgen/loom_gen.go") != edited {
 		t.Fatal("--check rewrote the hand-edited file")
 	}
 }
@@ -528,7 +528,7 @@ func TestInitWritesTheSkillOnce(t *testing.T) {
 	}
 }
 
-// a @table entity's declared indexes reach loomgen/registry_gen.go (its
+// a @table entity's declared indexes reach its schema file's types file (its
 // TableDef) and loomgen/tables_gen.sql; --check must catch a schema/registry
 // mismatch that is only an index, naming both stale files and writing
 // nothing.
@@ -558,7 +558,7 @@ func TestGenerateCheckFailsOnIndexMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// declare an index without regenerating: the registry's TableDef and
+	// declare an index without regenerating: the entity's TableDef and
 	// tables_gen.sql both go stale
 	withIndex := strings.Replace(indexCheckSchema, "  status: string\n}", "  status: string\n  index (status)\n}", 1)
 	write("schema/orders.loom", withIndex)
@@ -571,7 +571,7 @@ func TestGenerateCheckFailsOnIndexMismatch(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	sort.Strings(lines)
-	want := []string{"stale   loomgen/registry_gen.go", "stale   loomgen/tables_gen.sql"}
+	want := []string{"stale   loomgen/orders_types_gen.go", "stale   loomgen/tables_gen.sql"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("got %v, want %v", lines, want)
 	}

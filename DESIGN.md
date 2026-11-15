@@ -182,10 +182,20 @@ generated file and no other schema file's. A name a Go file cannot carry is
 rewritten, and two schema files of one name take a number, in path order.
 `models_gen.go` holds only what no schema file declares: everything, for a
 schema parsed from a lone unnamed source, and nothing otherwise.
-`registry_gen.go` holds what is shared, and names no aggregate, record,
-policy, process or `@fold` projection, so adding one adds one file and edits
-none. It still lists every enum's
-values and every type's required fields, so a change to those edits it too.
+No file holds the whole registry. A schema file's types file also registers
+what it declares: its enums, its types' required fields and docs, its shared
+events, its entities' joins and `@table` definitions, and its series. A
+projection loom folds itself and a schedule each get a file holding their
+definition alone (`<snake name>_projection_gen.go`,
+`<snake name>_schedule_gen.go`). The fixed scaffolding is `loom_gen.go`:
+`Impl`, `NewRegistry`, and the two tables the other files add themselves to
+in `init` — declarations that need an implementation, and those that do
+not. It names nothing the schema declares but the service. The two
+implementations no declaration's file holds stay fields on `Impl`,
+`Upcasts` and `Look`, each present once the schema has an upcast or a
+`@loop`, with its interface in `upcasts_gen.go` or `look_gen.go`. So a
+schema change edits `loom_gen.go` only when the first of either arrives. `NewRegistry` puts every list in name order,
+never init order.
 `generate` removes a generated file the schema no longer
 produces (ADR 0008). Stubs (once, then yours): one file per aggregate and
 reactor implementing the generated interfaces, plus `registry.go`, which

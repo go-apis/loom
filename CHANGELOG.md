@@ -101,6 +101,24 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **No generated file lists the whole registry.** `loomgen/registry_gen.go`
+  is no longer written. Every declaration registers itself from the
+  file that holds it: enums, types, shared events, `@table` entities
+  and series from their schema file's `_types_gen.go`; a projection loom
+  folds itself from `<snake name>_projection_gen.go`; a schedule from
+  `<snake name>_schedule_gen.go`. What is left is fixed: `loom_gen.go`
+  holds `Impl` and `NewRegistry` and names nothing the schema declares.
+  The `EventUpcasts` and `Look` interfaces move to `upcasts_gen.go` and
+  `look_gen.go`, each written once the schema has an upcast or a
+  `@loop`. So a change to a schema edits no file that another,
+  unrelated change also edits, bar those two lists.
+  `NewRegistry` puts every list of the registry in name order.
+
+  **Migration:** regenerate `loomgen/`; `generate` removes the old
+  `registry_gen.go`. `Impl`, `NewRegistry`, `EventUpcasts` and `Look`
+  keep their names, so `registry.go` needs nothing beyond the binding
+  calls described in the entry below.
+
 - **Policies, processes and `@fold` projections register themselves.**
   Each gets its own generated file, `loomgen/<snake name>_<kind>_gen.go`
   (`shipOnPayment` → `ship_on_payment_process_gen.go`), holding its

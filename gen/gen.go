@@ -76,8 +76,16 @@ func prepare(s *schema.Schema, cfg Config) (*generator, error) {
 func (g *generator) render() (map[string][]byte, error) {
 	genDir := filepath.Join(g.cfg.Dir, g.cfg.GenDir)
 	files := map[string]string{
-		filepath.Join(genDir, "models_gen.go"):   g.models(),
-		filepath.Join(genDir, "registry_gen.go"): g.registry(),
+		filepath.Join(genDir, "models_gen.go"): g.models(),
+		filepath.Join(genDir, "loom_gen.go"):   g.scaffold(),
+	}
+	// the two service-wide interfaces, each written once something
+	// declares a method of it
+	if len(g.upcastHops()) > 0 {
+		files[filepath.Join(genDir, "upcasts_gen.go")] = g.upcasts()
+	}
+	if len(g.loopingAggregates()) > 0 {
+		files[filepath.Join(genDir, "look_gen.go")] = g.look()
 	}
 	wired, err := g.wireFiles()
 	if err != nil {
@@ -94,6 +102,9 @@ func (g *generator) render() (map[string][]byte, error) {
 	}
 	for _, r := range g.reactors() {
 		files[filepath.Join(genDir, r.file)] = g.reactorFile(r)
+	}
+	for _, sc := range g.schedules() {
+		files[filepath.Join(genDir, sc.file)] = g.scheduleFile(sc)
 	}
 	if sql := g.tablesSQL(); sql != "" {
 		files[filepath.Join(genDir, "tables_gen.sql")] = sql
@@ -316,11 +327,6 @@ var (
 )
 
 `)
-	if src == "" {
-		// every schema file's settings add themselves here (settingDefs)
-		b.WriteString("// loomSettings is the service's settings, each added by the file of the\n// schema file that declares it.\nvar loomSettings []*loom.SettingDef\n\n")
-	}
-
 	for _, e := range g.s.Enums {
 		if e.File == src {
 			g.enumDef(&b, e)
@@ -353,12 +359,13 @@ var (
 		}
 	}
 	g.settingDefs(&b, src)
+	g.typesStatics(&b, src)
 	return b.String()
 }
 
 // settingDefs renders one schema file's settings: a typed reader for
-// each, and an init that adds their definitions to loomSettings, which
-// NewRegistry reads. No file lists the settings of the whole service.
+// each, and an init that adds their definitions to the registry. No
+// file lists the settings of the whole service.
 func (g *generator) settingDefs(b *strings.Builder, src string) {
 	var mine []*schema.Setting
 	for _, st := range g.s.Settings {
@@ -393,7 +400,7 @@ func (g *generator) settingDefs(b *strings.Builder, src string) {
 		fmt.Fprintf(b, "// %s reads the setting %s for a namespace.\nfunc %s(ctx context.Context, c *loom.Client, namespace string) (%s, error) {\n\treturn c.%s(ctx, namespace, %sName)\n}\n\n",
 			name, st.Name, name, goType, reader, name)
 	}
-	b.WriteString("func init() {\n\tloomSettings = append(loomSettings,\n")
+	b.WriteString("func init() {\n\tloomStatic(func(impl Impl, r *loom.Registry) {\n\t\tr.Settings = append(r.Settings,\n")
 	for _, st := range mine {
 		def, _ := st.DefaultValue() // Validate has parsed it
 		typ, values := st.Type, ""
@@ -411,9 +418,105 @@ func (g *generator) settingDefs(b *strings.Builder, src string) {
 		if st.Doc != "" {
 			doc = fmt.Sprintf(" Doc: %q,", st.Doc)
 		}
-		fmt.Fprintf(b, "\t\t&loom.SettingDef{Name: %q, Type: %q, Default: %s,%s%s},\n", st.Name, typ, literal, values, doc)
+		fmt.Fprintf(b, "\t\t\t&loom.SettingDef{Name: %q, Type: %q, Default: %s,%s%s},\n", st.Name, typ, literal, values, doc)
 	}
-	b.WriteString("\t)\n}\n")
+	b.WriteString("\t\t)\n\t})\n}\n\n")
+}
+
+// typesStatics renders the init that adds one schema file's part of the
+// registry: its enums, its named types, the events it declares that no
+// aggregate or record owns, its entities' joins and @table definitions,
+// and its series. No file lists these for the whole service.
+func (g *generator) typesStatics(b *strings.Builder, src string) {
+	var body strings.Builder
+	list := func(field, typ string, entries []string) {
+		if len(entries) == 0 {
+			return
+		}
+		fmt.Fprintf(&body, "\t\tr.%s = append(r.%s, []*loom.%s{\n", field, field, typ)
+		for _, e := range entries {
+			body.WriteString(e)
+		}
+		body.WriteString("\t\t}...)\n")
+	}
+	var enums, types, events, joins, tables, series []string
+	for _, e := range g.s.Enums {
+		if e.File == src {
+			enums = append(enums, g.enumEntry(e))
+		}
+	}
+	for _, t := range g.s.Types {
+		if t.File == src {
+			types = append(types, g.typeEntry(t))
+		}
+	}
+	owned := g.eventOwners()
+	for _, e := range g.s.Events {
+		if e.File == src && owned[e.Name] == "" {
+			events = append(events, "\t\t\t"+g.eventDefEntry(e)+",\n")
+		}
+	}
+	for _, e := range g.s.Entities {
+		if e.File != src {
+			continue
+		}
+		for _, j := range e.Joins {
+			joins = append(joins, fmt.Sprintf("\t\t\t{OnEntity: %q, Field: %q, Service: %q, Entity: %q, List: %v, Via: %q},\n",
+				e.Name, j.Field, j.Service, j.Entity, j.List, j.Via))
+		}
+		if e.Table {
+			var t strings.Builder
+			g.tableDef(&t, "{", e.Name, e.State, e.Indexes)
+			tables = append(tables, t.String())
+		}
+	}
+	for _, sr := range g.s.Series {
+		if sr.File == src {
+			var t strings.Builder
+			g.seriesDef(&t, sr)
+			series = append(series, t.String())
+		}
+	}
+	list("Enums", "EnumDef", enums)
+	list("Types", "TypeDef", types)
+	list("Events", "EventDef", events)
+	list("Joins", "JoinDef", joins)
+	list("Tables", "TableDef", tables)
+	list("Series", "SeriesDef", series)
+	if body.Len() == 0 {
+		return
+	}
+	b.WriteString("func init() {\n\tloomStatic(func(impl Impl, r *loom.Registry) {\n")
+	b.WriteString(body.String())
+	b.WriteString("\t})\n}\n")
+}
+
+// enumEntry renders an enum's registry entry.
+func (g *generator) enumEntry(e *schema.Enum) string {
+	if e.Doc != "" {
+		return fmt.Sprintf("\t\t\t{Name: %q, Values: %s, Doc: %q},\n", e.Name, stringSlice(e.Values), e.Doc)
+	}
+	return fmt.Sprintf("\t\t\t{Name: %q, Values: %s},\n", e.Name, stringSlice(e.Values))
+}
+
+// typeEntry renders a named type's registry entry: its required fields,
+// so the gateway's nested inputs follow the schema's required lists
+// (ADR 0004), and its docs.
+func (g *generator) typeEntry(t *schema.NamedType) string {
+	var b strings.Builder
+	if t.Doc != "" || len(fieldDocs(t.Payload)) > 0 {
+		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n", t.Name)
+		if req := requiredFields(t.Payload); len(req) > 0 {
+			fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
+		}
+		writeDocs(&b, "\t\t\t\t", "Doc", t.Doc, "FieldDocs", t.Payload)
+		b.WriteString("\t\t\t},\n")
+		return b.String()
+	}
+	if req := requiredFields(t.Payload); len(req) > 0 {
+		return fmt.Sprintf("\t\t\t{Name: %q, Required: %s},\n", t.Name, stringSlice(req))
+	}
+	return fmt.Sprintf("\t\t\t{Name: %q},\n", t.Name)
 }
 
 // typesFiles maps each schema file that declares something types
@@ -540,9 +643,10 @@ func (o owner) commands() []*schema.Command {
 
 // owners lists the aggregates, then the records, in schema order, each
 // with its file: <snake name>_gen.go. A name whose file is already taken —
-// by the shared models_gen.go or registry_gen.go, by a schema file's
-// types file, by a reactor's file, or by an earlier name that snakes the
-// same way — takes its
+// by a fixed file (models_gen.go, loom_gen.go, upcasts_gen.go,
+// look_gen.go), by a
+// schema file's types file, by a reactor's or a schedule's file, or by an
+// earlier name that snakes the same way — takes its
 // kind appended, then a number. The choice depends on the schema's
 // slices only, so it is the same on every run (ADR 0008).
 func (g *generator) owners() []owner {
@@ -553,12 +657,20 @@ func (g *generator) owners() []owner {
 	for _, r := range g.reactors() {
 		taken[strings.TrimSuffix(r.file, "_gen.go")] = true
 	}
+	for _, sc := range g.schedules() {
+		taken[strings.TrimSuffix(sc.file, "_gen.go")] = true
+	}
 	return g.ownersIn(taken)
 }
 
 // ownersIn is owners with the file names already spoken for.
 func (g *generator) ownersIn(taken map[string]bool) []owner {
-	taken["models"], taken["registry"] = true, true
+	// registry is no longer written, and stays spoken for: a product's old
+	// registry_gen.go is removed as an orphan, never mistaken for an
+	// aggregate's file
+	for _, fixed := range []string{"models", "registry", "loom", "upcasts", "look"} {
+		taken[fixed] = true
+	}
 	pick := func(name, kind string) string {
 		base := toSnake(name)
 		if taken[base] {
@@ -728,8 +840,8 @@ var (
 
 // ownerRegistration renders the owner's binding method on Impl and the
 // init that adds it to loomOwners: its def, the events only it emits, its
-// uploads and its @table. NewRegistry reads loomOwners, so the shared
-// registry_gen.go never names an aggregate or record (ADR 0008).
+// uploads and its @table. NewRegistry reads loomOwners, so the fixed
+// loom_gen.go never names an aggregate or record (ADR 0008).
 func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	kind, field := "aggregate", "Aggregates"
 	if o.rec != nil {
@@ -1188,179 +1300,77 @@ func (g *generator) seriesDDLForm(sr *schema.Series, partitioned bool) string {
 	return b.String()
 }
 
-// --- registry ---
+// --- the fixed files ---
 
-func (g *generator) registry() string {
+// scaffold renders loom_gen.go: Impl, NewRegistry and the tables every
+// declaration's own file adds itself to. It names nothing the schema
+// declares but the service, so a schema change edits it only when the
+// first upcast or @loop arrives, or the last one goes: each is one field
+// on Impl.
+func (g *generator) scaffold() string {
 	var b strings.Builder
 	b.WriteString(header)
 	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
 	b.WriteString(`import (
-	"context"
 	"fmt"
 	"sort"
 
 	"github.com/go-apis/loom"
-	"github.com/google/uuid"
-)
-
-var (
-	_ context.Context
-	_ = uuid.UUID{}
 )
 
 func loomErrNilEvent(eventType string) error {
 	return fmt.Errorf("nil payload for event %s", eventType)
 }
 
+// Impl holds the service's implementations. Each aggregate, record,
+// policy, process and @fold projection binds through a method its own
+// file declares (impl.Order(h), impl.ShipOnPayment(h)), so adding one
+// never edits this file.
+type Impl struct {
 `)
-
-	// every Handlers, Reactions and Folds interface lives in the file of
-	// what it belongs to
-
-	// upcasts: the hand-written migration hops, one interface service-wide
-	if ups := g.upcastHops(); len(ups) > 0 {
-		b.WriteString("// EventUpcasts lifts stored payloads written under older @v versions:\n// raw JSON of version n in, raw JSON of version n+1 out. Hops chain at\n// decode time.\ntype EventUpcasts interface {\n")
-		for _, u := range ups {
-			fmt.Fprintf(&b, "\t%s(data []byte) ([]byte, error)\n", u.method)
-		}
-		b.WriteString("}\n\n")
-	}
-
-	// @loop: one recurring look per aggregate type, one interface
-	// service-wide — loom calls each method on an interval and waits
-	// between calls, built in, so an implementation never hand-rolls the
-	// wait a process does with NotYet and @retry (ADR 0012)
-	if loopers := g.loopingAggregates(); len(loopers) > 0 {
-		b.WriteString("// Look drives the recurring look each @loop aggregate declares: loom\n// calls the aggregate's method on an interval and waits between calls —\n// the wait is built in — until it has commands to dispatch.\ntype Look interface {\n")
-		for _, a := range loopers {
-			fmt.Fprintf(&b, "\t%s(ctx context.Context) ([]loom.Command, error)\n", lookMethod(a))
-		}
-		b.WriteString("}\n\n")
-	}
-
-	// Impl: aggregates, records, policies, processes and @fold projections
-	// bind through methods their own files declare (impl.Order(h),
-	// impl.ShipOnPayment(h)), so adding one never edits this file
-	b.WriteString("type Impl struct {\n")
+	// the two implementations no declaration's file holds are fields,
+	// here once the schema has an upcast or a @loop at all
 	if len(g.upcastHops()) > 0 {
-		b.WriteString("\tUpcasts EventUpcasts\n")
+		b.WriteString("\t// Upcasts is the hand-written migration hops (upcasts_gen.go).\n\tUpcasts EventUpcasts\n")
 	}
 	if len(g.loopingAggregates()) > 0 {
-		b.WriteString("\tLook Look\n")
+		b.WriteString("\t// Look is the recurring look each @loop aggregate declares (look_gen.go).\n\tLook Look\n")
 	}
-	b.WriteString("\n\t// handlers holds what the binding methods set, by kind and name.\n\thandlers map[string]any\n}\n\n")
+	b.WriteString(`
+	// handlers holds what the binding methods set, by kind and name.
+	handlers map[string]any
+}
 
-	fmt.Fprintf(&b, "func NewRegistry(impl Impl) *loom.Registry {\n")
+// NewRegistry builds the service's registry from what each generated
+// file registered for itself: no file lists the whole of it.
+func NewRegistry(impl Impl) *loom.Registry {
+`)
+	// an older hand-owned registry.go compiles with the field unset; fail
+	// at boot with a pointed message instead of a nil-deref later
 	if len(g.upcastHops()) > 0 {
-		// an older hand-owned registry.go compiles with the new field unset;
-		// fail at boot with a pointed message instead of a nil-deref later
 		b.WriteString("\tif impl.Upcasts == nil {\n\t\tpanic(\"loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)\")\n\t}\n")
 	}
 	if len(g.loopingAggregates()) > 0 {
 		b.WriteString("\tif impl.Look == nil {\n\t\tpanic(\"loomgen: the schema declares @loop — wire Impl.Look (see the Look stub; your registry.go predates it)\")\n\t}\n")
 	}
-	fmt.Fprintf(&b, "\tr := &loom.Registry{\n\t\tService: %q,\n", g.s.Service)
-
-	// each aggregate and record adds its def, its events, uploads and
-	// @table from its own file, through loomRegisterOwners below
-	b.WriteString("\t\tAggregates: []*loom.AggregateDef{},\n\t\tRecords: []*loom.RecordDef{},\n")
-
-	g.seriesDefs(&b)
-
-	// the shared events only: one emitted by a single aggregate or record
-	// is added by that owner's file
-	owned := g.eventOwners()
-	b.WriteString("\t\tEvents: []*loom.EventDef{\n")
-	for _, e := range g.s.Events {
-		if owned[e.Name] == "" {
-			fmt.Fprintf(&b, "\t\t\t%s,\n", g.eventDefEntry(e))
-		}
+	b.WriteString(`	r := &loom.Registry{
+`)
+	fmt.Fprintf(&b, "\t\tService: %q,\n", g.s.Service)
+	b.WriteString(`		Aggregates:  []*loom.AggregateDef{},
+		Records:     []*loom.RecordDef{},
+		Events:      []*loom.EventDef{},
+		Policies:    []*loom.ReactorDef{},
+		Processes:   []*loom.ReactorDef{},
+		Types:       []*loom.TypeDef{},
+		Projections: []*loom.ProjectionDef{},
 	}
-	b.WriteString("\t\t},\n")
+	loomRegisterAll(impl, r)
+	return r
+}
 
-	// each policy and process adds its def from its own file
-	b.WriteString("\t\tPolicies: []*loom.ReactorDef{},\n\t\tProcesses: []*loom.ReactorDef{},\n")
-
-	if len(g.s.Schedules) > 0 {
-		b.WriteString("\t\tSchedules: []*loom.ScheduleDef{\n")
-		for _, sc := range g.s.Schedules {
-			every, _ := sc.Interval() // Validate has parsed it
-			fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tEvery: %d, // every %s\n\t\t\t\tCommand: %q,\n", sc.Name, every, sc.Every, sc.Command)
-			if sc.Doc != "" {
-				fmt.Fprintf(&b, "\t\t\t\tDoc: %q,\n", sc.Doc)
-			}
-			fmt.Fprintf(&b, "\t\t\t\tNew: func() loom.Command {\n\t\t\t\t\treturn &%s{CommandBase: loom.ScheduleTarget(%q, %q, %q, %q)}\n\t\t\t\t},\n\t\t\t},\n",
-				sc.Command, g.s.Service, sc.Name, sc.Namespace, sc.ID)
-		}
-		b.WriteString("\t\t},\n")
-	}
-
-	if len(g.s.Enums) > 0 {
-		b.WriteString("\t\tEnums: []*loom.EnumDef{\n")
-		for _, e := range g.s.Enums {
-			if e.Doc != "" {
-				fmt.Fprintf(&b, "\t\t\t{Name: %q, Values: %s, Doc: %q},\n", e.Name, stringSlice(e.Values), e.Doc)
-				continue
-			}
-			fmt.Fprintf(&b, "\t\t\t{Name: %q, Values: %s},\n", e.Name, stringSlice(e.Values))
-		}
-		b.WriteString("\t\t},\n")
-	}
-
-	// Types is written even when empty: every registry generated from
-	// here on states its schema types, so the gateway's nested inputs
-	// follow the schema's required lists (ADR 0004).
-	types := append([]*schema.NamedType(nil), g.s.Types...)
-	sort.Slice(types, func(i, j int) bool { return types[i].Name < types[j].Name })
-	b.WriteString("\t\tTypes: []*loom.TypeDef{\n")
-	for _, t := range types {
-		if t.Doc != "" || len(fieldDocs(t.Payload)) > 0 {
-			fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n", t.Name)
-			if req := requiredFields(t.Payload); len(req) > 0 {
-				fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
-			}
-			writeDocs(&b, "\t\t\t\t", "Doc", t.Doc, "FieldDocs", t.Payload)
-			b.WriteString("\t\t\t},\n")
-			continue
-		}
-		if req := requiredFields(t.Payload); len(req) > 0 {
-			fmt.Fprintf(&b, "\t\t\t{Name: %q, Required: %s},\n", t.Name, stringSlice(req))
-		} else {
-			fmt.Fprintf(&b, "\t\t\t{Name: %q},\n", t.Name)
-		}
-	}
-	b.WriteString("\t\t},\n")
-
-	joins := false
-	for _, e := range g.s.Entities {
-		joins = joins || len(e.Joins) > 0
-	}
-	if joins {
-		b.WriteString("\t\tJoins: []*loom.JoinDef{\n")
-		for _, e := range g.s.Entities {
-			for _, j := range e.Joins {
-				fmt.Fprintf(&b, "\t\t\t{OnEntity: %q, Field: %q, Service: %q, Entity: %q, List: %v, Via: %q},\n",
-					e.Name, j.Field, j.Service, j.Entity, j.List, j.Via)
-			}
-		}
-		b.WriteString("\t\t},\n")
-	}
-
-	g.tableDefs(&b)
-
-	b.WriteString("\t\tSettings: loomSettingDefs(),\n")
-	// a @fold projection adds its def from its own file
-	b.WriteString("\t\tProjections: []*loom.ProjectionDef{\n")
-	for _, p := range g.s.Projections {
-		if !p.Fold {
-			g.projectionDef(&b, "{", p, "")
-		}
-	}
-	b.WriteString("\t\t},\n\t}\n\tloomRegisterOwners(impl, r)\n\treturn r\n}\n\n")
-
-	b.WriteString(`// loomOwner is one declaration's part of the registry: an aggregate, a
-// record, a policy, a process or a @fold projection. Each adds its own to
-// loomOwners in its file's init, so this file never lists them.
+// loomOwner is one declaration's part of the registry that needs an
+// implementation: an aggregate, a record, a policy, a process or a @fold
+// projection. Each adds its own to loomOwners in its file's init.
 type loomOwner struct {
 	kind string // "aggregate", "record", "policy", "process" or "projection"
 	name string
@@ -1369,9 +1379,18 @@ type loomOwner struct {
 	register func(impl Impl, h any, r *loom.Registry)
 }
 
-var loomOwners []loomOwner
+var (
+	loomOwners []loomOwner
+	// loomStatics is the parts of the registry that need no
+	// implementation: enums, types, shared events, tables, series,
+	// schedules and projections with no hand-written fold, each added by
+	// the file that declares it.
+	loomStatics []func(impl Impl, r *loom.Registry)
+)
 
 func loomRegister(o loomOwner) { loomOwners = append(loomOwners, o) }
+
+func loomStatic(f func(impl Impl, r *loom.Registry)) { loomStatics = append(loomStatics, f) }
 
 func (impl *Impl) bind(key string, h any) {
 	if impl.handlers == nil {
@@ -1382,11 +1401,11 @@ func (impl *Impl) bind(key string, h any) {
 
 var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "process": 3, "projection": 4}
 
-// loomRegisterOwners adds every aggregate, then every record, policy,
-// process and @fold projection, each kind in name order — never init
-// order — so the registry is the same on every boot. One whose
-// implementation was never bound panics with its name.
-func loomRegisterOwners(impl Impl, r *loom.Registry) {
+// loomRegisterAll adds every declaration to the registry and puts each
+// list in name order — never init order — so the registry is the same on
+// every boot. A declaration whose implementation was never bound panics
+// with its name.
+func loomRegisterAll(impl Impl, r *loom.Registry) {
 	owners := append([]loomOwner(nil), loomOwners...)
 	sort.Slice(owners, func(i, j int) bool {
 		if owners[i].kind != owners[j].kind {
@@ -1401,15 +1420,23 @@ func loomRegisterOwners(impl Impl, r *loom.Registry) {
 		}
 		o.register(impl, h, r)
 	}
+	for _, static := range loomStatics {
+		static(impl, r)
+	}
 	sort.Slice(r.Events, func(i, j int) bool { return r.Events[i].Name < r.Events[j].Name })
-}
-
-// loomSettingDefs is the service's settings in name order, never init
-// order.
-func loomSettingDefs() []*loom.SettingDef {
-	out := append([]*loom.SettingDef(nil), loomSettings...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	sort.Slice(r.Enums, func(i, j int) bool { return r.Enums[i].Name < r.Enums[j].Name })
+	sort.Slice(r.Types, func(i, j int) bool { return r.Types[i].Name < r.Types[j].Name })
+	sort.Slice(r.Series, func(i, j int) bool { return r.Series[i].Name < r.Series[j].Name })
+	sort.Slice(r.Schedules, func(i, j int) bool { return r.Schedules[i].Name < r.Schedules[j].Name })
+	sort.Slice(r.Settings, func(i, j int) bool { return r.Settings[i].Name < r.Settings[j].Name })
+	sort.Slice(r.Tables, func(i, j int) bool { return r.Tables[i].Entity < r.Tables[j].Entity })
+	sort.Slice(r.Projections, func(i, j int) bool { return r.Projections[i].Name < r.Projections[j].Name })
+	sort.Slice(r.Joins, func(i, j int) bool {
+		if r.Joins[i].OnEntity != r.Joins[j].OnEntity {
+			return r.Joins[i].OnEntity < r.Joins[j].OnEntity
+		}
+		return r.Joins[i].Field < r.Joins[j].Field
+	})
 }
 
 func asAny[T any](in []T) []any {
@@ -1436,6 +1463,84 @@ func checkDispatches(reactor, event string, allowed []string, cmds []loom.Comman
 	return nil
 }
 `)
+	return b.String()
+}
+
+// upcasts renders upcasts_gen.go: the one interface the service's
+// hand-written migration hops satisfy. Written once the schema declares
+// an upcast.
+func (g *generator) upcasts() string {
+	var b strings.Builder
+	b.WriteString(header)
+	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
+	b.WriteString("// EventUpcasts lifts stored payloads written under older @v versions:\n// raw JSON of version n in, raw JSON of version n+1 out. Hops chain at\n// decode time.\ntype EventUpcasts interface {\n")
+	for _, u := range g.upcastHops() {
+		fmt.Fprintf(&b, "\t%s(data []byte) ([]byte, error)\n", u.method)
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// look renders look_gen.go: the one interface the service's recurring
+// looks satisfy, a method per @loop aggregate — loom calls each on an
+// interval and waits between calls, built in, so an implementation never
+// hand-rolls the wait a process does with NotYet and @retry (ADR 0012).
+// Written once the schema declares a @loop.
+func (g *generator) look() string {
+	var b strings.Builder
+	b.WriteString(header)
+	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
+	b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/go-apis/loom\"\n)\n\n")
+	b.WriteString("// Look drives the recurring look each @loop aggregate declares: loom\n// calls the aggregate's method on an interval and waits between calls —\n// the wait is built in — until it has commands to dispatch.\ntype Look interface {\n")
+	for _, a := range g.loopingAggregates() {
+		fmt.Fprintf(&b, "\t%s(ctx context.Context) ([]loom.Command, error)\n", lookMethod(a))
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// --- one file per schedule ---
+
+// scheduled is a schedule and the loomgen file it is rendered into.
+type scheduled struct {
+	file string
+	sc   *schema.Schedule
+}
+
+// schedules lists the schedules in schema order, each with its file:
+// <snake name>_schedule_gen.go, numbered when two names snake the same
+// way.
+func (g *generator) schedules() []scheduled {
+	taken := map[string]bool{}
+	var out []scheduled
+	for _, sc := range g.s.Schedules {
+		base := toSnake(sc.Name) + "_schedule"
+		file := base
+		for n := 2; taken[file]; n++ {
+			file = fmt.Sprintf("%s_%d", base, n)
+		}
+		taken[file] = true
+		out = append(out, scheduled{file: file + "_gen.go", sc: sc})
+	}
+	return out
+}
+
+// scheduleFile renders one schedule's file: an init that adds its
+// definition to the registry.
+func (g *generator) scheduleFile(x scheduled) string {
+	var b strings.Builder
+	b.WriteString(header)
+	fmt.Fprintf(&b, "package %s\n\nimport \"github.com/go-apis/loom\"\n\n", g.genPkg)
+	sc := x.sc
+	every, _ := sc.Interval() // Validate has parsed it
+	b.WriteString("func init() {\n\tloomStatic(func(impl Impl, r *loom.Registry) {\n\t\tr.Schedules = append(r.Schedules, &loom.ScheduleDef{\n")
+	fmt.Fprintf(&b, "\t\t\tName: %q,\n\t\t\tEvery: %d, // every %s\n\t\t\tCommand: %q,\n", sc.Name, every, sc.Every, sc.Command)
+	if sc.Doc != "" {
+		fmt.Fprintf(&b, "\t\t\tDoc: %q,\n", sc.Doc)
+	}
+	fmt.Fprintf(&b, "\t\t\tNew: func() loom.Command {\n\t\t\t\treturn &%s{CommandBase: loom.ScheduleTarget(%q, %q, %q, %q)}\n\t\t\t},\n",
+		sc.Command, g.s.Service, sc.Name, sc.Namespace, sc.ID)
+	b.WriteString("\t\t})\n\t})\n}\n")
 	return b.String()
 }
 
@@ -1484,29 +1589,13 @@ func (g *generator) projectionDef(b *strings.Builder, open string, p *schema.Pro
 	b.WriteString("\t\t\t},\n")
 }
 
-// tableDefs renders the registry entries for @table entities and
-// aggregates: the DDL and column shape Migrate applies, and the typed
-// value extractor upserts ride on (jsonb columns pre-marshaled via
-// loom.JSONValue so the driver never guesses at encoding). Aggregate
-// state structs satisfy loom.EntityState (same Fold shape), so both kinds
-// share the extractor signature.
-func (g *generator) tableDefs(b *strings.Builder) {
-	var tables []*schema.Entity
-	for _, e := range g.s.Entities {
-		if e.Table {
-			tables = append(tables, e)
-		}
-	}
-	if len(tables) == 0 {
-		return
-	}
-	// a @table aggregate's entry is added by its own file
-	b.WriteString("\t\tTables: []*loom.TableDef{\n")
-	for _, t := range tables {
-		g.tableDef(b, "{", t.Name, t.State, t.Indexes)
-	}
-	b.WriteString("\t\t},\n")
-}
+// A @table entity's registry entry is added by the types file of the
+// schema file that declares it, a @table aggregate's by its own file: the
+// DDL and column shape Migrate applies, and the typed value extractor
+// upserts ride on (jsonb columns pre-marshaled via loom.JSONValue so the
+// driver never guesses at encoding). Aggregate state structs satisfy
+// loom.EntityState (same Fold shape), so both kinds share the extractor
+// signature.
 
 // tableDef renders one TableDef entry; open is how it begins: "{" in a
 // slice literal, "&loom.TableDef{" in an append. indexes is nil for an
@@ -1540,40 +1629,35 @@ func (g *generator) tableDef(b *strings.Builder, open, name string, state *schem
 // seriesDefs renders the registry entries for series: the DDL and column
 // shape Migrate applies, and the typed value extractor appends ride on
 // (jsonb columns pre-marshaled via loom.JSONValue, like tableDefs).
-func (g *generator) seriesDefs(b *strings.Builder) {
-	if len(g.s.Series) == 0 {
-		return
+// seriesDef renders one series's registry entry, as an element of a
+// slice literal.
+func (g *generator) seriesDef(b *strings.Builder, sr *schema.Series) {
+	fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tTable: %q,\n\t\t\t\tDDL: `%s`,\n\t\t\t\tTime: %q,\n\t\t\t\tDims: %s,\n",
+		sr.Name, g.seriesTableName(sr.Name), g.seriesDDL(sr), sr.Time, stringSlice(sr.Dims))
+	if len(sr.Keys) > 0 {
+		fmt.Fprintf(b, "\t\t\t\tKeys: %s,\n", stringSlice(sr.Keys))
 	}
-	b.WriteString("\t\tSeries: []*loom.SeriesDef{\n")
-	for _, sr := range g.s.Series {
-		fmt.Fprintf(b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tTable: %q,\n\t\t\t\tDDL: `%s`,\n\t\t\t\tTime: %q,\n\t\t\t\tDims: %s,\n",
-			sr.Name, g.seriesTableName(sr.Name), g.seriesDDL(sr), sr.Time, stringSlice(sr.Dims))
-		if len(sr.Keys) > 0 {
-			fmt.Fprintf(b, "\t\t\t\tKeys: %s,\n", stringSlice(sr.Keys))
-		}
-		if sr.RetainDays > 0 {
-			fmt.Fprintf(b, "\t\t\t\tRetainDays: %d,\n\t\t\t\tPartitionDDL: `%s`,\n", sr.RetainDays, g.seriesDDLForm(sr, true))
-		}
-		b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
-		for _, col := range g.tableColumns(sr.State) {
-			fmt.Fprintf(b, "\t\t\t\t\t{Name: %q, Type: %q},\n", col.Name, col.Type)
-		}
-		b.WriteString("\t\t\t\t},\n")
-		if req := requiredFields(sr.State); len(req) > 0 {
-			fmt.Fprintf(b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
-		}
-		fmt.Fprintf(b, "\t\t\t\tNew: func() loom.SeriesRow { return &%s{} },\n", sr.Name)
-		fmt.Fprintf(b, "\t\t\t\tValues: func(row loom.SeriesRow) []any {\n\t\t\t\t\te := row.(*%s)\n\t\t\t\t\treturn []any{\n", sr.Name)
-		for _, col := range g.tableColumns(sr.State) {
-			if col.Type == "jsonb" {
-				fmt.Fprintf(b, "\t\t\t\t\t\tloom.JSONValue(e.%s),\n", exported(col.Name))
-			} else {
-				fmt.Fprintf(b, "\t\t\t\t\t\te.%s,\n", exported(col.Name))
-			}
-		}
-		b.WriteString("\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t},\n")
+	if sr.RetainDays > 0 {
+		fmt.Fprintf(b, "\t\t\t\tRetainDays: %d,\n\t\t\t\tPartitionDDL: `%s`,\n", sr.RetainDays, g.seriesDDLForm(sr, true))
 	}
-	b.WriteString("\t\t},\n")
+	b.WriteString("\t\t\t\tColumns: []loom.TableColumn{\n")
+	for _, col := range g.tableColumns(sr.State) {
+		fmt.Fprintf(b, "\t\t\t\t\t{Name: %q, Type: %q},\n", col.Name, col.Type)
+	}
+	b.WriteString("\t\t\t\t},\n")
+	if req := requiredFields(sr.State); len(req) > 0 {
+		fmt.Fprintf(b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
+	}
+	fmt.Fprintf(b, "\t\t\t\tNew: func() loom.SeriesRow { return &%s{} },\n", sr.Name)
+	fmt.Fprintf(b, "\t\t\t\tValues: func(row loom.SeriesRow) []any {\n\t\t\t\t\te := row.(*%s)\n\t\t\t\t\treturn []any{\n", sr.Name)
+	for _, col := range g.tableColumns(sr.State) {
+		if col.Type == "jsonb" {
+			fmt.Fprintf(b, "\t\t\t\t\t\tloom.JSONValue(e.%s),\n", exported(col.Name))
+		} else {
+			fmt.Fprintf(b, "\t\t\t\t\t\te.%s,\n", exported(col.Name))
+		}
+	}
+	b.WriteString("\t\t\t\t\t}\n\t\t\t\t},\n\t\t\t},\n")
 }
 
 type upcastHop struct {
@@ -1637,8 +1721,8 @@ func (g *generator) ownerUploads(owner string, commands []*schema.Command, uploa
 
 // --- one file per policy, process and @fold projection ---
 
-// reactor is a policy, a process or a @fold projection and the loomgen
-// file it is rendered into. Exactly one of r and p is set.
+// reactor is a policy, a process or a projection and the loomgen file
+// it is rendered into. Exactly one of r and p is set.
 type reactor struct {
 	kind string // "policy", "process" or "projection"
 	name string
@@ -1647,7 +1731,7 @@ type reactor struct {
 	p    *schema.Projection
 }
 
-// reactors lists the policies, then the processes, then the @fold
+// reactors lists the policies, then the processes, then the
 // projections, in schema order, each with its file:
 // <snake name>_<kind>_gen.go. Two names that snake the same way take a
 // number. The choice depends on the schema's slices only, so it is the
@@ -1671,9 +1755,7 @@ func (g *generator) reactors() []reactor {
 		out = append(out, reactor{kind: "process", name: r.Name, file: pick(r.Name, "process"), r: r})
 	}
 	for _, p := range g.s.Projections {
-		if p.Fold {
-			out = append(out, reactor{kind: "projection", name: p.Name, file: pick(p.Name, "projection"), p: p})
-		}
+		out = append(out, reactor{kind: "projection", name: p.Name, file: pick(p.Name, "projection"), p: p})
 	}
 	return out
 }
@@ -1702,6 +1784,14 @@ var (
 
 `)
 	bind := g.implField(x.name)
+	if x.p != nil && !x.p.Fold {
+		// a projection loom folds itself needs no implementation: its
+		// definition alone
+		b.WriteString("func init() {\n\tloomStatic(func(impl Impl, r *loom.Registry) {\n\t\tr.Projections = append(r.Projections,\n")
+		g.projectionDef(&b, "&loom.ProjectionDef{", x.p, "")
+		b.WriteString("\t\t)\n\t})\n}\n")
+		return b.String()
+	}
 	if x.p != nil {
 		iface := exported(x.name) + "Folds"
 		fmt.Fprintf(&b, "type %s interface {\n", iface)

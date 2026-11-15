@@ -71,7 +71,7 @@ process plain {
 		}
 		return strings.Join(strings.Fields(string(raw)), " ")
 	}
-	registry := read("registry_gen.go")
+	registry := read("loom_gen.go")
 	for file, decls := range map[string][]string{
 		"fleet_stall_gen.go":           {"type FleetStallHandlers interface", "func (impl *Impl) FleetStall(h FleetStallHandlers)"},
 		"org_membership_gen.go":        {"type OrgMembershipHandlers interface", "func (impl *Impl) OrgMembership(h OrgMembershipHandlers)"},
@@ -89,7 +89,7 @@ process plain {
 	}
 	for _, unwanted := range []string{"Reactions interface", "Folds interface", "FleetStall", "OrgMembership", "PlainProcess"} {
 		if strings.Contains(registry, unwanted) {
-			t.Fatalf("registry_gen.go has %q", unwanted)
+			t.Fatalf("loom_gen.go has %q", unwanted)
 		}
 	}
 	reg, err := os.ReadFile(filepath.Join(dir, "registry.go"))

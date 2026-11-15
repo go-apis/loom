@@ -156,3 +156,16 @@ holds.
   longer produces (a renamed or deleted aggregate's, recognised by loom's
   header) and prints `removed <path>`. `--check` names such a file stale.
   A file without the header, or a stub, is never touched.
+
+## Since
+
+- Policies, processes and `@fold` projections bind and register the same
+  way, each from `<snake name>_<kind>_gen.go`; `Impl` has no reactor
+  fields.
+- `registry_gen.go` is no longer written. The scaffolding it held (`Impl`,
+  `NewRegistry`, `loomOwners`) is in `loom_gen.go`, which names nothing
+  the schema declares; the `EventUpcasts` and `Look` interfaces are in
+  `upcasts_gen.go` and `look_gen.go`. Enums, types, shared events, `@table` entities and
+  series are registered by their schema file's `_types_gen.go`, a
+  projection loom folds itself and a schedule by a file of their own, so
+  no file holds the whole registry.
