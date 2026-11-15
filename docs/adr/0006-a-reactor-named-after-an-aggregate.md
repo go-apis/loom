@@ -29,8 +29,8 @@ deploying for two and a half hours.
   `<Name>Policy`, a `@fold` projection `<Name>Projection`. The
   `On<Event>` calls through the field and the `registry.go` stub's wiring
   follow. Nothing else moves: the `<Name>Reactions` or `<Name>Folds`
-  interface, the stub type in `processes/` (or `policies/`,
-  `projections/`) and the runner's name keep the declared name. A running
+  interface, the stub type (an individual file in the consumer's repository),
+  and the runner's name keep the declared name. A running
   reactor is never renamed, so its checkpoint and its effect journal stay
   where they are.
 - **The convention: a reactor is named for what it does.** A process or
