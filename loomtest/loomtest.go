@@ -9,9 +9,11 @@
 //		When(&loomgen.ShipOrder{CommandBase: base}).
 //		Then(&loomgen.OrderShipped{Status: "shipped"})
 //
-// Not covered here (use the e2e path): policies-in-transaction wiring,
+// Not covered by given/when/then: policies-in-transaction wiring,
 // projections, effects (loom.Once needs the journal), timers and batches
-// — this harness tests domain decisions, not delivery.
+// — that harness tests domain decisions, not delivery. For those, and
+// for anything else that needs the store, Postgres gives a test a
+// database of its own on a real server (pg.go).
 package loomtest
 
 import (
