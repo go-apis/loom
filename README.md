@@ -307,6 +307,18 @@ An equal or older generation never takes the lease, and with no
 generation the election is as above. See
 [ADR 0010](docs/adr/0010-a-newer-generation-takes-the-process-lease.md).
 
+A rollback is checked the other way. The store remembers the release
+that first wrote each event type, and a build of an older release refuses
+to `Start` against it with a `*loom.FloorError` naming the type and the
+release to start instead, since it could not decode what is stored. Tell
+loom the build's release with `Config.Release`, else `LOOM_RELEASE`: a
+number that belongs to the code, the same every time one build is
+deployed and larger for every later build (a build number, a commit
+count). Not the generation, which a rollback's deploy raises. A build
+that states none is never refused, and the floors it writes are zero,
+which hold no build back. `Client.EventFloors` lists them. See
+[ADR 0013](docs/adr/0013-an-event-type-has-a-release-floor.md).
+
 Budget the pool for that: a started client parks one connection on
 `LISTEN` for its whole life, plus the lease connection while it leads, and
 everything else — `Dispatch`, `Load`, the readers, the relay — queues

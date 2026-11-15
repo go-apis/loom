@@ -41,6 +41,11 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	if poll <= 0 {
 		poll = 5 * time.Second
 	}
+	// a build older than an event type the store holds starts nothing: it
+	// could not decode what its runners would read (floor.go)
+	if err := c.checkFloor(ctx); err != nil {
+		return err
+	}
 	c.StartRelay(ctx, poll)
 	// the work a build's code decides — timers, batches, projections —
 	// waits for the instance's first beat: one superseded by a newer

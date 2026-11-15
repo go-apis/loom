@@ -14,6 +14,20 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A build older than a stored event type refuses to start.** The store
+  records, with each event type's first event, the release that wrote it
+  (`loom_event_floors`; first write wins). `Start` returns a
+  `*loom.FloorError` for a build whose release is older than any of
+  them, naming the event type and the release to start instead: the
+  rule "never roll back past new event types", enforced.
+  `Config.Release` (else `LOOM_RELEASE`) states the build's release — a
+  number of the code, the same on every deploy of one build, unlike
+  `Config.Generation`. `Client.EventFloors` lists the floors. A build
+  that states no release writes floors of zero and is never refused,
+  and the first `Migrate` seeds a floor of zero for every type already
+  in the log, with one pass over it.
+  ([ADR 0013](docs/adr/0013-an-event-type-has-a-release-floor.md))
+
 - **`wire:` in loom.yml: implementations wired by convention.** With
   `layout: folders`, `wire: wire` has `loom generate` write one wiring
   file per declaration into a generated package —
