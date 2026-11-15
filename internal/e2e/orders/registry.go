@@ -9,13 +9,11 @@ import (
 // NewRegistry wires implementations into the generated registry. Yours
 // to edit.
 func NewRegistry() *loom.Registry {
-	impl := loomgen.Impl{
-		ShipOnPayment:      &ShipOnPayment{},
-		ScheduleAutoCancel: &ScheduleAutoCancel{},
-		DropAutoCancel:     &DropAutoCancel{},
-		CustomerSpend:      &CustomerSpend{},
-		Upcasts:            &Upcasts{},
-	}
+	impl := loomgen.Impl{Upcasts: &Upcasts{}}
+	impl.ScheduleAutoCancel(&ScheduleAutoCancel{})
+	impl.DropAutoCancel(&DropAutoCancel{})
+	impl.ShipOnPayment(&ShipOnPayment{})
+	impl.CustomerSpend(&CustomerSpend{})
 	impl.Order(&Order{})
 	impl.Parcel(&Parcel{})
 	return loomgen.NewRegistry(impl)

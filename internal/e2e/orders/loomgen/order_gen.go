@@ -216,10 +216,10 @@ func aggregateDefOrder(h OrderHandlers) *loom.AggregateDef {
 
 // Order binds h as the Order aggregate's handlers. NewRegistry panics
 // if it is never called.
-func (impl *Impl) Order(h OrderHandlers) { impl.bind("Order", h) }
+func (impl *Impl) Order(h OrderHandlers) { impl.bind("aggregate:Order", h) }
 
 func init() {
-	loomRegister(loomOwner{kind: "aggregate", name: "Order", register: func(impl Impl, h any, r *loom.Registry) {
+	loomRegister(loomOwner{kind: "aggregate", name: "Order", bind: "Order", register: func(impl Impl, h any, r *loom.Registry) {
 		r.Aggregates = append(r.Aggregates, aggregateDefOrder(h.(OrderHandlers)))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},

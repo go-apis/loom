@@ -33,10 +33,12 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
 3. Implement what the compiler asks for: new commands get stubs in
    `aggregates/` (or the flat package), new reactions in `processes/`,
    `policies/`, `projections/`. Stubs are yours and written once; loom
-   never rewrites them. That includes `registry.go`. For a new aggregate
-   or record, add its binding call there yourself, `impl.Order(&Order{})`.
-   For a new reactor, add its field to the `Impl` literal.
-   Each aggregate and record has its own `loomgen/<snake name>_gen.go`.
+   never rewrites them. That includes `registry.go`. For a new aggregate,
+   record, policy, process or `@fold` projection, add its binding call
+   there yourself: `impl.Order(&Order{})`,
+   `impl.ShipOnPayment(&ShipOnPayment{})`.
+   Each has its own `loomgen/<snake name>_gen.go` (a reactor's carries
+   its kind: `ship_on_payment_process_gen.go`).
    The shared `registry_gen.go` never names one, so a new aggregate adds
    one generated file and changes none. Each schema file has its own
    `loomgen/<schema file>_types_gen.go` for the enums, types, entities
@@ -58,7 +60,7 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
   policy or projection is named for what it does: `shipOnPayment`,
   `productManifests`, `threadReply`, `mergeBatchSweep`. Not
   `process fleetStall` beside `aggregate FleetStall`. loom compiles the
-  collision by suffixing the Impl field (`FleetStallProcess`, ADR 0006),
+  collision by suffixing the reactor's binding method (`FleetStallProcess`, ADR 0006),
   but it is a smell, and renaming a reactor later is not free (below).
 - **Never rename a running process or projection casually.** Its name is
   its runner's checkpoint. A renamed process is a new runner and starts
@@ -246,10 +248,11 @@ projections, timers and batches are end-to-end territory.
   and commit them. An orphan (a renamed or removed aggregate's
   `_gen.go`) is listed as stale, and `generate` removes it.
 - `unknown field Order in struct literal of type loomgen.Impl`: the
-  `registry.go` predates per-aggregate registration (loom ADR 0008). Move
-  each aggregate and record out of the literal into a binding call,
-  `impl.Order(&Order{})`, and keep the reactor fields.
-- A panic at boot, `loomgen: aggregate X has no handlers — call
+  `registry.go` predates per-declaration registration (loom ADR 0008).
+  Move every aggregate, record, policy, process and `@fold` projection
+  out of the literal into a binding call of the same name,
+  `impl.Order(&Order{})`. Only `Upcasts` stays a field.
+- A panic at boot, `loomgen: process X has no implementation — call
   impl.X(...)`: `registry.go` never binds X. Add the call it names.
 
 ## When a rebase or merge conflicts in loomgen

@@ -102,7 +102,7 @@ func TestGenerateWritesOneFilePerAggregate(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Name())
 	}
-	want := []string{"cart_gen.go", "models_gen.go", "registry_gen.go", "shipment_gen.go", "wallet_gen.go"}
+	want := []string{"cart_gen.go", "models_gen.go", "registry_gen.go", "ship_on_add_policy_gen.go", "shipment_gen.go", "wallet_gen.go"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("loomgen holds %v, want %v", got, want)
 	}
@@ -128,10 +128,14 @@ func TestGenerateWritesOneFilePerAggregate(t *testing.T) {
 			"type Wallet struct", "type Credit struct", "type WalletCredited struct",
 			"type WalletHandlers interface", "func recordDefWallet(h WalletHandlers) *loom.RecordDef",
 		},
+		// the policy's interface, its binding method and its definition
+		"ship_on_add_policy_gen.go": {
+			"type ShipOnAddReactions interface", "func (impl *Impl) ShipOnAdd(h ShipOnAddReactions)", `Name:   "shipOnAdd"`,
+		},
 	}
 	shared := map[string][]string{
 		"models_gen.go":   {"type Tier string", "type Address struct", "type Shared struct", "type CartView struct", "func (s *CartView) Fold("},
-		"registry_gen.go": {"type ShipOnAddReactions interface", "type Impl struct", "func NewRegistry(", "func asAny[", "func loomErrNilEvent("},
+		"registry_gen.go": {"type Impl struct", "func NewRegistry(", "func asAny[", "func loomErrNilEvent("},
 	}
 	for file, decls := range own {
 		src := read(file)
@@ -421,4 +425,158 @@ func TestTwoAggregatesAddedTouchDisjointFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	vetGenerated(t, dir, "example.com/shop")
+}
+
+// two processes, each declared in its own schema file, reacting to the
+// same event
+var twoProcessFiles = []sdl.File{
+	{Path: "schema/door.loom", Src: `
+service shop
+
+aggregate Door {
+  state { open: bool }
+  command Open -> Opened
+  command Lock -> Locked
+  command Chime -> Chimed
+  event Opened { open: bool }
+  event Locked { open: bool }
+  event Chimed { open: bool }
+}
+
+process lockUp {
+  on Opened -> Lock
+}
+`},
+	{Path: "schema/ring.loom", Src: `
+process ring {
+  on Opened -> Chime
+}
+`},
+}
+
+// TestTwoProcessesInSeparateFilesBothReact: two processes declared in
+// separate schema files each get a generated file of their own, holding
+// their Reactions interface, their binding method and their definition,
+// which no other generated file holds. Built into a registry, each
+// reacts to its event with its declared command.
+func TestTwoProcessesInSeparateFilesBothReact(t *testing.T) {
+	s, err := sdl.ParseFiles(twoProcessFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := gen.Generate(s, gen.Config{Dir: dir, Package: "shop", Module: "example.com/shop"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "loomgen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(dir, "loomgen", e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[e.Name()] = string(raw)
+	}
+	for file, decls := range map[string][]string{
+		"lock_up_process_gen.go": {"type LockUpReactions interface", "func (impl *Impl) LockUp(h LockUpReactions)", `Name:   "lockUp"`},
+		"ring_process_gen.go":    {"type RingReactions interface", "func (impl *Impl) Ring(h RingReactions)", `Name:   "ring"`},
+	} {
+		for _, decl := range decls {
+			if !strings.Contains(files[file], decl) {
+				t.Errorf("%s lacks %q", file, decl)
+			}
+			for other, content := range files {
+				if other != file && strings.Contains(content, decl) {
+					t.Errorf("%q is in %s as well as %s", decl, other, file)
+				}
+			}
+		}
+	}
+	// nothing shared names either process
+	for _, shared := range []string{"registry_gen.go", "models_gen.go"} {
+		for _, name := range []string{"LockUp", "lockUp", "Ring", `"ring"`} {
+			if strings.Contains(files[shared], name) {
+				t.Errorf("%s names %s", shared, name)
+			}
+		}
+	}
+	if testing.Short() {
+		return
+	}
+
+	// the implementations, in place of the stubs, and a test that reacts
+	write := func(name, src string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reaction := func(typ, cmd string) string {
+		return `package shop
+
+import (
+	"context"
+
+	"github.com/go-apis/loom"
+
+	"example.com/shop/loomgen"
+)
+
+type ` + typ + ` struct{}
+
+func (*` + typ + `) OnOpened(ctx context.Context, evt *loom.Event, data *loomgen.Opened) ([]loom.Command, error) {
+	return []loom.Command{&loomgen.` + cmd + `{CommandBase: loom.CommandBase{Namespace: evt.Namespace, AggregateID: evt.AggregateID}}}, nil
+}
+`
+	}
+	write("lockup.go", reaction("LockUp", "Lock"))
+	write("ring.go", reaction("Ring", "Chime"))
+	write("shop_test.go", `package shop
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/go-apis/loom"
+	"github.com/go-apis/loom/loomtest"
+
+	"example.com/shop/loomgen"
+)
+
+func TestBothProcessesReact(t *testing.T) {
+	reg := NewRegistry()
+	if len(reg.Processes) != 2 || reg.Processes[0].Name != "lockUp" || reg.Processes[1].Name != "ring" {
+		t.Fatalf("processes: %+v", reg.Processes)
+	}
+	door := uuid.New()
+	base := loom.CommandBase{Namespace: "acme", AggregateID: door}
+	loomtest.Reaction(t, reg, "lockUp").When("acme", door, &loomgen.Opened{Open: true}).Then(&loomgen.Lock{CommandBase: base})
+	loomtest.Reaction(t, reg, "ring").When("acme", door, &loomgen.Opened{Open: true}).Then(&loomgen.Chime{CommandBase: base})
+}
+
+// a process never bound is named when the registry is built
+func TestAnUnboundProcessIsNamed(t *testing.T) {
+	defer func() {
+		msg, _ := recover().(string)
+		if !strings.Contains(msg, "process ring has no implementation") || !strings.Contains(msg, "impl.Ring(") {
+			t.Fatalf("want a panic naming ring, got %q", msg)
+		}
+	}()
+	impl := loomgen.Impl{}
+	impl.Door(&Door{})
+	impl.LockUp(&LockUp{})
+	loomgen.NewRegistry(impl)
+}
+`)
+	vetGenerated(t, dir, "example.com/shop")
+	run := exec.Command("go", "test", "./...")
+	run.Dir, run.Env = dir, goEnv(t)
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("the generated service's tests: %v\n%s", err, out)
+	}
 }

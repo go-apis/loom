@@ -39,15 +39,14 @@ func TestRegistryOwnersInNameOrder(t *testing.T) {
 
 	defer func() {
 		msg := fmt.Sprint(recover())
-		if !strings.Contains(msg, "aggregate Payee has no handlers") || !strings.Contains(msg, "impl.Payee(") {
+		if !strings.Contains(msg, "aggregate Payee has no implementation") || !strings.Contains(msg, "impl.Payee(") {
 			t.Fatalf("want a panic naming Payee, got %q", msg)
 		}
 	}()
-	impl := billinggen.Impl{
-		RaiseOnOrder:  &billing.RaiseOnOrder{},
-		CaptureOnPaid: &billing.CaptureOnPaid{},
-		PostLedger:    &billing.PostLedger{},
-	}
+	impl := billinggen.Impl{}
+	impl.PostLedger(&billing.PostLedger{})
+	impl.RaiseOnOrder(&billing.RaiseOnOrder{})
+	impl.CaptureOnPaid(&billing.CaptureOnPaid{})
 	impl.Invoice(&billing.Invoice{})
 	impl.LedgerEntry(&billing.LedgerEntry{})
 	billinggen.NewRegistry(impl)

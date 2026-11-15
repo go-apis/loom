@@ -72,10 +72,10 @@ func aggregateDefBell(h BellHandlers) *loom.AggregateDef {
 
 // Bell binds h as the Bell aggregate's handlers. NewRegistry panics
 // if it is never called.
-func (impl *Impl) Bell(h BellHandlers) { impl.bind("Bell", h) }
+func (impl *Impl) Bell(h BellHandlers) { impl.bind("aggregate:Bell", h) }
 
 func init() {
-	loomRegister(loomOwner{kind: "aggregate", name: "Bell", register: func(impl Impl, h any, r *loom.Registry) {
+	loomRegister(loomOwner{kind: "aggregate", name: "Bell", bind: "Bell", register: func(impl Impl, h any, r *loom.Registry) {
 		r.Aggregates = append(r.Aggregates, aggregateDefBell(h.(BellHandlers)))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "BellRang", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &BellRang{} }},
