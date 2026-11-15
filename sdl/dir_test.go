@@ -10,6 +10,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/go-apis/loom/schema"
 	"github.com/go-apis/loom/sdl"
 )
 
@@ -84,8 +85,13 @@ func TestParseDirPathOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParseDir differs from ParseFiles in path order")
+	// each declaration names the file it came from, under the directory
+	// ParseDir was given
+	if file := got.Enums[0].File; !strings.HasSuffix(filepath.ToSlash(file), "/billing/z.loom") {
+		t.Errorf("enum Currency's file = %q, want …/billing/z.loom", file)
+	}
+	if file := got.Types[0].File; !strings.HasSuffix(filepath.ToSlash(file), "/billing/sub/y.loom") {
+		t.Errorf("type Money's file = %q, want …/billing/sub/y.loom", file)
 	}
 
 	// A file system that lists every directory backwards gives the same
@@ -104,6 +110,11 @@ func TestParseDirPathOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fwd, want) || !reflect.DeepEqual(back, want) {
 		t.Fatalf("ParseFS depends on listing order")
+	}
+	// ParseDir read the same declarations; only the paths it records
+	// carry its directory
+	if !reflect.DeepEqual(withoutFiles(got), withoutFiles(want)) {
+		t.Fatalf("ParseDir differs from ParseFiles in path order")
 	}
 }
 
@@ -221,7 +232,12 @@ func TestParseIsParseFilesOverOneFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(one, many) {
+	// a named file is recorded on what it declares; an unnamed source
+	// leaves it empty
+	if len(many.Enums) == 0 || many.Enums[0].File != "orders.loom" || one.Enums[0].File != "" {
+		t.Fatalf("enum files: named %q, unnamed %q", many.Enums[0].File, one.Enums[0].File)
+	}
+	if !reflect.DeepEqual(withoutFiles(one), withoutFiles(many)) {
 		t.Fatal("Parse and ParseFiles over the same file differ")
 	}
 	// only the error text differs: an unnamed source says "line N:"
@@ -229,4 +245,25 @@ func TestParseIsParseFilesOverOneFile(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "line 3:") {
 		t.Fatalf("want line 3:, got %v", err)
 	}
+}
+
+// withoutFiles clears where each declaration was read from, leaving
+// what was declared.
+func withoutFiles(s *schema.Schema) *schema.Schema {
+	for _, e := range s.Enums {
+		e.File = ""
+	}
+	for _, t := range s.Types {
+		t.File = ""
+	}
+	for _, e := range s.Events {
+		e.File = ""
+	}
+	for _, e := range s.Entities {
+		e.File = ""
+	}
+	for _, sr := range s.Series {
+		sr.File = ""
+	}
+	return s
 }

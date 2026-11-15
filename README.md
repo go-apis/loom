@@ -120,9 +120,11 @@ loom.yml gives each kind its own package instead —
 ```
 myservice/
   loomgen/              # generated, regenerated every run
-    models_gen.go       # shared: enums, types, shared events, entities, series
     registry_gen.go     # shared: Impl, NewRegistry, reactor interfaces
     <aggregate>_gen.go  # one per aggregate and record: order_gen.go, …
+    <schema file>_types_gen.go  # one per .loom file: its enums, types,
+                        # shared events, entities and series
+    models_gen.go       # only what no schema file declares
     tables_gen.sql      # DDL for @table and series
   aggregates/           # yours, generated once
   records/

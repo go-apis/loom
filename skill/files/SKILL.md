@@ -37,8 +37,11 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
    or record, add its binding call there yourself, `impl.Order(&Order{})`.
    For a new reactor, add its field to the `Impl` literal.
    Each aggregate and record has its own `loomgen/<snake name>_gen.go`.
-   The shared `models_gen.go` and `registry_gen.go` never name one, so a
-   new aggregate adds one generated file and changes none.
+   The shared `registry_gen.go` never names one, so a new aggregate adds
+   one generated file and changes none. Each schema file has its own
+   `loomgen/<schema file>_types_gen.go` for the enums, types, entities
+   and shared events it declares, so declare a type in the schema file
+   of the feature it belongs to, not in one catch-all file.
 4. Check before you push:
 
    ```sh
@@ -232,11 +235,13 @@ projections, timers and batches are end-to-end territory.
 
 The generated files are the generator's output, never a merge of two
 people's lines. Two branches that each add an aggregate write disjoint
-`<name>_gen.go` files and should not conflict. Two that change shared
-declarations can conflict: an enum, a type, an event several aggregates
-emit, a reactor, a projection or a `@table`. They rewrite
-`registry_gen.go`, `models_gen.go` or `tables_gen.sql`, and no
-line-by-line resolution of those is right.
+`<name>_gen.go` files and should not conflict. Two that change types in
+different schema files write different `<schema file>_types_gen.go`
+files. Two that change declarations in the same schema file, or a
+reactor, a projection, a `@table`, an enum's values or a type's required
+fields, can conflict: they rewrite the same `_types_gen.go`,
+`registry_gen.go` or `tables_gen.sql`, and no line-by-line resolution of
+those is right.
 
 1. Resolve only the **sources** — the `.loom` schema files and
    `loom.yml`. A conflict there is real: keep both sides' declarations

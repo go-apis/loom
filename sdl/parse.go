@@ -569,7 +569,7 @@ func (p *parser) command() (*schema.Command, error) {
 }
 
 func (p *parser) event() (*schema.Event, error) {
-	p.next()
+	at := p.next()
 	name, err := p.ident()
 	if err != nil {
 		return nil, err
@@ -579,6 +579,8 @@ func (p *parser) event() (*schema.Event, error) {
 		return nil, err
 	}
 	evt := p.registerEvent(name, "")
+	// the declaration is the event's home, wherever it was first named
+	evt.File = at.file
 	if _, ok := dirs["publish"]; ok {
 		evt.Publish = true
 	}
@@ -606,7 +608,7 @@ func (p *parser) event() (*schema.Event, error) {
 }
 
 func (p *parser) consume() error {
-	p.next()
+	at := p.next()
 	service, err := p.ident()
 	if err != nil {
 		return err
@@ -620,6 +622,7 @@ func (p *parser) consume() error {
 	}
 	evt := p.registerEvent(name, service)
 	evt.Publish = true
+	evt.File = at.file
 	if p.peek().text == "{" {
 		pl, err := p.fieldBlock()
 		if err != nil {
@@ -669,7 +672,8 @@ func (p *parser) upcast() error {
 }
 
 func (p *parser) entity() error {
-	doc := p.next().doc
+	at := p.next()
+	doc := at.doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -678,7 +682,7 @@ func (p *parser) entity() error {
 	if err != nil {
 		return err
 	}
-	ent := &schema.Entity{Name: name, Doc: doc, ReadAllow: p.allows}
+	ent := &schema.Entity{Name: name, File: at.file, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
 		if d != "table" && d != "role" && d != "allow" {
 			return fmt.Errorf("entity %s: unknown directive @%s (entities take @table, @role)", name, d)
@@ -714,7 +718,7 @@ func (p *parser) entity() error {
 //	  price_cents: int!
 //	}
 func (p *parser) series() error {
-	p.next()
+	at := p.next()
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -723,7 +727,7 @@ func (p *parser) series() error {
 	if err != nil {
 		return err
 	}
-	sr := &schema.Series{Name: name}
+	sr := &schema.Series{Name: name, File: at.file}
 	for d := range dirs {
 		if d != "time" && d != "dim" && d != "key" && d != "retain" {
 			return fmt.Errorf("series %s: unknown directive @%s (series take @time, @dim, @key, @retain)", name, d)
@@ -1127,7 +1131,8 @@ func (p *parser) projection() error {
 }
 
 func (p *parser) typeDecl() error {
-	doc := p.next().doc
+	at := p.next()
+	doc := at.doc
 	name, err := p.ident()
 	if err != nil {
 		return err
@@ -1136,7 +1141,7 @@ func (p *parser) typeDecl() error {
 	if err != nil {
 		return err
 	}
-	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, Doc: doc, Payload: pl})
+	p.out.Types = append(p.out.Types, &schema.NamedType{Name: name, File: at.file, Doc: doc, Payload: pl})
 	return nil
 }
 
@@ -1220,7 +1225,7 @@ func (p *parser) mergeEnums() error {
 	for _, b := range ordered {
 		e := enums[b.name]
 		if e == nil {
-			e = &schema.Enum{Name: b.name, Doc: homes[b.name].at.doc}
+			e = &schema.Enum{Name: b.name, File: homes[b.name].at.file, Doc: homes[b.name].at.doc}
 			enums[b.name] = e
 			seen[b.name] = map[string]where{}
 			p.out.Enums = append(p.out.Enums, e)
@@ -1256,6 +1261,7 @@ func (p *parser) registerEvent(name, service string) *schema.Event {
 // eventRef parses Name or service.Name; the qualified form implicitly
 // declares the foreign event if no consume block did.
 func (p *parser) eventRef() (string, error) {
+	at := p.peek()
 	first, err := p.ident()
 	if err != nil {
 		return "", err
@@ -1269,6 +1275,9 @@ func (p *parser) eventRef() (string, error) {
 	}
 	evt := p.registerEvent(name, first)
 	evt.Publish = true
+	if evt.File == "" {
+		evt.File = at.file
+	}
 	return name, nil
 }
 

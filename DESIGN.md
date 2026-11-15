@@ -162,9 +162,18 @@ everything into `loom.Registry`. Each aggregate and record gets its own
 fold, its `Handlers` interface, its def function, and its binding method on
 `Impl` (`impl.Order(h)`). It registers itself, in `init`, into a table that
 `NewRegistry` reads in kind-then-name order. An owner left unbound panics at
-boot with its name. `models_gen.go` and `registry_gen.go` hold only what is
-shared, and name no aggregate or record, so adding an aggregate adds one file
-and edits none. `generate` removes a generated file the schema no longer
+boot with its name. Each schema file gets `<its name>_types_gen.go`
+(`goal.loom` → `goal_types_gen.go`): the enums, named types, entities and
+series it declares, and the events it declares that several aggregates emit
+or none does. So an edit to one schema file's types changes that file's
+generated file and no other schema file's. A name a Go file cannot carry is
+rewritten, and two schema files of one name take a number, in path order.
+`models_gen.go` holds only what no schema file declares: everything, for a
+schema parsed from a lone unnamed source, and nothing otherwise.
+`registry_gen.go` holds what is shared, and names no aggregate or record, so
+adding an aggregate adds one file and edits none. It still lists every enum's
+values and every type's required fields, so a change to those edits it too.
+`generate` removes a generated file the schema no longer
 produces (ADR 0008). Stubs (once, then yours): one file per aggregate and
 reactor implementing the generated interfaces, plus `registry.go`, which sets
 reactor fields on `Impl` and binds each aggregate and record.
