@@ -234,8 +234,8 @@ func clampLimit(n int) int {
 	if n <= 0 {
 		return 100
 	}
-	if n > 500 {
-		return 500
+	if n > MaxPage {
+		return MaxPage
 	}
 	return n
 }

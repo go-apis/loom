@@ -14,6 +14,16 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`loom.Every` and `loom.Pages`: a list read walked to its end.**
+  `Every(ctx, read, q)` answers every row of a list however many pages
+  that takes, or an error and no rows; `Pages` yields a page at a time.
+  Both page by cursor, so they replace the `Offset` loops the keyset
+  read ended. `Client.ListEntities(name)` and `Client.ListRecords(name)`
+  are the reads to hand them, and `loom.MaxPage` (500) names the most
+  rows one read answers. With no `OrderBy`, `Every` reads ascending by
+  `updated_at`, so a row written to while the pages are read is met
+  again and answered once (`every.go`).
+
 - **Approvals: what is asked, who may answer, until when, and what then.**
   A loop asks a person with `loom.AskApproval(ctx, loom.Approval{Name,
   What, Role, Deadline, AtDeadline})` (or `Client.AskApproval`). The

@@ -938,6 +938,31 @@ read. GraphQL's list fields (`{x}s`, `{x}sChanged`) opt in automatically
 from the query's own selection set
 ([ADR 0009](docs/adr/0009-a-list-read-selects-only-asked-fields.md)).
 
+A list read answers one page: at most `loom.MaxPage` (500) rows, in
+`OrderBy` and then id. The next page is the same query with `After` set
+to the cursor of the last row (`Row.Cursor(orderBy)`), so rows that tie
+on the order field are each read once
+([ADR 0014](docs/adr/0014-list-reads-page-by-cursor.md)). To read a
+whole list, let loom walk it:
+
+```go
+// every row, or an error and none: never part of the list
+rows, err := loom.Every(ctx, cli.ListEntities("GoalIndex"), loom.Query{Namespace: ns})
+
+// a page at a time, for a list too long to hold
+for page, err := range loom.Pages(ctx, cli.ListEntities("WorkItemIndex"), loom.Query{Namespace: ns, OrderBy: "seq"}) {
+    if err != nil { return err }
+    ...
+}
+```
+
+`cli.ListRecords(name)` is the same for a record, and any
+`func(ctx, loom.Query) ([]loom.Row, error)` is a `loom.ListRead`. A row
+that changes place in the order while the pages are read is read where
+it stands: order by a field that does not change, or leave `OrderBy`
+empty in `Every`, which reads ascending by `updated_at` so a row written
+to meanwhile is met again and answered once.
+
 ## Uploads: large files, chunked, event-sourced
 
 Declare an upload on the aggregate/record that owns the file; its
