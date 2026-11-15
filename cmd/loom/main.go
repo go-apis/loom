@@ -490,7 +490,7 @@ func runGenerate(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "wrote", rel(*dir, f))
 	}
 	for _, f := range res.Skipped {
-		fmt.Fprintln(out, "kept ", rel(*dir, f), "(stub exists)")
+		fmt.Fprintln(out, "kept ", rel(*dir, f), "(implemented)")
 	}
 	for _, f := range res.Removed {
 		fmt.Fprintln(out, "removed", rel(*dir, f))

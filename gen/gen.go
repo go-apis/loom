@@ -49,7 +49,7 @@ type Config struct {
 
 type Result struct {
 	Written []string
-	Skipped []string // stub files that already existed
+	Skipped []string // stub files that already existed, or the file that already implements one
 	Removed []string // orphaned generated files no longer produced
 }
 
@@ -264,6 +264,11 @@ func Generate(s *schema.Schema, cfg Config) (*Result, error) {
 		path := filepath.Join(cfg.Dir, name)
 		if _, err := os.Stat(path); err == nil {
 			res.Skipped = append(res.Skipped, path)
+			continue
+		}
+		if owner := declaredElsewhere(path, content); owner != "" {
+			// the implementation lives in a file named otherwise
+			res.Skipped = append(res.Skipped, owner)
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
