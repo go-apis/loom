@@ -26,8 +26,18 @@ type Impl struct {
 }
 
 // NewRegistry builds the service's registry from what each generated
-// file registered for itself: no file lists the whole of it.
-func NewRegistry(impl Impl) *loom.Registry {
+// file registered for itself: no file lists the whole of it. It panics,
+// naming it, on a declaration impl binds nothing to.
+func NewRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, false) }
+
+// NewPartialRegistry is the registry of what impl binds and no more: a
+// declaration impl binds nothing to is left out, not a panic. It is for
+// a test of one handler, which binds that one (and whatever it
+// dispatches to) and reads its definition from the registry; a service
+// starts on NewRegistry.
+func NewPartialRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, true) }
+
+func loomRegistry(impl Impl, partial bool) *loom.Registry {
 	if impl.Look == nil {
 		panic("loomgen: the schema declares @loop — wire Impl.Look (see the Look stub; your registry.go predates it)")
 	}
@@ -41,7 +51,7 @@ func NewRegistry(impl Impl) *loom.Registry {
 		Types:       []*loom.TypeDef{},
 		Projections: []*loom.ProjectionDef{},
 	}
-	loomRegisterAll(impl, r)
+	loomRegisterAll(impl, r, partial)
 	return r
 }
 
@@ -91,8 +101,8 @@ var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "pr
 // loomRegisterAll adds every declaration to the registry and puts each
 // list in name order — never init order — so the registry is the same on
 // every boot. A declaration whose implementation was never bound panics
-// with its name.
-func loomRegisterAll(impl Impl, r *loom.Registry) {
+// with its name, or under partial is left out.
+func loomRegisterAll(impl Impl, r *loom.Registry, partial bool) {
 	owners := append([]loomOwner(nil), loomOwners...)
 	sort.Slice(owners, func(i, j int) bool {
 		if owners[i].kind != owners[j].kind {
@@ -102,6 +112,9 @@ func loomRegisterAll(impl Impl, r *loom.Registry) {
 	})
 	for _, o := range owners {
 		h := impl.handlers[o.kind+":"+o.name]
+		if h == nil && partial {
+			continue
+		}
 		if h == nil {
 			panic(fmt.Sprintf("loomgen: %s %s has no implementation — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.bind))
 		}

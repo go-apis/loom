@@ -14,6 +14,12 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`loomgen.NewPartialRegistry`: the registry of what a test binds.**
+  It holds the declarations the `Impl` binds and leaves the rest out,
+  where `NewRegistry` panics naming the first it misses. A test of one
+  handler binds that one and reads its definition from the registry; a
+  service starts on `NewRegistry`. **Migration:** regenerate `loomgen/`.
+
 - **Bindings chain, and are read back.** A binding method answers its
   `Impl`, so one expression builds one —
   `*new(loomgen.Impl).Order(h).ShipOnPayment(p)` — where a composite

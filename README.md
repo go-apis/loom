@@ -173,6 +173,8 @@ expression, `*new(loomgen.Impl).Order(h).ShipOnPayment(p)`. And
 `loomgen.BoundBy(&impl)` reads what is bound, by the same names, nil
 when nothing is: `impl.Order(logged{loomgen.BoundBy(&impl).Order()})`
 wraps a handler before the `Impl` becomes a registry.
+`loomgen.NewPartialRegistry(impl)` is the registry of what `impl` binds
+and no more, for a test of one handler.
 
 ## Wiring by convention
 
