@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
 )
 
 // ListRead is one list read of an entity or a record: a query in, a
@@ -75,8 +76,13 @@ func Pages(ctx context.Context, read ListRead, q Query) iter.Seq2[[]Row, error] 
 // OrderBy it reads ascending by updated_at, so a row written to while
 // the pages are read is met again further on, not lost; a row met twice
 // is answered once, as it was last read, in the place it was first read.
+//
+// Newest first ("-updated_at") is read the same way and answered in
+// reverse: walked from the newest down, a row written to mid-read would
+// move behind the walk and be lost.
 func Every(ctx context.Context, read ListRead, q Query) ([]Row, error) {
-	if q.OrderBy == "" {
+	newestFirst := q.OrderBy == "-updated_at"
+	if q.OrderBy == "" || newestFirst {
 		q.OrderBy = "updated_at"
 	}
 	var out []Row
@@ -93,6 +99,9 @@ func Every(ctx context.Context, read ListRead, q Query) ([]Row, error) {
 			at[r.Namespace+"/"+r.ID] = len(out)
 			out = append(out, r)
 		}
+	}
+	if newestFirst {
+		slices.Reverse(out)
 	}
 	return out, nil
 }

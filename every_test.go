@@ -153,3 +153,27 @@ func TestPagesStopsAndNamesAMissingOrderField(t *testing.T) {
 		t.Fatalf("a page whose rows lack the order field: %v", last)
 	}
 }
+
+// Newest first is read oldest first and answered in reverse, so a row
+// written to mid-read is not lost behind the walk: it is answered once,
+// first.
+func TestEveryNewestFirstKeepsARowWrittenMidRead(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	l := &listOf{rows: map[string]Row{}, write: map[int]func(*listOf){}}
+	for i := range 250 {
+		id := fmt.Sprintf("row-%04d", i)
+		l.rows[id] = Row{ID: id, Namespace: "default", UpdatedAt: start.Add(time.Duration(i) * time.Second)}
+	}
+	l.write[2] = func(l *listOf) { // a row the walk has not reached is written to
+		r := l.rows["row-0200"]
+		r.UpdatedAt = start.Add(time.Hour)
+		l.rows["row-0200"] = r
+	}
+	rows, err := Every(context.Background(), l.read, Query{Namespace: "default", Limit: 100, OrderBy: "-updated_at"})
+	if err != nil || len(rows) != 250 {
+		t.Fatalf("%d rows, %v; want 250", len(rows), err)
+	}
+	if rows[0].ID != "row-0200" || rows[1].ID != "row-0249" || rows[249].ID != "row-0000" {
+		t.Fatalf("newest first, the row written to at the top: %s, %s ... %s", rows[0].ID, rows[1].ID, rows[249].ID)
+	}
+}
