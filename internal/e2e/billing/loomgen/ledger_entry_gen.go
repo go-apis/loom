@@ -65,9 +65,18 @@ func recordDefLedgerEntry(h LedgerEntryHandlers) *loom.RecordDef {
 	}
 }
 
-// LedgerEntry binds h as the LedgerEntry record's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) LedgerEntry(h LedgerEntryHandlers) { impl.bind("record:LedgerEntry", h) }
+// LedgerEntry binds h as the record LedgerEntry's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) LedgerEntry(h LedgerEntryHandlers) *Impl {
+	impl.bind("record:LedgerEntry", h)
+	return impl
+}
+
+// LedgerEntry is what is bound as the record LedgerEntry's handlers, nil when nothing is.
+func (b Bound) LedgerEntry() LedgerEntryHandlers {
+	h, _ := b.impl.handlers["record:LedgerEntry"].(LedgerEntryHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "record", name: "LedgerEntry", bind: "LedgerEntry", register: func(impl Impl, h any, r *loom.Registry) {

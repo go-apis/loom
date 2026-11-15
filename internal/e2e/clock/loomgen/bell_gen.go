@@ -70,9 +70,18 @@ func aggregateDefBell(h BellHandlers) *loom.AggregateDef {
 	}
 }
 
-// Bell binds h as the Bell aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Bell(h BellHandlers) { impl.bind("aggregate:Bell", h) }
+// Bell binds h as the aggregate Bell's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Bell(h BellHandlers) *Impl {
+	impl.bind("aggregate:Bell", h)
+	return impl
+}
+
+// Bell is what is bound as the aggregate Bell's handlers, nil when nothing is.
+func (b Bound) Bell() BellHandlers {
+	h, _ := b.impl.handlers["aggregate:Bell"].(BellHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Bell", bind: "Bell", register: func(impl Impl, h any, r *loom.Registry) {

@@ -189,9 +189,18 @@ func aggregateDefParcel(h ParcelHandlers) *loom.AggregateDef {
 	}
 }
 
-// Parcel binds h as the Parcel aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Parcel(h ParcelHandlers) { impl.bind("aggregate:Parcel", h) }
+// Parcel binds h as the aggregate Parcel's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Parcel(h ParcelHandlers) *Impl {
+	impl.bind("aggregate:Parcel", h)
+	return impl
+}
+
+// Parcel is what is bound as the aggregate Parcel's handlers, nil when nothing is.
+func (b Bound) Parcel() ParcelHandlers {
+	h, _ := b.impl.handlers["aggregate:Parcel"].(ParcelHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Parcel", bind: "Parcel", register: func(impl Impl, h any, r *loom.Registry) {

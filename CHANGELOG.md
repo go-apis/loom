@@ -14,6 +14,16 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **Bindings chain, and are read back.** A binding method answers its
+  `Impl`, so one expression builds one —
+  `*new(loomgen.Impl).Order(h).ShipOnPayment(p)` — where a composite
+  literal did before `Impl` lost its fields. `loomgen.BoundBy(&impl)`
+  reads what is bound, by the binding methods' own names, nil when
+  nothing is: a caller wraps a handler before the `Impl` becomes a
+  registry with `impl.Order(logged{loomgen.BoundBy(&impl).Order()})`.
+  **Migration:** regenerate `loomgen/`; calls that ignore the result are
+  unchanged.
+
 - **`loomtest.Page`: a fake list read that pages as the store does.**
   `loomtest.Page(rows, q)` answers the page of `rows` after the row
   `q.After` names, at most `q.Limit` of them. It stands where a test's

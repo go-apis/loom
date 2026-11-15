@@ -20,9 +20,18 @@ type CoolAnvilReactions interface {
 	OnAnvilStruck(ctx context.Context, evt *loom.Event, data *AnvilStruck) ([]loom.Command, error)
 }
 
-// CoolAnvil binds h as the process coolAnvil's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) CoolAnvil(h CoolAnvilReactions) { impl.bind("process:coolAnvil", h) }
+// CoolAnvil binds h as the process coolAnvil's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) CoolAnvil(h CoolAnvilReactions) *Impl {
+	impl.bind("process:coolAnvil", h)
+	return impl
+}
+
+// CoolAnvil is what is bound as the process coolAnvil's reactions, nil when nothing is.
+func (b Bound) CoolAnvil() CoolAnvilReactions {
+	h, _ := b.impl.handlers["process:coolAnvil"].(CoolAnvilReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "coolAnvil", bind: "CoolAnvil", register: func(impl Impl, h any, r *loom.Registry) {

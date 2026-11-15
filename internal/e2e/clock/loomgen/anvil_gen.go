@@ -95,9 +95,18 @@ func aggregateDefAnvil(h AnvilHandlers) *loom.AggregateDef {
 	}
 }
 
-// Anvil binds h as the Anvil aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Anvil(h AnvilHandlers) { impl.bind("aggregate:Anvil", h) }
+// Anvil binds h as the aggregate Anvil's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Anvil(h AnvilHandlers) *Impl {
+	impl.bind("aggregate:Anvil", h)
+	return impl
+}
+
+// Anvil is what is bound as the aggregate Anvil's handlers, nil when nothing is.
+func (b Bound) Anvil() AnvilHandlers {
+	h, _ := b.impl.handlers["aggregate:Anvil"].(AnvilHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Anvil", bind: "Anvil", register: func(impl Impl, h any, r *loom.Registry) {

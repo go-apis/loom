@@ -214,9 +214,18 @@ func aggregateDefOrder(h OrderHandlers) *loom.AggregateDef {
 	}
 }
 
-// Order binds h as the Order aggregate's handlers. NewRegistry panics
-// if it is never called.
-func (impl *Impl) Order(h OrderHandlers) { impl.bind("aggregate:Order", h) }
+// Order binds h as the aggregate Order's handlers, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) Order(h OrderHandlers) *Impl {
+	impl.bind("aggregate:Order", h)
+	return impl
+}
+
+// Order is what is bound as the aggregate Order's handlers, nil when nothing is.
+func (b Bound) Order() OrderHandlers {
+	h, _ := b.impl.handlers["aggregate:Order"].(OrderHandlers)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Order", bind: "Order", register: func(impl Impl, h any, r *loom.Registry) {

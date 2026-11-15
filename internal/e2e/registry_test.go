@@ -51,3 +51,29 @@ func TestRegistryOwnersInNameOrder(t *testing.T) {
 	impl.LedgerEntry(&billing.LedgerEntry{})
 	billinggen.NewRegistry(impl)
 }
+
+// A binding method answers its Impl, so a whole Impl is one expression;
+// BoundBy reads what is bound by the method's own name, nil when nothing
+// is, so a caller can wrap a handler before the Impl becomes a registry.
+func TestBindingsChainAndAreReadBack(t *testing.T) {
+	invoice, payee := &billing.Invoice{}, &billing.Payee{}
+	impl := *new(billinggen.Impl).Invoice(invoice).Payee(payee)
+	bound := billinggen.BoundBy(&impl)
+	if bound.Invoice() != billinggen.InvoiceHandlers(invoice) || bound.Payee() != billinggen.PayeeHandlers(payee) {
+		t.Fatalf("what was bound is not what is read back: %v %v", bound.Invoice(), bound.Payee())
+	}
+	if bound.LedgerEntry() != nil || bound.PostLedger() != nil || bound.RaiseOnOrder() != nil {
+		t.Fatal("a declaration nothing bound reads back something")
+	}
+
+	// wrap one and bind the wrapper: the registry is built from it
+	wrapped := &countingInvoice{InvoiceHandlers: bound.Invoice()}
+	impl.Invoice(wrapped)
+	if billinggen.BoundBy(&impl).Invoice() != billinggen.InvoiceHandlers(wrapped) {
+		t.Fatal("the wrapper is not what is bound now")
+	}
+}
+
+type countingInvoice struct {
+	billinggen.InvoiceHandlers
+}

@@ -20,9 +20,18 @@ type ShipOnPaymentReactions interface {
 	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
 }
 
-// ShipOnPayment binds h as the process shipOnPayment's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) ShipOnPayment(h ShipOnPaymentReactions) { impl.bind("process:shipOnPayment", h) }
+// ShipOnPayment binds h as the process shipOnPayment's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) ShipOnPayment(h ShipOnPaymentReactions) *Impl {
+	impl.bind("process:shipOnPayment", h)
+	return impl
+}
+
+// ShipOnPayment is what is bound as the process shipOnPayment's reactions, nil when nothing is.
+func (b Bound) ShipOnPayment() ShipOnPaymentReactions {
+	h, _ := b.impl.handlers["process:shipOnPayment"].(ShipOnPaymentReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "shipOnPayment", bind: "ShipOnPayment", register: func(impl Impl, h any, r *loom.Registry) {

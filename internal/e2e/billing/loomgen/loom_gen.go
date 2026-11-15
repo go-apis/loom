@@ -71,6 +71,16 @@ func (impl *Impl) bind(key string, h any) {
 	impl.handlers[key] = h
 }
 
+// Bound reads what impl's binding methods bound, each by the method's
+// own name: BoundBy(&impl).Order() is the Order aggregate's handlers. It
+// is for a caller that wraps one before it becomes a registry —
+// impl.Order(logged{BoundBy(&impl).Order()}) — as a test does to stand
+// between a handler and loom.
+type Bound struct{ impl *Impl }
+
+// BoundBy is the read of what impl has bound.
+func BoundBy(impl *Impl) Bound { return Bound{impl} }
+
 var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "process": 3, "projection": 4}
 
 // loomRegisterAll adds every declaration to the registry and puts each

@@ -168,6 +168,12 @@ event run in name order. One whose
 implementation was never bound panics at boot, naming the call to add
 (`loomgen: aggregate Payee has no handlers — call impl.Payee(...)`).
 
+A binding method answers its `Impl`, so a test builds one in a single
+expression, `*new(loomgen.Impl).Order(h).ShipOnPayment(p)`. And
+`loomgen.BoundBy(&impl)` reads what is bound, by the same names, nil
+when nothing is: `impl.Order(logged{loomgen.BoundBy(&impl).Order()})`
+wraps a handler before the `Impl` becomes a registry.
+
 ## Wiring by convention
 
 Under `layout: folders` every declaration's implementation has an

@@ -842,12 +842,21 @@ var (
 // init that adds it to loomOwners: its def, the events only it emits, its
 // uploads and its @table. NewRegistry reads loomOwners, so the fixed
 // loom_gen.go never names an aggregate or record (ADR 0008).
+//
+// bindMethod writes a declaration's two ways into Impl: the binding
+// method, which answers impl so bindings chain into one expression, and
+// the read of what is bound, on Bound, for a caller that wraps it.
+func bindMethod(b *strings.Builder, bind, what, iface, key string) {
+	fmt.Fprintf(b, "// %s binds h as %s, and answers impl so that bindings chain.\n// NewRegistry panics if it is never called.\nfunc (impl *Impl) %s(h %s) *Impl {\n\timpl.bind(%q, h)\n\treturn impl\n}\n\n", bind, what, bind, iface, key)
+	fmt.Fprintf(b, "// %s is what is bound as %s, nil when nothing is.\nfunc (b Bound) %s() %s {\n\th, _ := b.impl.handlers[%q].(%s)\n\treturn h\n}\n\n", bind, what, bind, iface, key, iface)
+}
+
 func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	kind, field := "aggregate", "Aggregates"
 	if o.rec != nil {
 		kind, field = "record", "Records"
 	}
-	fmt.Fprintf(b, "// %s binds h as the %s %s's handlers. NewRegistry panics\n// if it is never called.\nfunc (impl *Impl) %s(h %sHandlers) { impl.bind(%q, h) }\n\n", o.name, o.name, kind, o.name, o.name, kind+":"+o.name)
+	bindMethod(b, o.name, fmt.Sprintf("the %s %s's handlers", kind, o.name), o.name+"Handlers", kind+":"+o.name)
 	b.WriteString("func init() {\n")
 	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name, o.name)
 	if o.agg != nil && o.agg.Loop {
@@ -1404,6 +1413,16 @@ func (impl *Impl) bind(key string, h any) {
 	impl.handlers[key] = h
 }
 
+// Bound reads what impl's binding methods bound, each by the method's
+// own name: BoundBy(&impl).Order() is the Order aggregate's handlers. It
+// is for a caller that wraps one before it becomes a registry —
+// impl.Order(logged{BoundBy(&impl).Order()}) — as a test does to stand
+// between a handler and loom.
+type Bound struct{ impl *Impl }
+
+// BoundBy is the read of what impl has bound.
+func BoundBy(impl *Impl) Bound { return Bound{impl} }
+
 var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "process": 3, "projection": 4}
 
 // loomRegisterAll adds every declaration to the registry and puts each
@@ -1804,7 +1823,7 @@ var (
 			fmt.Fprintf(&b, "\tOn%s(state *%s, evt *loom.Event, data *%s) error\n", sub.Event, x.p.Entity, sub.Event)
 		}
 		b.WriteString("}\n\n")
-		fmt.Fprintf(&b, "// %s binds h as the projection %s's folds. NewRegistry panics if it is\n// never called.\nfunc (impl *Impl) %s(h %s) { impl.bind(%q, h) }\n\n", bind, x.name, bind, iface, "projection:"+x.name)
+		bindMethod(&b, bind, fmt.Sprintf("the projection %s's folds", x.name), iface, "projection:"+x.name)
 		b.WriteString("func init() {\n")
 		fmt.Fprintf(&b, "\tloomRegister(loomOwner{kind: \"projection\", name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", x.name, bind)
 		fmt.Fprintf(&b, "\t\tfolds := h.(%s)\n\t\tr.Projections = append(r.Projections,\n", iface)
@@ -1822,7 +1841,7 @@ var (
 	if x.kind == "process" {
 		field = "Processes"
 	}
-	fmt.Fprintf(&b, "// %s binds h as the %s %s's reactions. NewRegistry panics if it is\n// never called.\nfunc (impl *Impl) %s(h %s) { impl.bind(%q, h) }\n\n", bind, x.kind, x.name, bind, iface, x.kind+":"+x.name)
+	bindMethod(&b, bind, fmt.Sprintf("the %s %s's reactions", x.kind, x.name), iface, x.kind+":"+x.name)
 	b.WriteString("func init() {\n")
 	fmt.Fprintf(&b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", x.kind, x.name, bind)
 	fmt.Fprintf(&b, "\t\treactions := h.(%s)\n\t\tr.%s = append(r.%s,\n", iface, field, field)

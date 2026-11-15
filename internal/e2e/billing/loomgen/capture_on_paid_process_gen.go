@@ -20,9 +20,18 @@ type CaptureOnPaidReactions interface {
 	OnInvoicePaid(ctx context.Context, evt *loom.Event, data *InvoicePaid) ([]loom.Command, error)
 }
 
-// CaptureOnPaid binds h as the process captureOnPaid's reactions. NewRegistry panics if it is
-// never called.
-func (impl *Impl) CaptureOnPaid(h CaptureOnPaidReactions) { impl.bind("process:captureOnPaid", h) }
+// CaptureOnPaid binds h as the process captureOnPaid's reactions, and answers impl so that bindings chain.
+// NewRegistry panics if it is never called.
+func (impl *Impl) CaptureOnPaid(h CaptureOnPaidReactions) *Impl {
+	impl.bind("process:captureOnPaid", h)
+	return impl
+}
+
+// CaptureOnPaid is what is bound as the process captureOnPaid's reactions, nil when nothing is.
+func (b Bound) CaptureOnPaid() CaptureOnPaidReactions {
+	h, _ := b.impl.handlers["process:captureOnPaid"].(CaptureOnPaidReactions)
+	return h
+}
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "captureOnPaid", bind: "CaptureOnPaid", register: func(impl Impl, h any, r *loom.Registry) {
