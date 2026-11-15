@@ -81,6 +81,13 @@ func (c *Client) StartRelay(ctx context.Context, poll time.Duration) {
 // while holding the service's relay advisory lock. Another instance holding
 // the lock makes this a no-op.
 func (c *Client) drainOutbox(ctx context.Context) error {
+	// the newest build alive publishes: on an in-process bus a relay
+	// delivers to its own instance's consumers, so an older build's
+	// relay would hand every event to the older build's code
+	// (instances.go)
+	if !c.newest() {
+		return nil
+	}
 	for {
 		n, err := c.drainBatch(ctx, 100)
 		if err != nil || n == 0 {

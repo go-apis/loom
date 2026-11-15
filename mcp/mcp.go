@@ -116,6 +116,11 @@ type describeIn struct {
 	Name string `json:"name" jsonschema:"an operation name from search, or a type name from an earlier describe"`
 }
 
+type dispatchIn struct {
+	callIn
+	Key string `json:"key,omitempty" jsonschema:"optional: a key of your own naming this one thing you mean to do. Send the same key if you send the command again (after a timeout, or not knowing whether it ran) and it will not run twice: the repeat answers status duplicate"`
+}
+
 type callIn struct {
 	Name   string         `json:"name" jsonschema:"the operation's name, as search and describe give it"`
 	Args   map[string]any `json:"args,omitempty" jsonschema:"the operation's arguments by name, as describe lists them"`
@@ -144,8 +149,12 @@ func (s *server) serverFor(ctx context.Context) *sdk.Server {
 		Name:        "dispatch",
 		Description: "Run a command: an operation that changes something. Refused when the caller may not run it, exactly as the API refuses it. Some commands do not run at once: they answer a plan of what they would do, with an id. Show the plan, then run it with the runPlan command (args: namespace, id).",
 		Annotations: &sdk.ToolAnnotations{DestructiveHint: &yes, OpenWorldHint: &no},
-	}, func(_ context.Context, _ *sdk.CallToolRequest, in callIn) (*sdk.CallToolResult, any, error) {
-		return s.call(ctx, in, kindCommand, false), nil, nil
+	}, func(_ context.Context, _ *sdk.CallToolRequest, in dispatchIn) (*sdk.CallToolResult, any, error) {
+		keyed := ctx
+		if in.Key != "" {
+			keyed = graphql.WithIdempotencyKey(ctx, in.Key)
+		}
+		return s.call(keyed, in.callIn, kindCommand, false), nil, nil
 	})
 	sdk.AddTool(srv, &sdk.Tool{
 		Name:        "get",

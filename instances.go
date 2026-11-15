@@ -2,6 +2,7 @@ package loom
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,9 +31,15 @@ import (
 //     projection subscribes to, moving the checkpoint past them: the
 //     read model is short of those events until it is rebuilt.
 //
-// What an older instance still does: answer requests, publish the
-// outbox (envelopes are already written; no build decides them), keep
-// series partitions, and consume the bus.
+//   - the outbox is published by the newest build, because on an
+//     in-process bus a relay delivers to its own instance's consumers;
+//   - a consumer of another service's events hands an event back to
+//     the bus (ErrSuperseded) rather than look at it: an older build
+//     would ack a type only the newer build subscribes to, park one it
+//     cannot decode, or react with old code.
+//
+// What an older instance still does: answer requests and keep series
+// partitions.
 //
 // With no generation none of this happens: every instance does all of
 // it, as it always did.
@@ -126,6 +133,13 @@ func (c *Client) runInstances(ctx context.Context, poll time.Duration, ready cha
 		}
 	}
 }
+
+// ErrSuperseded is what a bus consumer answers on an instance a newer
+// generation has superseded: the event is not this instance's to
+// handle. A Bus redelivers on a handler's error, and an instance of the
+// newest generation takes it; a transport may treat this error as
+// routine rather than as a failure to log.
+var ErrSuperseded = errors.New("loom: this instance is superseded by a newer generation: the event is the newest build's to handle")
 
 // newest reports whether this instance may do the work the newest build
 // alive is to do: its first beat is in, and no newer generation was

@@ -223,6 +223,10 @@ type config struct {
 	// Layout: "flat" (default) or "folders" (stubs in aggregates/,
 	// records/, policies/, processes/ packages).
 	Layout string `yaml:"layout,omitempty"`
+	// Wire, with layout folders, names a directory for a generated
+	// package that wires implementations into the registry by
+	// convention, one file per declaration (`wire: wire`).
+	Wire string `yaml:"wire,omitempty"`
 }
 
 func runInit(args []string) error {
@@ -457,6 +461,7 @@ func runGenerate(args []string, out io.Writer) error {
 		GenDir:  cfg.Generated,
 		Module:  cfg.Module,
 		Layout:  cfg.Layout,
+		Wire:    cfg.Wire,
 	}
 	if *check {
 		stale, missing, err := gen.Check(s, gcfg)

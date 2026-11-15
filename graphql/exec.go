@@ -58,17 +58,50 @@ func AsExecutor(h http.Handler) (Executor, bool) {
 func (h *handler) Authenticate(r *http.Request) (*http.Request, error) {
 	ctx := r.Context()
 	access, ok := AccessFrom(ctx)
-	if !ok {
-		if h.auth == nil {
-			return r, nil
-		}
+	if !ok && h.auth != nil {
 		var err error
 		if access, err = h.auth(r); err != nil {
 			return nil, err
 		}
 		ctx = WithAccess(ctx, access)
 	}
+	// a caller that may send a request twice names it once; an open
+	// mount's callers too
+	if key := r.Header.Get(IdempotencyHeader); key != "" {
+		ctx = WithIdempotencyKey(ctx, key)
+	}
 	return r.WithContext(withActor(ctx, access)), nil
+}
+
+// IdempotencyHeader is the request header a caller names a request
+// with: a command dispatched under a key that has already committed is
+// not run again, and answers status "duplicate" (loom.WithIdempotencyKey).
+const IdempotencyHeader = "Idempotency-Key"
+
+type idempotencyKey struct{}
+
+// WithIdempotencyKey puts a caller's idempotency key on ctx for the
+// commands an Exec under it dispatches — what the HTTP endpoint does
+// with the Idempotency-Key header, for a surface that has no header.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKey{}, key)
+}
+
+// keyed marks a dispatch's context with the request's idempotency key,
+// if it has one, and reports afterwards whether the dispatch was a
+// repeat that did nothing.
+func keyed(ctx context.Context) (context.Context, func() bool) {
+	key, _ := ctx.Value(idempotencyKey{}).(string)
+	return loom.WithIdempotencyKey(ctx, key)
+}
+
+// dispatched is a command's answer: ok, or duplicate for a repeat of
+// one that already ran under the caller's key.
+func dispatched(replayed func() bool) map[string]any {
+	if replayed() {
+		return map[string]any{"status": "duplicate"}
+	}
+	return map[string]any{"status": "ok"}
 }
 
 // withActor names the caller on the metadata of whatever this request

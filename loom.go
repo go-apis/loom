@@ -167,6 +167,9 @@ type ScheduleDef struct {
 	Command string
 	// New builds the command, addressed to the schedule's stream.
 	New func() Command
+	// Run, set in place of Command and New, is a function to call on
+	// the interval: recurring work that is not a command (Client.Every).
+	Run func(ctx context.Context) error
 	// Doc — see AggregateDef.Doc.
 	Doc string
 }
