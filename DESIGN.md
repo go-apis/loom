@@ -271,6 +271,18 @@ generated switches, folds from generated assignments.
   an event arrives for it; `LookAgain(ctx, d)` asks for the next sooner
   than the minute. A look that fails is logged and looked at again by
   the rule (ADR 0012).
+- **A wait belongs to a loop, and has an owner and a deadline.** A
+  `Wait` is a name, who is to answer (`Owner`) and when to stop waiting
+  (`Deadline`); one with any of the three missing is refused, so nothing
+  waits on nobody or for ever. It is kept with its instance's looks, in
+  `loom_loop_due.waits`. A look starts one with `WaitFor(ctx, w)` and
+  ends one that has been answered with `StopWaiting(ctx, name)`; code
+  outside a look uses `Client.Wait` and `Client.EndWait`, which take the
+  row's lock, so a wait started while a look runs is kept. A wait's
+  deadline is a time the instance is looked at: when it passes with the
+  wait still open, the instance's look is called and told the wait has
+  expired (`Looking.Expired`), once, and the wait is dropped. A look that
+  fails is told again (`wait.go`, ADR 0012).
 - **An event type has a floor.** The release that first writes an event
   type is recorded with that event, in `loom_event_floors`, on the
   appending transaction: first write wins. `Start` refuses, with a
@@ -731,6 +743,4 @@ Console topology graph + Performance tab, old-envelope compat codec for
 gpub (migration on-ramp), persisted process state + timeouts, upcasters
 beyond aliases, given/when/then harness generation, `loom extract` (legacy
 on-ramp, returning from tag `m1-extraction`), replay-parity harness, table
-migrator, OTel, TypeScript target, a way for a look to set a wait (ADR
-0012; the runtime tells a look which of its waits have expired, and
-nothing yet lets it start one).
+migrator, OTel, TypeScript target.
