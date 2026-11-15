@@ -256,6 +256,21 @@ generated switches, folds from generated assignments.
   revision name's number, which Cloud Run does not assign in deploy order)
   takes the lease: the leader yields between events, or has its
   session ended if it does not answer (ADR 0010).
+- **A loop is looked at per instance.** Each instance of a `@loop`
+  aggregate has a row in `loom_loop_due`: when it is next looked at, when
+  it last was, when its newest event arrived, and its waits. The first
+  event of an instance writes the row, due at once; every later event
+  brings `next_look` to within `LoopSoon` on the appending transaction.
+  The loop runner (`looprun.go`), on every instance of the newest
+  generation, claims due rows under a lease, calls the aggregate's look
+  — which reads which instance it is, and why it was called, with
+  `LookingAt(ctx)` — runs the commands it answers with as one unit of
+  work, and writes the next look by `LoopState.NextLook`. A look's own
+  events count as arrived since it began, so it is looked at once more
+  and finds nothing to do. `LookDone(ctx)` ends an instance's looks until
+  an event arrives for it; `LookAgain(ctx, d)` asks for the next sooner
+  than the minute. A look that fails is logged and looked at again by
+  the rule (ADR 0012).
 - **An event type has a floor.** The release that first writes an event
   type is recorded with that event, in `loom_event_floors`, on the
   appending transaction: first write wins. `Start` refuses, with a
@@ -716,8 +731,6 @@ Console topology graph + Performance tab, old-envelope compat codec for
 gpub (migration on-ramp), persisted process state + timeouts, upcasters
 beyond aliases, given/when/then harness generation, `loom extract` (legacy
 on-ramp, returning from tag `m1-extraction`), replay-parity harness, table
-migrator, OTel, TypeScript target, the runtime that calls an `@loop`
-aggregate's `Look<Name>` by the rule in `loop.go` and keeps its waits
-(ADR 0012; today `@loop` reaches the schema, the generated
-interface/stub, the scheduling rule and its `loomtest` harness, and
-nothing calls a look in a running service).
+migrator, OTel, TypeScript target, a way for a look to set a wait (ADR
+0012; the runtime tells a look which of its waits have expired, and
+nothing yet lets it start one).

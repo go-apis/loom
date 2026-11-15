@@ -3,6 +3,8 @@ package loom
 import (
 	"context"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // A loop's look is level-triggered: it reads how things stand and says
@@ -101,6 +103,10 @@ func (s LoopState) Look(now time.Time) Looking {
 // decides from how things stand, and only slower to notice a wait has
 // run out.
 type Looking struct {
+	// Aggregate, Namespace and ID name the instance looked at.
+	Aggregate string
+	Namespace string
+	ID        uuid.UUID
 	// At is the time of the look.
 	At time.Time
 	// Event is whether an event has arrived since the last look.
@@ -135,4 +141,32 @@ func WithLooking(ctx context.Context, l Looking) context.Context {
 func LookingAt(ctx context.Context) Looking {
 	l, _ := ctx.Value(lookingKey{}).(Looking)
 	return l
+}
+
+// lookSaid is what a look says beside the commands it returns.
+type lookSaid struct {
+	done  bool
+	again time.Duration
+}
+
+type lookSaidKey struct{}
+
+// LookDone says the instance needs no more looks: it has reached an
+// end, and nothing is left for its loop to do. The runtime stops
+// looking at it. An event that arrives for it later starts the looks
+// again. Outside a look run by the runtime it does nothing.
+func LookDone(ctx context.Context) {
+	if s, ok := ctx.Value(lookSaidKey{}).(*lookSaid); ok {
+		s.done = true
+	}
+}
+
+// LookAgain asks for the next look in d, sooner than the minute the
+// runtime would otherwise leave: the loop knows something is due before
+// then. It cannot ask for later than LoopEvery. Outside a look run by
+// the runtime it does nothing.
+func LookAgain(ctx context.Context, d time.Duration) {
+	if s, ok := ctx.Value(lookSaidKey{}).(*lookSaid); ok && d > 0 && (s.again == 0 || d < s.again) {
+		s.again = d
+	}
 }

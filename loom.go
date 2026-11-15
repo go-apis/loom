@@ -345,6 +345,11 @@ type AggregateDef struct {
 	StateSecret []string
 	NewState    func() AggregateState
 	Commands    []*CommandDef
+	// Look (@loop) is the aggregate's look: called for each live
+	// instance, which it reads with LookingAt(ctx), at least every
+	// LoopEvery and sooner when an event arrives for it (loop.go,
+	// looprun.go). Nil for an aggregate with no loop.
+	Look func(ctx context.Context) ([]Command, error)
 	// ReadRoles (@role on the aggregate block) gates the generated
 	// GraphQL reads — the singular get and its Changed subscription.
 	ReadRoles []string

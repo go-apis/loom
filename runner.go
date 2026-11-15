@@ -55,6 +55,7 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	go c.runInstances(ctx, poll, c.beaten)
 	c.startTimerRunner(ctx, poll)
 	c.startBatchRunner(ctx, poll)
+	c.startLoopRunner(ctx)
 	go c.listenLoop(ctx)
 
 	// The fan-out reader starts at the current head; anything older is

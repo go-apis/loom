@@ -103,5 +103,17 @@ DESIGN.md's "Not yet built").
   commands it answers with through the registry's handlers and folds
   their events into the reader's state, so a second look sees what the
   first did (`loomtest/loop_test.go`).
-- Still to build: the runner that keeps `LoopState` in Postgres and
-  calls each look, and how a look sets a wait.
+- **A look is made per instance.** The Decision above gave an aggregate
+  type one look and no instance. The goal asks for each live instance to
+  be looked at, so the generated method keeps its signature and learns
+  its instance from `loom.LookingAt(ctx)` (`Aggregate`, `Namespace`,
+  `ID`); `AggregateDef.Look` carries it into the registry.
+- **The runner** (`looprun.go`) keeps one row per instance in
+  `loom_loop_due`. An instance's first event writes it, due at once; a
+  later event brings its next look to within `LoopSoon`, on the
+  appending transaction. Runners of the newest generation claim due rows
+  under a lease, call the look, dispatch what it answers as one unit of
+  work with cause `loop:<Aggregate>/<id>`, and write the next look by
+  `LoopState.NextLook`. `LookDone(ctx)` drops the row until an event
+  arrives; `LookAgain(ctx, d)` asks for a sooner look.
+- Still to build: how a look sets a wait.

@@ -12,7 +12,9 @@ func NewRegistry() *loom.Registry {
 	impl := loomgen.Impl{}
 	impl.CoolAnvil(&CoolAnvil{})
 	impl.Impatient(&Impatient{})
+	impl.Look = &Look{}
 	impl.Bell(&Bell{})
 	impl.Anvil(&Anvil{})
+	impl.Kiln(&Kiln{})
 	return loomgen.NewRegistry(impl)
 }

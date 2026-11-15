@@ -14,6 +14,21 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A `@loop` aggregate's look runs, for every live instance.** Each
+  instance has a row in the new `loom_loop_due` table. Its first event
+  makes it due at once, every later event brings its next look to
+  within a second, and with no event it is looked at again within a
+  minute. The look learns which instance it is from
+  `loom.LookingAt(ctx)` (`Aggregate`, `Namespace`, `ID`) and returns the
+  commands for the next step, which run as one unit of work.
+  `loom.LookDone(ctx)` ends an instance's looks until an event arrives
+  for it; `loom.LookAgain(ctx, d)` asks for the next one sooner.
+  `Client.LoopDue` reads when an instance is next looked at. Looks run
+  on every instance of the newest generation, one runner per instance
+  at a time. Regenerate `loomgen/`: an aggregate's definition now
+  carries its look.
+  ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md))
+
 - **A loop's scheduling rule, and `loomtest.Loop`.** When a `@loop`
   aggregate's look is next made is one rule that reads no clock and no
   store, `loom.LoopState.NextLook`: no later than a minute after the last
