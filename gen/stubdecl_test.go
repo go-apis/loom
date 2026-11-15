@@ -58,3 +58,44 @@ func contains(paths []string, want string) bool {
 	}
 	return false
 }
+
+// A service that builds its registry in a package of its own (Tripline's
+// store/registry.go calls loomgen.NewRegistry) gets no registry.go stub
+// at the root: it would be dead code the next regenerate wrote again.
+func TestRegistryStubSkippedWhenBuiltElsewhere(t *testing.T) {
+	s, err := sdl.Parse(string(ordersSchema(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg := gen.Config{Dir: dir, Package: "orders", Module: "example.com/orders", Layout: "folders"}
+	if _, err := gen.Generate(s, cfg); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "registry.go")
+	src, err := os.ReadFile(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(dir, "store", "registry.go")
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store, []byte(strings.Replace(string(src), "package orders", "package store", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := gen.Generate(s, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); err == nil {
+		t.Fatalf("wrote %s though %s builds the registry", root, store)
+	}
+	if !contains(res.Skipped, store) {
+		t.Fatalf("the file that builds the registry is not reported kept: %v", res.Skipped)
+	}
+}

@@ -271,6 +271,13 @@ func Generate(s *schema.Schema, cfg Config) (*Result, error) {
 			res.Skipped = append(res.Skipped, owner)
 			continue
 		}
+		if name == "registry.go" {
+			if owner := registryElsewhere(cfg.Dir, filepath.Join(cfg.Dir, cfg.GenDir), g.genPkg, path); owner != "" {
+				// the registry is built in another package
+				res.Skipped = append(res.Skipped, owner)
+				continue
+			}
+		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, err
 		}

@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,4 +74,36 @@ func topLevelNames(src string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// registryElsewhere is the file under root that already builds the
+// service's registry — calls genPkg.NewRegistry — when it is not the
+// registry.go stub itself, or "". A service may keep its registry in a
+// package of its own (Tripline's store/registry.go): a second one at the
+// root would be dead code the next regenerate wrote again. Test files
+// and the generated package are passed over.
+func registryElsewhere(root, genDir, genPkg, stubPath string) string {
+	call := genPkg + ".NewRegistry("
+	found := ""
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || found != "" {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			n := d.Name()
+			if path != root && (strings.HasPrefix(n, ".") || n == "node_modules" || n == "vendor" || path == genDir) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		n := d.Name()
+		if path == stubPath || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || strings.HasSuffix(n, "_gen.go") {
+			return nil
+		}
+		if src, err := os.ReadFile(path); err == nil && strings.Contains(string(src), call) {
+			found = path
+		}
+		return nil
+	})
+	return found
 }
