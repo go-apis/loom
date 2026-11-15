@@ -229,7 +229,8 @@ func (b Bound) Order() OrderHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Order", bind: "Order", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Aggregates = append(r.Aggregates, aggregateDefOrder(h.(OrderHandlers)))
+		handlers, _ := h.(OrderHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Aggregates = append(r.Aggregates, aggregateDefOrder(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
 			&loom.EventDef{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},

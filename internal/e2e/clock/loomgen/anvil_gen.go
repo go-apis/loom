@@ -110,7 +110,8 @@ func (b Bound) Anvil() AnvilHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Anvil", bind: "Anvil", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Aggregates = append(r.Aggregates, aggregateDefAnvil(h.(AnvilHandlers)))
+		handlers, _ := h.(AnvilHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Aggregates = append(r.Aggregates, aggregateDefAnvil(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "AnvilCooled", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &AnvilCooled{} }},
 			&loom.EventDef{Name: "AnvilStruck", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &AnvilStruck{} }},

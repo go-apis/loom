@@ -35,7 +35,7 @@ func (b Bound) CustomerSpend() CustomerSpendFolds {
 
 func init() {
 	loomRegister(loomOwner{kind: "projection", name: "customerSpend", bind: "CustomerSpend", register: func(impl Impl, h any, r *loom.Registry) {
-		folds := h.(CustomerSpendFolds)
+		folds, _ := h.(CustomerSpendFolds) // nil under NewPartialRegistry when nothing is bound
 		r.Projections = append(r.Projections,
 			&loom.ProjectionDef{
 				Name:            "customerSpend",

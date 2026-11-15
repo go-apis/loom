@@ -101,7 +101,8 @@ func (b Bound) Payee() PayeeHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Payee", bind: "Payee", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Aggregates = append(r.Aggregates, aggregateDefPayee(h.(PayeeHandlers)))
+		handlers, _ := h.(PayeeHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Aggregates = append(r.Aggregates, aggregateDefPayee(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "PayeeRegistered", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, PII: []string{"bank_token", "tin"}, New: func() any { return &PayeeRegistered{} }},
 		)

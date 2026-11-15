@@ -1,10 +1,12 @@
 package e2e_test
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/go-apis/loom"
 	"github.com/go-apis/loom/internal/e2e/billing"
 	billinggen "github.com/go-apis/loom/internal/e2e/billing/loomgen"
 )
@@ -78,23 +80,35 @@ type countingInvoice struct {
 	billinggen.InvoiceHandlers
 }
 
-// NewPartialRegistry holds what the Impl binds and leaves the rest out,
-// where NewRegistry panics naming the first it misses: a test of one
-// handler binds that one.
-func TestPartialRegistryHoldsOnlyWhatIsBound(t *testing.T) {
+// NewPartialRegistry is the whole registry from an Impl that binds part
+// of it, where NewRegistry panics naming the first it misses: every
+// declaration is there with its definition, one that is bound reacts,
+// and one that is not panics only when it is called.
+func TestPartialRegistryHoldsEveryDeclaration(t *testing.T) {
 	impl := *new(billinggen.Impl).Invoice(&billing.Invoice{}).RaiseOnOrder(&billing.RaiseOnOrder{})
-	reg := billinggen.NewPartialRegistry(impl)
-	if len(reg.Aggregates) != 1 || reg.Aggregates[0].Name != "Invoice" || len(reg.Records) != 0 {
-		t.Fatalf("aggregates %d, records %d; want Invoice alone", len(reg.Aggregates), len(reg.Records))
+	reg, whole := billinggen.NewPartialRegistry(impl), billing.NewRegistry()
+	if len(reg.Aggregates) != len(whole.Aggregates) || len(reg.Records) != len(whole.Records) || len(reg.Policies) != len(whole.Policies) ||
+		len(reg.Processes) != len(whole.Processes) || len(reg.Events) != len(whole.Events) || len(reg.Tables) != len(whole.Tables) {
+		t.Fatalf("the partial registry is not the whole one: %d aggregates, %d records, %d policies, %d processes, %d events, %d tables",
+			len(reg.Aggregates), len(reg.Records), len(reg.Policies), len(reg.Processes), len(reg.Events), len(reg.Tables))
 	}
-	if len(reg.Processes) != 1 || reg.Processes[0].Name != "raiseOnOrder" || len(reg.Policies) != 0 {
-		t.Fatalf("processes %d, policies %d; want raiseOnOrder alone", len(reg.Processes), len(reg.Policies))
+	var unbound *loom.ReactorDef
+	for _, p := range reg.Policies {
+		if p.Name == "postLedger" {
+			unbound = p
+		}
 	}
-	// an aggregate nothing bound brings none of its own: Payee's table
-	// and events are left out with it
-	if len(reg.Events) != 3 || len(reg.Tables) != 0 {
-		t.Fatalf("%d events, %d tables; want Invoice's and the shared event, and no table", len(reg.Events), len(reg.Tables))
+	if unbound == nil || len(unbound.Events) == 0 || unbound.Events[0] != "InvoicePaid" {
+		t.Fatalf("the policy nothing is bound to keeps its definition: %+v", unbound)
 	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("a policy nothing is bound to reacted")
+			}
+		}()
+		_, _ = unbound.React(context.Background(), &loom.Event{Type: "InvoicePaid", Data: &billinggen.InvoicePaid{}})
+	}()
 	defer func() {
 		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "has no implementation") {
 			t.Fatalf("NewRegistry on the same Impl: %v", r)

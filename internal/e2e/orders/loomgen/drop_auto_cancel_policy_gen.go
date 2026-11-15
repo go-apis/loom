@@ -35,7 +35,7 @@ func (b Bound) DropAutoCancel() DropAutoCancelReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "policy", name: "dropAutoCancel", bind: "DropAutoCancel", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(DropAutoCancelReactions)
+		reactions, _ := h.(DropAutoCancelReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Policies = append(r.Policies,
 			&loom.ReactorDef{
 				Name:   "dropAutoCancel",

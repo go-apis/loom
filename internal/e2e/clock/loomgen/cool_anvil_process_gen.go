@@ -35,7 +35,7 @@ func (b Bound) CoolAnvil() CoolAnvilReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "coolAnvil", bind: "CoolAnvil", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(CoolAnvilReactions)
+		reactions, _ := h.(CoolAnvilReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Processes = append(r.Processes,
 			&loom.ReactorDef{
 				Name:   "coolAnvil",

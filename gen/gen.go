@@ -861,9 +861,9 @@ func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name, o.name)
 	if o.agg != nil && o.agg.Loop {
 		// the loop's look is one method of the service-wide Look
-		fmt.Fprintf(b, "\t\tdef := %s(h.(%sHandlers))\n\t\tdef.Look = impl.Look.%s\n\t\tr.%s = append(r.%s, def)\n", o.defFunc(), o.name, lookMethod(o.agg), field, field)
+		fmt.Fprintf(b, "\t\thandlers, _ := h.(%sHandlers) // nil under NewPartialRegistry when nothing is bound\n\t\tdef := %s(handlers)\n\t\tdef.Look = impl.Look.%s\n\t\tr.%s = append(r.%s, def)\n", o.name, o.defFunc(), lookMethod(o.agg), field, field)
 	} else {
-		fmt.Fprintf(b, "\t\tr.%s = append(r.%s, %s(h.(%sHandlers)))\n", field, field, o.defFunc(), o.name)
+		fmt.Fprintf(b, "\t\thandlers, _ := h.(%sHandlers) // nil under NewPartialRegistry when nothing is bound\n\t\tr.%s = append(r.%s, %s(handlers))\n", o.name, field, field, o.defFunc())
 	}
 	owned := g.eventOwners()
 	var events []string
@@ -1360,10 +1360,11 @@ type Impl struct {
 // naming it, on a declaration impl binds nothing to.
 func NewRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, false) }
 
-// NewPartialRegistry is the registry of what impl binds and no more: a
-// declaration impl binds nothing to is left out, not a panic. It is for
-// a test of one handler, which binds that one (and whatever it
-// dispatches to) and reads its definition from the registry; a service
+// NewPartialRegistry is the whole registry, as NewRegistry builds it,
+// from an impl that need not bind everything: a declaration impl binds
+// nothing to is there with its definition and no implementation, and
+// panics only when loom calls it. It is for a test, which binds the one
+// handler it tests, or none to read the schema's definitions; a service
 // starts on NewRegistry.
 func NewPartialRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, true) }
 
@@ -1438,7 +1439,7 @@ var loomKindOrder = map[string]int{"aggregate": 0, "record": 1, "policy": 2, "pr
 // loomRegisterAll adds every declaration to the registry and puts each
 // list in name order — never init order — so the registry is the same on
 // every boot. A declaration whose implementation was never bound panics
-// with its name, or under partial is left out.
+// with its name, or under partial is registered with none.
 func loomRegisterAll(impl Impl, r *loom.Registry, partial bool) {
 	owners := append([]loomOwner(nil), loomOwners...)
 	sort.Slice(owners, func(i, j int) bool {
@@ -1449,10 +1450,7 @@ func loomRegisterAll(impl Impl, r *loom.Registry, partial bool) {
 	})
 	for _, o := range owners {
 		h := impl.handlers[o.kind+":"+o.name]
-		if h == nil && partial {
-			continue
-		}
-		if h == nil {
+		if h == nil && !partial {
 			panic(fmt.Sprintf("loomgen: %s %s has no implementation — call impl.%s(...) on the Impl you pass to NewRegistry (your registry.go predates it)", o.kind, o.name, o.bind))
 		}
 		o.register(impl, h, r)
@@ -1839,7 +1837,7 @@ var (
 		bindMethod(&b, bind, fmt.Sprintf("the projection %s's folds", x.name), iface, "projection:"+x.name)
 		b.WriteString("func init() {\n")
 		fmt.Fprintf(&b, "\tloomRegister(loomOwner{kind: \"projection\", name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", x.name, bind)
-		fmt.Fprintf(&b, "\t\tfolds := h.(%s)\n\t\tr.Projections = append(r.Projections,\n", iface)
+		fmt.Fprintf(&b, "\t\tfolds, _ := h.(%s) // nil under NewPartialRegistry when nothing is bound\n\t\tr.Projections = append(r.Projections,\n", iface)
 		g.projectionDef(&b, "&loom.ProjectionDef{", x.p, "folds")
 		b.WriteString("\t\t)\n\t}})\n}\n")
 		return b.String()
@@ -1857,7 +1855,7 @@ var (
 	bindMethod(&b, bind, fmt.Sprintf("the %s %s's reactions", x.kind, x.name), iface, x.kind+":"+x.name)
 	b.WriteString("func init() {\n")
 	fmt.Fprintf(&b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", x.kind, x.name, bind)
-	fmt.Fprintf(&b, "\t\treactions := h.(%s)\n\t\tr.%s = append(r.%s,\n", iface, field, field)
+	fmt.Fprintf(&b, "\t\treactions, _ := h.(%s) // nil under NewPartialRegistry when nothing is bound\n\t\tr.%s = append(r.%s,\n", iface, field, field)
 	g.reactorDef(&b, x.r)
 	b.WriteString("\t\t)\n\t}})\n}\n")
 	return b.String()

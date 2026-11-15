@@ -35,7 +35,7 @@ func (b Bound) ShipOnPayment() ShipOnPaymentReactions {
 
 func init() {
 	loomRegister(loomOwner{kind: "process", name: "shipOnPayment", bind: "ShipOnPayment", register: func(impl Impl, h any, r *loom.Registry) {
-		reactions := h.(ShipOnPaymentReactions)
+		reactions, _ := h.(ShipOnPaymentReactions) // nil under NewPartialRegistry when nothing is bound
 		r.Processes = append(r.Processes,
 			&loom.ReactorDef{
 				Name:   "shipOnPayment",

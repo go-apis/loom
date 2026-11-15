@@ -80,7 +80,8 @@ func (b Bound) LedgerEntry() LedgerEntryHandlers {
 
 func init() {
 	loomRegister(loomOwner{kind: "record", name: "LedgerEntry", bind: "LedgerEntry", register: func(impl Impl, h any, r *loom.Registry) {
-		r.Records = append(r.Records, recordDefLedgerEntry(h.(LedgerEntryHandlers)))
+		handlers, _ := h.(LedgerEntryHandlers) // nil under NewPartialRegistry when nothing is bound
+		r.Records = append(r.Records, recordDefLedgerEntry(handlers))
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "LedgerEntryPosted", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &LedgerEntryPosted{} }},
 		)
