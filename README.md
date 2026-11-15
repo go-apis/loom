@@ -973,6 +973,79 @@ mux.Handle("/blobs/", http.StripPrefix("/blobs", store)) // dev store only
 
 Shred deletes a stream's files along with its data key.
 
+## Loops, waits and approvals
+
+Some aggregates need looking after, not just reacting to: a goal that
+must keep moving, an order that must not sit unpaid. Mark the aggregate
+`@loop` and loom calls its look for every live instance — at once when
+it is created, within a second of any event for it, and at least every
+minute:
+
+```
+aggregate Order @loop {
+  ...
+}
+```
+
+```go
+func (l *Look) LookOrder(ctx context.Context) ([]loom.Command, error) {
+    told := loom.LookingAt(ctx)           // which order, and why it was called
+    state, _, _ := loom.Load(ctx, "Order", told.Namespace, told.ID)
+    order := state.(*loomgen.Order)
+    switch {
+    case order.Shipped:
+        loom.LookDone(ctx)                // nothing left to look after
+        return nil, nil
+    case order.Paid:
+        return []loom.Command{&loomgen.ShipOrder{...}}, nil
+    }
+    return nil, nil                       // nothing to do yet
+}
+```
+
+A look reads how things stand and answers the one next step, so calling
+it again changes nothing: it is level-triggered, like a controller. The
+commands it returns run as one unit of work. `loom.LookAgain(ctx, d)`
+asks for the next look sooner than the minute.
+
+**A wait** says the loop is waiting on someone: a name, an owner and a
+deadline, none of them optional.
+
+```go
+loom.WaitFor(ctx, loom.Wait{Name: "payment", Owner: "customer:" + id, Deadline: told.At.Add(48 * time.Hour)})
+```
+
+When the deadline passes with the wait still open, the look is called
+and told so, once: `told.ExpiredWait("payment")`. `loom.StopWaiting`
+ends a wait that has been answered. Outside a look, `Client.Wait` and
+`Client.EndWait` do the same.
+
+**An approval** is a wait on a person's yes or no, kept as a record:
+
+```go
+loom.AskApproval(ctx, loom.Approval{
+    Name: "refund", What: "Refund order " + id + " in full",
+    Role: "support-lead", Deadline: told.At.Add(4 * time.Hour),
+    AtDeadline: loom.AtDeadlineReject,   // or approve, or expire
+})
+```
+
+`Client.Approvals` lists what is waiting on a role, and
+`Client.AnswerApproval` takes the answer from someone who holds it. With
+no answer by the deadline the approval becomes what it declared. Either
+way the look is called and reads the outcome:
+
+```go
+if refund, ok := told.Approval("refund"); ok && refund.Status == loom.ApprovalApproved { ... }
+```
+
+Through the gateway, `approvals` and `answerApproval` are served for
+any service with a `@loop` aggregate, and the caller must hold the
+approval's role in the namespace.
+
+`loomtest.Loop` tests a look with no database: when it would next be
+called, what it is told, and what it decides.
+
 ## Testing: given/when/then
 
 `loomtest` exercises generated handlers and reactions against the real

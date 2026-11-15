@@ -158,6 +158,9 @@ func New(cfg Config) (http.Handler, error) {
 	if err := b.settingsFields(); err != nil {
 		return nil, err
 	}
+	if err := b.approvalFields(); err != nil {
+		return nil, err
+	}
 	if cfg.Status {
 		if err := b.statusQuery(cfg.Services); err != nil {
 			return nil, err

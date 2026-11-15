@@ -14,6 +14,19 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **Approvals: what is asked, who may answer, until when, and what then.**
+  A loop asks a person with `loom.AskApproval(ctx, loom.Approval{Name,
+  What, Role, Deadline, AtDeadline})` (or `Client.AskApproval`). The
+  approval is a record that `Client.Approvals` lists as waiting on its
+  role. `Client.AnswerApproval` takes a yes or no from someone holding
+  the role, before the deadline; with no answer by then the approval
+  becomes what it declared — `approve`, `reject` or `expire` — by
+  `deadline`. Either way its instance's look is called and reads the
+  outcome with `loom.LookingAt(ctx).Approval(name)`. The gateway serves
+  `approvals` and `answerApproval` for a service with a `@loop`
+  aggregate, and checks the caller's role. New table `loom_approvals`.
+  ([ADR 0012](docs/adr/0012-a-loop-is-declared-per-aggregate-and-a-wait-is-built-in.md))
+
 - **A wait: an owner, a deadline, and a loop it calls.** A loop that is
   waiting on someone says so: `loom.WaitFor(ctx, loom.Wait{Name, Owner,
   Deadline})` in a look, or `Client.Wait` from outside one. The wait is
