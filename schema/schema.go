@@ -114,7 +114,13 @@ type Command struct {
 }
 
 type Event struct {
-	Name    string `yaml:"name" json:"name"`
+	Name string `yaml:"name" json:"name"`
+	// File is the path of the .loom source that declares it (for a foreign
+	// event with no consume block, the first that names it), as the
+	// parser was given it; empty for a lone unnamed source. loom generate
+	// names the generated file after it. It is where, not contract —
+	// absent from the artifacts.
+	File    string `yaml:"-" json:"-"`
 	Service string `yaml:"service,omitempty" json:"service,omitempty"` // set = consumed foreign event
 	Publish bool   `yaml:"publish,omitempty" json:"publish,omitempty"`
 	Version int    `yaml:"version,omitempty" json:"version,omitempty"` // schema version, default 1
@@ -158,6 +164,11 @@ type Record struct {
 // Entity is a read model maintained by a projection.
 type Entity struct {
 	Name string `yaml:"name" json:"name"`
+	// File is the path of the .loom source that declares it, as the
+	// parser was given it; empty for a lone unnamed source. loom generate
+	// names the generated file after it. It is where, not contract —
+	// absent from the artifacts.
+	File string `yaml:"-" json:"-"`
 	// Doc is the `///` doc comment written directly above the
 	// declaration in the .loom source: what the gateway and its MCP
 	// tools tell a caller it is. Plain `//` comments are notes and never
@@ -217,6 +228,11 @@ type IndexColumn struct {
 // the declaration is engine-neutral.
 type Series struct {
 	Name string `yaml:"name" json:"name"`
+	// File is the path of the .loom source that declares it, as the
+	// parser was given it; empty for a lone unnamed source. loom generate
+	// names the generated file after it. It is where, not contract —
+	// absent from the artifacts.
+	File string `yaml:"-" json:"-"`
 	// Time (@time) names the timestamp field rows are ranged, bucketed,
 	// and partitioned on.
 	Time string `yaml:"time" json:"time"`
@@ -287,6 +303,11 @@ func (s *Series) IdentityFields() []string {
 // surfaces get real enum types, OpenAPI gets the value list.
 type Enum struct {
 	Name string `yaml:"name" json:"name"`
+	// File is the path of the .loom source that declares it, as the
+	// parser was given it; empty for a lone unnamed source. loom generate
+	// names the generated file after it. It is where, not contract —
+	// absent from the artifacts.
+	File string `yaml:"-" json:"-"`
 	// Doc is the `///` doc comment written directly above the
 	// declaration in the .loom source: what the gateway and its MCP
 	// tools tell a caller it is. Plain `//` comments are notes and never
@@ -442,6 +463,11 @@ type ProjectionShot struct {
 
 type NamedType struct {
 	Name string `yaml:"name" json:"name"`
+	// File is the path of the .loom source that declares it, as the
+	// parser was given it; empty for a lone unnamed source. loom generate
+	// names the generated file after it. It is where, not contract —
+	// absent from the artifacts.
+	File string `yaml:"-" json:"-"`
 	// Doc is the `///` doc comment written directly above the
 	// declaration in the .loom source: what the gateway and its MCP
 	// tools tell a caller it is. Plain `//` comments are notes and never

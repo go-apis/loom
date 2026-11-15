@@ -46,6 +46,25 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **Each schema file's types are generated into their own file.**
+  `loom generate` writes the enums, named types, entities and series a
+  `.loom` file declares, and the events it declares that no single
+  aggregate or record owns, into `loomgen/<schema file>_types_gen.go`
+  (`goal.loom` → `goal_types_gen.go`) instead of the shared
+  `models_gen.go`. Two changes to types in different schema files no
+  longer touch the same generated file. `models_gen.go` stays, holding
+  only what no schema file declares: nothing, for a schema read from
+  files. An event one aggregate or record emits still lives in that
+  owner's file. The package, the type names and the events' wire format
+  are unchanged, so callers need no edits. `schema.Enum`, `NamedType`,
+  `Event`, `Entity` and `Series` gain `File`, the path of the schema
+  file that declares each.
+
+  **Migration:** regenerate `loomgen/` and commit the new
+  `_types_gen.go` files with the emptied `models_gen.go`.
+  `registry_gen.go` still lists every enum's values and every type's
+  required fields, so two changes to those can still meet there.
+
 - **A plan says what its reactions decide.** `Client.Plan` now runs the
   command, its policies and its processes on a transaction it rolls
   back, where it used to run the handler alone and list who reacts from
