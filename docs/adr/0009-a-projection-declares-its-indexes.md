@@ -39,7 +39,7 @@ index on `(service, namespace, org_id, updated_at DESC NULLS LAST)`, and
   The same statement is written to `loomgen/tables_gen.sql`, right after
   the table's CREATE TABLE, in declared order. `loom generate --check`
   needed no change. Its byte compare ([ADR 0005](0005-generator-is-pinned-and-checked.md))
-  already reports `registry_gen.go` and `tables_gen.sql` stale when only
+  already reports `tables_gen.sql` stale when only
   an index differs.
 - **Migrate builds each index concurrently, on its own connection.**
   `CONCURRENTLY` keeps writes flowing while a large live table is indexed,
