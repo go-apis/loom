@@ -46,12 +46,15 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	if err := c.checkFloor(ctx); err != nil {
 		return err
 	}
-	c.StartRelay(ctx, poll)
-	// the work a build's code decides — timers, batches, projections —
-	// waits for the instance's first beat: one superseded by a newer
-	// generation learns so before it does any of it (instances.go)
+	// the work a build's code decides — timers, batches, projections,
+	// the relay's publishing — waits for the instance's first beat: one
+	// superseded by a newer generation learns so before it does any of
+	// it (instances.go). The channels exist before anything that reads
+	// them starts: a relay started first read a nil beaten as "no beat
+	// to wait for", and raced with its write.
 	c.beaten = make(chan struct{})
 	c.beatNudge = make(chan struct{}, 1)
+	c.StartRelay(ctx, poll)
 	go c.runInstances(ctx, poll, c.beaten)
 	c.startTimerRunner(ctx, poll)
 	c.startBatchRunner(ctx, poll)
