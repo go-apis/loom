@@ -117,6 +117,30 @@ process; `@idempotent` or a `Reconcile` hook settles one left in doubt.
 Makes unnecessary: idempotency keys and "already sent?" tables kept by
 hand; a status field on an aggregate recording that a call was made.
 
+```go
+// before: an idempotency key and a "sent?" table kept by hand
+sent, _ := db.WasSent(ctx, idemKey)
+if !sent {
+	if err := provider.Charge(ctx, order.AmountCents); err != nil {
+		return err
+	}
+	db.MarkSent(ctx, idemKey)
+}
+
+// after: the process declares the effect; a replay doesn't call again
+effect chargeCard
+
+func (p *Checkout) OnOrderPlaced(ctx context.Context, evt *loom.Event, o *OrderPlaced) ([]loom.Command, error) {
+	_, err := loom.Once(ctx, "chargeCard", func(ctx context.Context) (string, error) {
+		return provider.Charge(ctx, o.AmountCents)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+```
+
 ### Durable retries and `NotYet`
 
 **Since** v0.52.0 (`@retry`), v0.91.0 (`NotYet`) · **adopt rule** none yet
@@ -127,6 +151,36 @@ returns `loom.NotYet("what it waits for")` and is retried the same way.
 
 Makes unnecessary: retry loops with sleeps inside a reaction; a backoff
 ladder kept as fields on an aggregate; a timer armed to look again.
+
+```go
+// before: a retry loop with sleeps inside the reaction
+for attempt := 0; attempt < 40; attempt++ {
+	state, err := runs.Get(ctx, d.RunID)
+	if err == nil && state.Finished {
+		return []loom.Command{&RecordDeployOutcome{...}}, nil
+	}
+	time.Sleep(backoff(attempt))
+}
+return nil, errors.New("deploy never finished")
+
+// after: @retry owns the backoff and the dead letter
+process awaitDeploy @retry(40, 5s..5m) {
+  on DeployRequested -> RecordDeployOutcome
+}
+```
+
+```go
+func (h *AwaitDeploy) OnDeployRequested(ctx context.Context, evt *loom.Event, d *DeployRequested) ([]loom.Command, error) {
+	state, err := h.Runs.Get(ctx, d.RunID) // a read: call it directly
+	if err != nil {
+		return nil, err // a failure: the usual retries
+	}
+	if !state.Finished {
+		return nil, loom.NotYet("the deploy is still rolling out")
+	}
+	return []loom.Command{&RecordDeployOutcome{...}}, nil
+}
+```
 
 ## Values people change
 
@@ -141,6 +195,21 @@ history and a required reason, served by the gateway.
 Makes unnecessary: environment variables for values people change while
 the service runs; a settings table of the service's own.
 
+```
+// before: an env var, changed only by redeploying
+BUILD_CAP=2
+```
+
+```
+// after: a setting, changed at runtime with a reason, and a history
+setting build_cap: int @default(2)
+```
+
+```go
+cap, err := loomgen.SettingBuildCap(ctx, cli, "acme")       // generated reader
+err = cli.SetSetting(ctx, "acme", "build_cap", 4, "raised for the holiday surge")
+```
+
 ## Reading
 
 ### `loom.Every` and `loom.Pages`
@@ -151,6 +220,30 @@ Read every row of a list query, or page through it, without writing the
 cursor loop: newest-first lists are read oldest first and reversed.
 
 Makes unnecessary: hand-written `for cursor != ""` loops over a list read.
+
+```go
+// before: a hand-written cursor loop
+q := loom.Query{Namespace: "acme", Limit: 100}
+var all []loom.Row
+for {
+	rows, err := cli.QueryEntities(ctx, "OrderSummary", q)
+	if err != nil {
+		return err
+	}
+	all = append(all, rows...)
+	if len(rows) < q.Limit {
+		break
+	}
+	cursor, err := rows[len(rows)-1].Cursor(q.OrderBy)
+	if err != nil {
+		return err
+	}
+	q.After = &cursor
+}
+
+// after
+all, err := loom.Every(ctx, cli.ListEntities("OrderSummary"), loom.Query{Namespace: "acme"})
+```
 
 ## Data and audit
 
@@ -165,6 +258,28 @@ included, and every instance drops its cached key.
 Makes unnecessary: a key-encryption package of the service's own; erasing
 personal data by rewriting events.
 
+```
+// before: plaintext in an append-only log; erasure means rewriting history
+aggregate Payee @table {
+  state {
+    tin: string
+  }
+}
+```
+
+```
+// after: sealed at rest, erased by dropping the key, not the event
+aggregate Payee @table {
+  state {
+    tin: string @pii
+  }
+}
+```
+
+```go
+err := cli.Shred(ctx, "acme", payeeID) // tin now reads as "" everywhere, no unshred
+```
+
 ### Signed export
 
 **Since** v0.102.0 · **adopt rule** none yet
@@ -174,6 +289,22 @@ footer; `loom verify-export` checks one without the service.
 
 Makes unnecessary: audit dumps that cannot show nothing was changed,
 dropped or reordered.
+
+```go
+// before: a dump nothing can check — a dropped or edited row looks the same
+rows, _ := db.Query(ctx, "SELECT * FROM events ORDER BY global_seq")
+json.NewEncoder(w).Encode(rows)
+
+// after: each line's hash depends on the one before it, and a signed footer
+summary, err := cli.ExportEvents(ctx, w, loom.ExportOptions{
+	Namespace: "acme",
+	Signer:    signer, // an ed25519 key the service holds
+})
+```
+
+```
+$ loom verify-export --key <ed25519 public key, base64 or a file> export.jsonl
+```
 
 ## Serving
 
@@ -189,6 +320,26 @@ command that cannot be undone.
 Makes unnecessary: hand-written resolvers, REST handlers and MCP tools
 over the same commands, and the access checks repeated in each.
 
+```go
+// before: the same rule, checked by hand in each surface
+func registerParcelHandler(w http.ResponseWriter, r *http.Request) {
+	if !isAdmin(r) && !isCourierForOwnDepot(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	// ...and the GraphQL resolver, and the MCP tool, each repeat the check
+}
+```
+
+```
+// after: one rule on the schema, enforced wherever the command is reached
+command RegisterParcel @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) {
+  ...
+}
+
+command DiscardParcel @plan @allow(kind: admin) @allow(kind: courier, depot_id: caller.depot) -> ParcelDiscarded
+```
+
 ## Running
 
 ### Generations and the process lease
@@ -201,3 +352,15 @@ leaves it, so a deploy never runs two builds' processes at once.
 
 Makes unnecessary: a leader lease of the service's own, and code that
 terminates older leaders by hand.
+
+```go
+// before: a leader lease and a sweep that kills older leaders by hand
+if acquireAdvisoryLock(ctx, "leader") {
+	go runBackgroundWork(ctx)
+}
+// ...plus a sweep that finds the previous revision's process and kills it
+
+// after: the deploy sets the generation, loom hands the lease over
+// LOOM_GENERATION=$(date +%s) — the newest alive takes the lease; an
+// older generation is asked to yield and, failing that, is terminated.
+```
