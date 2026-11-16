@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +28,13 @@ import (
 //
 // A look that says LookDone ends the instance's looks: its row is
 // dropped, and an event that arrives for it later starts them again.
+//
+// A look that fails — it errs, a command it answers with is refused, or
+// it panics, which is recovered and never kills the process — is
+// counted (failures, last_error): the next is LoopBackoff away, and
+// once Config.LoopFailureLimit fail in a row the instance is parked
+// with a wait on its operators (LoopState.ParkPast). A look that
+// succeeds clears the count and unparks it.
 //
 // Looks run on every instance of the newest generation alive; a row is
 // claimed with a lease, so two runners never look at one instance at
@@ -183,16 +192,17 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 			if ctx.Err() != nil {
 				return len(due), err
 			}
-			c.log.ErrorContext(ctx, "look failed: it is looked at again in a minute", "aggregate", l.aggregate, "namespace", l.namespace, "id", l.id, "error", err)
+			c.log.ErrorContext(ctx, "look failed: it is looked at again after a backoff, and parked for its operators past the failure limit", "aggregate", l.aggregate, "namespace", l.namespace, "id", l.id, "error", err)
 		}
 	}
 	return len(due), nil
 }
 
 // look makes one claimed look and writes when the next is. A look that
-// fails, or whose commands are refused, is noted as made: the instance
-// is looked at again by the rule, a minute on at the latest, and what
-// it decides then it decides afresh.
+// fails, panics, or whose commands are refused, is noted as made and
+// counted: the instance is looked at again after LoopBackoff of its
+// failures, or parked past the limit, and what it decides then it
+// decides afresh.
 func (c *Client) look(ctx context.Context, l dueLook) error {
 	def := c.looping(l.aggregate)
 	// the look is of the instant it starts: an event that lands while
@@ -204,7 +214,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if def == nil {
 		// this build's registry has no loop for it: leave the row to a
 		// build that does
-		return c.looked(ctx, l, start, Looking{}, nil)
+		return c.looked(ctx, l, start, Looking{}, nil, false, nil)
 	}
 	told := l.state.Look(start)
 	told.Aggregate, told.Namespace, told.ID = l.aggregate, l.namespace, l.id
@@ -221,10 +231,20 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	lctx := withReader(ctx, c)
 	lctx = WithLooking(lctx, told)
 	lctx = context.WithValue(lctx, lookSaidKey{}, said)
-	cmds, lookErr := def.Look(lctx)
-	if lookErr == nil && len(cmds) > 0 {
-		lookErr = c.Dispatch(WithMeta(ctx, Metadata{CausationID: "loop:" + l.aggregate + "/" + l.id.String()}), cmds...)
-	}
+	lookErr := func() (err error) {
+		// a look that panics has failed; it does not take the process
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("loom: look at %s %s panicked: %v", l.aggregate, l.id, r)
+				c.log.ErrorContext(ctx, "look panicked", "aggregate", l.aggregate, "namespace", l.namespace, "id", l.id, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			}
+		}()
+		cmds, err := def.Look(lctx)
+		if err == nil && len(cmds) > 0 {
+			err = c.Dispatch(WithMeta(ctx, Metadata{CausationID: "loop:" + l.aggregate + "/" + l.id.String()}), cmds...)
+		}
+		return err
+	}()
 	if lookErr == nil && said.done {
 		// done, unless an event has arrived since the look began
 		_, err := c.db.Exec(ctx, `
@@ -247,7 +267,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 			return err
 		}
 	}
-	if err := c.looked(ctx, l, start, told, said); err != nil {
+	if err := c.looked(ctx, l, start, told, said, true, lookErr); err != nil {
 		return err
 	}
 	return lookErr
@@ -255,10 +275,12 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 
 // looked notes a look made at start: the lease given up, the waits as
 // the look left them (settleWaits, over what the row holds now, so a
-// wait started from outside while it ran is kept), and the next look by
-// LoopState.NextLook — an event that arrived after start brings it to
-// within LoopSoon.
-func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid) error {
+// wait started from outside while it ran is kept), the look's outcome
+// when made (LoopState.AfterLook, then ParkPast the failure limit), and
+// the next look by LoopState.NextLook — an event that arrived after
+// start brings it to within LoopSoon. A look not made (no loop in this
+// build) leaves the failures as they stand.
+func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid, made bool, lookErr error) error {
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -267,12 +289,13 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 	var (
 		event *time.Time
 		held  []byte
+		prior LoopState
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT event_at, waits FROM loom_loop_due
+		SELECT event_at, waits, failures, last_error, parked FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4
 		FOR UPDATE`,
-		c.reg.Service, l.aggregate, l.namespace, l.id).Scan(&event, &held)
+		c.reg.Service, l.aggregate, l.namespace, l.id).Scan(&event, &held, &prior.Failures, &prior.LastError, &prior.Parked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // done with, by LookDone
 	}
@@ -282,11 +305,11 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 	var holding []Wait
 	_ = json.Unmarshal(held, &holding)
 	waiting := settleWaits(holding, told, said)
-	raw, err := json.Marshal(waiting)
-	if err != nil {
-		return err
+
+	state := LoopState{Looked: start, Waits: waiting, Failures: prior.Failures, LastError: prior.LastError, Parked: prior.Parked}
+	if made {
+		state = state.AfterLook(start, lookErr).ParkPast(c.loopFails)
 	}
-	state := LoopState{Looked: start, Waits: waiting}
 	if event != nil {
 		state.Event = *event
 	}
@@ -296,10 +319,15 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 			next = asked
 		}
 	}
+	raw, err := json.Marshal(state.Waits)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE loom_loop_due SET looked_at=$5, next_look=$6, waits=$7, leased_until=NULL
+		UPDATE loom_loop_due SET looked_at=$5, next_look=$6, waits=$7, leased_until=NULL,
+		       failures=$8, last_error=$9, parked=$10
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw); err != nil {
+		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw, state.Failures, state.LastError, state.Parked); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -324,9 +352,9 @@ func (c *Client) LoopDue(ctx context.Context, aggregate, namespace string, id uu
 		waits         []byte
 	)
 	err = c.db.QueryRow(ctx, `
-		SELECT next_look, looked_at, event_at, waits FROM loom_loop_due
+		SELECT next_look, looked_at, event_at, waits, failures, last_error, parked FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, aggregate, namespace, id).Scan(&due.NextLook, &looked, &event, &waits)
+		c.reg.Service, aggregate, namespace, id).Scan(&due.NextLook, &looked, &event, &waits, &due.Failures, &due.LastError, &due.Parked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return due, false, nil
 	}

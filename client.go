@@ -36,6 +36,12 @@ type Config struct {
 	// race, against fresh state. Default 3.
 	ConflictRetries int
 
+	// LoopFailureLimit is how many looks in a row of a @loop instance
+	// may fail before it is parked with a wait on its operators
+	// (LoopState.ParkPast). Zero takes LoopFailureLimit (10); a
+	// negative value never parks.
+	LoopFailureLimit int
+
 	// StepConcurrency caps how many projection/process runner steps may
 	// run at once. A NOTIFY wakes every runner simultaneously (one per
 	// read model + process — dozens on a wide schema), and unbounded
@@ -122,6 +128,7 @@ type Client struct {
 	batchNudge      chan struct{}  // batch enqueued: wake the batch runner
 	stepSem         chan struct{}  // bounds concurrent runner steps (see Config.StepConcurrency)
 	runnerIdlePoll  time.Duration  // Config.RunnerIdlePoll
+	loopFails       int            // Config.LoopFailureLimit
 	leader          leaderFlag     // this instance holds the service's process lease (election.go)
 	gen             generation     // Config.Generation, Config.Revision as the election orders them
 	release         int64          // Config.Release, or LOOM_RELEASE
@@ -164,6 +171,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.LoopFailureLimit == 0 {
+		cfg.LoopFailureLimit = LoopFailureLimit
+	}
 	if cfg.ConflictRetries == 0 {
 		cfg.ConflictRetries = 3
 	}
@@ -203,6 +213,7 @@ func New(cfg Config) (*Client, error) {
 		series:         buildSeries(cfg.Registry),
 		tel:            newTelemetry(cfg.Registry.Service),
 		retries:        cfg.ConflictRetries,
+		loopFails:      cfg.LoopFailureLimit,
 		reconcile:      cfg.Reconcile,
 		seriesAhead:    cfg.SeriesPartitionAhead,
 		gen:            generationFrom(cfg.Generation, cfg.Revision),
