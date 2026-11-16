@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -39,6 +40,9 @@ type Status struct {
 	// Schedules is the commands dispatched on an interval, and when
 	// each is next due.
 	Schedules []ScheduleStatus `json:"schedules"`
+	// Loops is the @loop instances with looks due: how many, how many
+	// are failing, and the parked ones.
+	Loops LoopsStatus `json:"loops"`
 	// EffectsRunning and EffectsFailed count journaled outside calls in
 	// flight and given up on.
 	EffectsRunning int64 `json:"effects_running"`
@@ -110,6 +114,63 @@ type RunnerStatus struct {
 	StalledSince *time.Time `json:"stalled_since,omitempty"`
 }
 
+// LoopsStatus counts the service's @loop instances with looks due.
+type LoopsStatus struct {
+	Instances int64 `json:"instances"`
+	// Failing is the instances whose last look failed, parked or not.
+	Failing int64 `json:"failing"`
+	// Parked is the instances parked on their operators, and Parked
+	// lists the first of them by when they were last looked at.
+	Parked      int64     `json:"parked"`
+	ParkedLoops []LoopDue `json:"parked_loops,omitempty"`
+}
+
+// loopsStatus reads LoopsStatus: up to 20 parked instances listed.
+func (c *Client) loopsStatus(ctx context.Context) (LoopsStatus, error) {
+	var st LoopsStatus
+	if err := c.db.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE failures > 0), count(*) FILTER (WHERE parked)
+		FROM loom_loop_due WHERE service=$1`, c.reg.Service).Scan(&st.Instances, &st.Failing, &st.Parked); err != nil {
+		return st, err
+	}
+	if st.Parked == 0 {
+		return st, nil
+	}
+	rows, err := c.db.Query(ctx, `
+		SELECT aggregate_type, namespace, aggregate_id FROM loom_loop_due
+		WHERE service=$1 AND parked ORDER BY looked_at LIMIT 20`, c.reg.Service)
+	if err != nil {
+		return st, err
+	}
+	type key struct {
+		aggregate, namespace string
+		id                   uuid.UUID
+	}
+	var keys []key
+	for rows.Next() {
+		var k key
+		if err := rows.Scan(&k.aggregate, &k.namespace, &k.id); err != nil {
+			rows.Close()
+			return st, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return st, err
+	}
+	for _, k := range keys {
+		due, ok, err := c.LoopDue(ctx, k.aggregate, k.namespace, k.id)
+		if err != nil {
+			return st, err
+		}
+		if ok {
+			st.ParkedLoops = append(st.ParkedLoops, due)
+		}
+	}
+	return st, nil
+}
+
 // Status reads the service's background work.
 func (c *Client) Status(ctx context.Context) (*Status, error) {
 	latest, runners, err := c.runners(ctx)
@@ -121,6 +182,9 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	if st.Schedules, err = c.schedules(ctx); err != nil {
+		return nil, err
+	}
+	if st.Loops, err = c.loopsStatus(ctx); err != nil {
 		return nil, err
 	}
 	for _, r := range runners {

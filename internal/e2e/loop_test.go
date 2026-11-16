@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,4 +212,54 @@ func TestLoopLooksAtEveryLiveInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, ctx, "a look at kiln a after a new event", func() bool { return looks(a) > settled })
+}
+
+// TestLoopRecoversAPanickingLook: a look that panics does not take the
+// process down. The panic is recorded as the instance's last error and
+// counted as a failure, its next look is backed off, and the runner goes
+// on looking at the service's other instances.
+func TestLoopRecoversAPanickingLook(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	cli, _ := loopClock(t, ctx, true)
+
+	cracked := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+	sound := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+	clock.SetKilnLook(func(ctx context.Context) ([]loom.Command, error) {
+		if loom.LookingAt(ctx).ID == cracked.AggregateID {
+			panic("the kiln cracked")
+		}
+		return nil, nil
+	})
+	looks := func(kiln loom.CommandBase) int {
+		n, _ := clock.KilnLooks(kiln.AggregateID.String())
+		return n
+	}
+	for _, kiln := range []loom.CommandBase{cracked, sound} {
+		if err := cli.Dispatch(ctx, &clockgen.LightKiln{CommandBase: kiln}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	waitFor(t, ctx, "the cracked kiln's look to fail", func() bool { return dueOf(t, ctx, cli, cracked).Failures >= 1 })
+	due := dueOf(t, ctx, cli, cracked)
+	if !strings.Contains(due.LastError, "panicked") || !strings.Contains(due.LastError, "the kiln cracked") {
+		t.Errorf("the cracked kiln's last error is %q, want the panic", due.LastError)
+	}
+	if wait := due.NextLook.Sub(due.Looked); wait > loom.LoopBackoff(due.Failures) {
+		t.Errorf("after %d failures the next look is %s after the last, want within %s", due.Failures, wait, loom.LoopBackoff(due.Failures))
+	}
+
+	// the runner is still looking: the sound kiln, stoked after the
+	// panic, is looked at again and has failed nothing
+	seen := looks(sound)
+	if err := cli.Dispatch(ctx, &clockgen.StokeKiln{CommandBase: sound}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "a look at the sound kiln after the panic", func() bool { return looks(sound) > seen })
+	if d := dueOf(t, ctx, cli, sound); d.Failures != 0 || d.LastError != "" {
+		t.Errorf("the sound kiln reads %d failures (%q), want none", d.Failures, d.LastError)
+	}
+	// and the cracked kiln is tried again, and fails again
+	waitFor(t, ctx, "the cracked kiln's second failure", func() bool { return dueOf(t, ctx, cli, cracked).Failures >= 2 })
 }
