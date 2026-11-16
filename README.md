@@ -6,6 +6,10 @@ the typed models, folds, and registry; you implement the handler stubs; the
 runtime executes them on Postgres. Change the schema and the compiler walks
 you through what's left — the gqlgen loop, for event sourcing.
 
+What each feature does, and the hand-written code it makes unnecessary:
+[docs/features.md](docs/features.md). `go tool loom adopt` lists the places
+a service still writes that code.
+
 ```
 service orders
 

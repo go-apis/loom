@@ -1,0 +1,13 @@
+aggregate Order {
+  command PlaceOrder -> OrderPlaced
+}
+
+// the hold's timer, armed and cancelled by hand
+policy orderHoldTimer {
+  on OrderHeld -> ArmHold
+  on OrderReleased -> CancelHold
+}
+
+policy auditTrail {
+  on OrderPlaced -> RecordAudit
+}

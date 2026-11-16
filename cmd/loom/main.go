@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/go-apis/loom"
+	"github.com/go-apis/loom/adopt"
 	"github.com/go-apis/loom/gen"
 	"github.com/go-apis/loom/gkms"
 	"github.com/go-apis/loom/schema"
@@ -47,6 +49,8 @@ func main() {
 		err = runCheck(os.Args[2:])
 	case "skill":
 		err = runSkill(os.Args[2:], os.Stdout)
+	case "adopt":
+		err = runAdopt(os.Args[2:], os.Stdout)
 	case "openapi":
 		err = runEmit(os.Args[2:], "openapi.json", gen.OpenAPI)
 	case "graphql":
@@ -71,6 +75,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       loom generate [--dir <service dir>] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom check <schema.loom|schema dir ...>")
 	fmt.Fprintln(os.Stderr, "       loom skill [--root <repo root>] [--check]")
+	fmt.Fprintln(os.Stderr, "       loom adopt [--root <repo root>] [--json]")
 	fmt.Fprintln(os.Stderr, "       loom openapi [--dir <service dir>] [--out openapi.json] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom graphql [--dir <service dir>] [--out <service>.graphqls] [--check]")
 	fmt.Fprintln(os.Stderr, "       loom access [--dir <service dir>] [--out access.md] [--check]")
@@ -284,6 +289,38 @@ func runInit(args []string) error {
 // repository root's .claude/skills/loom/SKILL.md (ADR 0007), or with
 // --check exits non-zero when that file is missing or differs from what
 // this version writes.
+// runAdopt lists the code a repository writes by hand that a loom
+// feature already does (package adopt). It is advice: it reads only and
+// succeeds whatever it finds.
+func runAdopt(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("adopt", flag.ExitOnError)
+	rootFlag := fs.String("root", "", "repository root (default: the enclosing git repository, else the current directory)")
+	asJSON := fs.Bool("json", false, "print the findings as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	root := *rootFlag
+	if root == "" {
+		root = repoRoot(".")
+	}
+	findings, err := adopt.Scan(root)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		if findings == nil {
+			findings = []adopt.Finding{}
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(findings)
+	}
+	var b strings.Builder
+	adopt.Report(&b, findings)
+	_, err = io.WriteString(out, b.String())
+	return err
+}
+
 func runSkill(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("skill", flag.ExitOnError)
 	rootFlag := fs.String("root", "", "repository root (default: the enclosing git repository, else the current directory)")
