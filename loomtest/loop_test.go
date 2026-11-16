@@ -2,6 +2,7 @@ package loomtest_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -134,3 +135,74 @@ func TestLookingTwiceOnUnchangedStateEmitsNothingNew(t *testing.T) {
 	loop.Look(noon.Add(time.Minute)).ThenNothing()
 	loop.Look(noon.Add(2 * time.Minute)).ThenNothing()
 }
+
+// TestLoopBacksOffDoublingFromOneSecond: after failed looks in a row a
+// loop is looked at again 1s after the last, then 2s, then 4s, doubling
+// and never past the minute; an event still brings it within LoopSoon.
+func TestLoopBacksOffDoublingFromOneSecond(t *testing.T) {
+	look, reader := struckAnvil(t)
+	loop := func() *loomtest.LoopScenario {
+		return loomtest.Loop(t, clock.NewRegistry(), look.LookAnvil).Reading(reader).LookedAt(noon)
+	}
+	for _, c := range []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, time.Minute},
+		{1, time.Second},
+		{2, 2 * time.Second},
+		{3, 4 * time.Second},
+		{6, 32 * time.Second},
+		{7, time.Minute}, // 64s, held to the minute
+		{1000, time.Minute},
+	} {
+		if got := loop().Failing(c.failures).NextLook().Sub(noon); got != c.want {
+			t.Errorf("after %d failures in a row the next look is %s after the last, want %s", c.failures, got, c.want)
+		}
+		if got := loom.LoopBackoff(c.failures); got != c.want {
+			t.Errorf("LoopBackoff(%d) = %s, want %s", c.failures, got, c.want)
+		}
+	}
+	// an event sooner than the backoff still brings the look to within LoopSoon
+	event := noon.Add(5 * time.Second)
+	if got := loop().Failing(5).EventAt(event).NextLook(); !got.Equal(event.Add(loom.LoopSoon)) {
+		t.Errorf("an event while backing off brings the next look to %s, want %s", got, event.Add(loom.LoopSoon))
+	}
+}
+
+// TestALookThatSucceedsAfterFailuresResetsThem: each look that errs
+// adds one to the failures in a row, and the first that does not clears
+// them, so the loop is back to its minute.
+func TestALookThatSucceedsAfterFailuresResetsThem(t *testing.T) {
+	look, reader := struckAnvil(t)
+	failing := 3
+	flaky := func(ctx context.Context) ([]loom.Command, error) {
+		if failing > 0 {
+			failing--
+			return nil, errBlip
+		}
+		return look.LookAnvil(ctx)
+	}
+	loop := loomtest.Loop(t, clock.NewRegistry(), flaky).Reading(reader)
+	at := noon
+	for want := 1; want <= 3; want++ {
+		loop.Look(at)
+		if got := loop.Failures(); got != want {
+			t.Fatalf("after failed look %d the failures in a row are %d, want %d", want, got, want)
+		}
+		next := loop.NextLook()
+		if wait, backoff := next.Sub(at), time.Second<<(want-1); wait != backoff {
+			t.Errorf("after failure %d the next look is %s after it, want %s", want, wait, backoff)
+		}
+		at = next
+	}
+	loop.Look(at)
+	if got := loop.Failures(); got != 0 {
+		t.Errorf("after a look that succeeded the failures in a row are %d, want 0", got)
+	}
+	if wait := loop.NextLook().Sub(at); wait != time.Minute {
+		t.Errorf("after a look that succeeded the next look is %s after it, want the minute", wait)
+	}
+}
+
+var errBlip = errors.New("store blip")

@@ -27,7 +27,26 @@ const (
 	LoopEvery = time.Minute
 	// LoopSoon is how soon after an event the loop is looked at.
 	LoopSoon = time.Second
+	// LoopBackoffFirst is how soon a look that failed is looked at
+	// again. Each further failure in a row doubles it, up to LoopEvery.
+	LoopBackoffFirst = time.Second
 )
+
+// LoopBackoff is the longest a loop goes without a look after failures
+// failed looks in a row: LoopEvery for none, LoopBackoffFirst after the
+// first, doubling with each one after, never past LoopEvery. A failure
+// is most often passing — a refused command, a store blip — so the
+// next look comes soon, and less soon each time it fails again.
+func LoopBackoff(failures int) time.Duration {
+	if failures <= 0 {
+		return LoopEvery
+	}
+	d := LoopBackoffFirst
+	for i := 1; i < failures && d < LoopEvery; i++ {
+		d *= 2
+	}
+	return min(d, LoopEvery)
+}
 
 // Wait is something a loop is waiting on: an answer that is someone's to
 // give, and the time after which the loop stops waiting for it.
@@ -55,17 +74,34 @@ type LoopState struct {
 	Event time.Time
 	// Waits is what the loop is waiting on.
 	Waits []Wait
+	// Failures is how many looks in a row have failed, up to the last
+	// one: zero once a look succeeds.
+	Failures int
+}
+
+// AfterLook is the state once a look made at at has ended, failed when
+// err is not nil: a failure adds one to the failures in a row, and a
+// look that did not fail ends the run.
+func (s LoopState) AfterLook(at time.Time, err error) LoopState {
+	s.Looked = at
+	if err != nil {
+		s.Failures++
+	} else {
+		s.Failures = 0
+	}
+	return s
 }
 
 // NextLook is when the loop is to be looked at next: the earliest of
-// LoopEvery after the last look, LoopSoon after an event that has
-// arrived since, and the first deadline among its waits. A loop never
-// looked at is due at once: the zero time.
+// LoopEvery after the last look (LoopBackoff of its failures, when the
+// last looks failed), LoopSoon after an event that has arrived since,
+// and the first deadline among its waits. A loop never looked at is due
+// at once: the zero time.
 func (s LoopState) NextLook() time.Time {
 	if s.Looked.IsZero() {
 		return time.Time{}
 	}
-	next := s.Looked.Add(LoopEvery)
+	next := s.Looked.Add(LoopBackoff(s.Failures))
 	if s.Event.After(s.Looked) {
 		if soon := s.Event.Add(LoopSoon); soon.Before(next) {
 			next = soon
