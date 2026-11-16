@@ -119,7 +119,9 @@ func (c *Client) Wait(ctx context.Context, aggregate, namespace string, id uuid.
 }
 
 // EndWait ends an instance's wait of that name: it has been answered.
-// Ending a wait that is not there does nothing.
+// Ending a wait that is not there does nothing. Ending a parked
+// instance's LoopParkedWait unparks it: its failures are cleared and it
+// is looked at again at once.
 func (c *Client) EndWait(ctx context.Context, aggregate, namespace string, id uuid.UUID, name string) error {
 	return c.changeWaits(ctx, aggregate, namespace, id, false, func(held []Wait) []Wait {
 		return settleWaits(held, Looking{}, &lookSaid{stopped: []string{name}})
@@ -128,7 +130,8 @@ func (c *Client) EndWait(ctx context.Context, aggregate, namespace string, id uu
 
 // changeWaits rewrites an instance's waits under its row's lock and
 // brings its next look to the first deadline, when that is sooner.
-// create writes the row for an instance that has none.
+// create writes the row for an instance that has none. A parked
+// instance left without its LoopParkedWait is unparked and due at once.
 func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, id uuid.UUID, create bool, change func([]Wait) []Wait) error {
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
@@ -145,12 +148,15 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 			return err
 		}
 	}
-	var raw []byte
+	var (
+		raw    []byte
+		parked bool
+	)
 	err = tx.QueryRow(ctx, `
-		SELECT waits FROM loom_loop_due
+		SELECT waits, parked FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4
 		FOR UPDATE`,
-		c.reg.Service, aggregate, namespace, id).Scan(&raw)
+		c.reg.Service, aggregate, namespace, id).Scan(&raw, &parked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -176,5 +182,23 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 		c.reg.Service, aggregate, namespace, id, out, first); err != nil {
 		return err
 	}
+	if parked && !holdsWait(waits, LoopParkedWait) {
+		// its operators answered: look again now, from a clean count
+		if _, err := tx.Exec(ctx, `
+			UPDATE loom_loop_due SET parked=false, failures=0, next_look=clock_timestamp()
+			WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
+			c.reg.Service, aggregate, namespace, id); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
+}
+
+func holdsWait(waits []Wait, name string) bool {
+	for _, w := range waits {
+		if w.Name == name {
+			return true
+		}
+	}
+	return false
 }

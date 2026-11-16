@@ -127,3 +127,17 @@ DESIGN.md's "Not yet built").
   deadline. Answered in time by someone holding the role, or settled by
   its deadline action, it calls its instance's look, which reads the
   outcome from `LookingAt(ctx).Approval(name)`.
+- **A failing look backs off, and past a limit it is parked** (amended
+  2026-11-16, the first half of a supervisor for loops). A look that
+  errs, whose commands are refused, or that panics — recovered, so it
+  never takes the process — is counted on its row (`failures`,
+  `last_error`). Its next look is `LoopBackoff(failures)` after it: a
+  second, doubling, never past `LoopEvery`. Once
+  `Config.LoopFailureLimit` (10 unless set) fail in a row the instance
+  is parked: it holds the wait `loom.looks-failing`, owned by
+  `operators`, until `LoopParkFor` (a day) after its last look, and has
+  no minute — only an event, that wait ended with `Client.EndWait`
+  (which clears the count and looks at once), or its deadline brings a
+  look. A look that succeeds clears the count and unparks it.
+  `Client.LoopDue` and `Status.Loops` report the count, the last error
+  and the parked instances.

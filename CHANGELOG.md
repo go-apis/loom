@@ -21,6 +21,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   `self-rearming-timer`, `timer-policy`). From here on, a release that
   adds a feature adds its entry to the guide and, where it can, an adopt
   rule, and names the rule here.
+- **A failing look backs off, a panicking look is a failure, and a
+  look that keeps failing is parked.** The loop runner counts each
+  instance's failed looks in a row (`LoopState.Failures`,
+  `LastError`) and looks again after `LoopBackoff(failures)` — 1s,
+  doubling, never past `LoopEvery` — instead of every minute. A look
+  that panics is recovered and counted, not a crash. Past
+  `Config.LoopFailureLimit` (default 10) the instance is parked with
+  the wait `loom.looks-failing` on its `operators`; an event, the wait
+  ended with `Client.EndWait`, or its day-long deadline brings it back.
+  `Client.LoopDue` and the new `Status.Loops` report it. Schema:
+  `loom_loop_due` gains `failures`, `last_error` and `parked`.
 - **`loomgen.NewPartialRegistry`: the registry a test builds.** It is
   the whole registry from an `Impl` that need not bind everything: a
   declaration nothing is bound to is there with its definition and no
