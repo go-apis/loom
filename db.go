@@ -561,11 +561,18 @@ func (c *Client) loadState(ctx context.Context, q querier, agg *AggregateDef, na
 
 	var snap []byte
 	var snapVersion int
-	err := q.QueryRow(ctx, `
-		SELECT version, state FROM loom_snapshots
-		WHERE service=$1 AND namespace=$2 AND aggregate_type=$3 AND aggregate_id=$4`,
-		c.reg.Service, namespace, agg.Name, id,
-	).Scan(&snapVersion, &snap)
+	// only an aggregate that declares @snapshot has one written
+	// (handleCommand); one left from a build that declared it is ignored,
+	// and folding every event gives the same state. Not asking saves a
+	// round trip on every load and dispatch.
+	err := pgx.ErrNoRows
+	if agg.SnapshotEvery > 0 {
+		err = q.QueryRow(ctx, `
+			SELECT version, state FROM loom_snapshots
+			WHERE service=$1 AND namespace=$2 AND aggregate_type=$3 AND aggregate_id=$4`,
+			c.reg.Service, namespace, agg.Name, id,
+		).Scan(&snapVersion, &snap)
+	}
 	switch {
 	case err == nil:
 		if snap, err = c.decryptFields(ctx, q, namespace, id, snap, agg.StatePII); err != nil {
