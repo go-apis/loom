@@ -102,3 +102,27 @@ aggregate Kiln @loop {
     fired: bool!
   }
 }
+
+/// An oven: heated, it must be rested within its deadline; loom keeps
+/// the wait.
+aggregate Oven @loop {
+  state {
+    status: string
+  }
+
+  /// Start heating.
+  command HeatOven -> OvenHeated
+
+  /// Let it rest.
+  command RestOven -> OvenRested
+
+  deadline overheat after 2s while status in ("heating")
+
+  event OvenHeated {
+    status: string!
+  }
+
+  event OvenRested {
+    status: string!
+  }
+}

@@ -2,6 +2,8 @@ package loom
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -178,3 +180,85 @@ func LookAgain(ctx context.Context, d time.Duration) {
 		s.again = d
 	}
 }
+
+// DeadlineDef is a deadline a @loop aggregate declares on its own state
+// (`deadline <name> after <d> while <field> in (...)`): a wait loom keeps
+// itself. The look that finds Holds true starts the wait, After from
+// then; the look that finds it false ends it; when it expires the look is
+// told once (ExpiredWait(DeadlineWait(name))), and it is not started
+// again until Holds has been false.
+type DeadlineDef struct {
+	Name  string
+	After time.Duration
+	Holds func(AggregateState) bool
+}
+
+// DeadlineWait is the name of the wait a declared deadline keeps.
+func DeadlineWait(name string) string { return deadlinePrefix + name }
+
+const (
+	deadlinePrefix = "deadline:"
+	// DeadlineOwner owns the waits loom keeps for declared deadlines.
+	DeadlineOwner = "loom"
+)
+
+// ValueIn reports whether v, a string or a string-kinded enum (or a
+// pointer to one), is one of values. A nil pointer is in none. Generated
+// code uses it for a deadline's `while <field> in (...)`.
+func ValueIn(v any, values ...string) bool {
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.String {
+		return false
+	}
+	s := rv.String()
+	for _, want := range values {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// keepDeadlines is the change a look at an instance makes to the waits
+// of its declared deadlines, before the look is told what it is told:
+// each deadline that holds and has no wait (and has not fired since it
+// last held) gets one, After from now; each that no longer holds loses
+// its wait and is forgotten as fired. It answers the waits to start, the
+// names to stop, and what has fired after it.
+func keepDeadlines(defs []DeadlineDef, state AggregateState, waits []Wait, fired []string, now time.Time) (start []Wait, stop []string, stillFired []string) {
+	held := map[string]bool{}
+	for _, w := range waits {
+		held[w.Name] = true
+	}
+	firedSet := map[string]bool{}
+	for _, f := range fired {
+		firedSet[f] = true
+	}
+	for _, d := range defs {
+		name := DeadlineWait(d.Name)
+		if d.Holds != nil && d.Holds(state) {
+			if !held[name] && !firedSet[name] {
+				start = append(start, Wait{Name: name, Owner: DeadlineOwner, Deadline: now.Add(d.After).UTC()})
+			}
+			continue
+		}
+		if held[name] {
+			stop = append(stop, name)
+		}
+		delete(firedSet, name)
+	}
+	for f := range firedSet {
+		stillFired = append(stillFired, f)
+	}
+	return start, stop, stillFired
+}
+
+// isDeadlineWait reports whether a wait is one loom keeps for a declared
+// deadline.
+func isDeadlineWait(name string) bool { return strings.HasPrefix(name, deadlinePrefix) }

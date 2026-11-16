@@ -134,6 +134,8 @@ type dueLook struct {
 	aggregate, namespace string
 	id                   uuid.UUID
 	state                LoopState
+	// fired is the declared deadlines that expired and have held since
+	fired []string
 }
 
 // lookDue claims up to limit due looks and makes each. It answers how
@@ -149,7 +151,7 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE d.service=$1 AND d.aggregate_type=due.aggregate_type AND d.namespace=due.namespace AND d.aggregate_id=due.aggregate_id
-		RETURNING d.aggregate_type, d.namespace, d.aggregate_id, d.looked_at, d.event_at, d.waits`,
+		RETURNING d.aggregate_type, d.namespace, d.aggregate_id, d.looked_at, d.event_at, d.waits, d.deadlines_fired`,
 		c.reg.Service, limit, int(loopLease.Seconds()))
 	if err != nil {
 		return 0, err
@@ -159,9 +161,9 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 		var (
 			l             dueLook
 			looked, event *time.Time
-			waits         []byte
+			waits, fired  []byte
 		)
-		if err := rows.Scan(&l.aggregate, &l.namespace, &l.id, &looked, &event, &waits); err != nil {
+		if err := rows.Scan(&l.aggregate, &l.namespace, &l.id, &looked, &event, &waits, &fired); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -172,6 +174,7 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 			l.state.Event = *event
 		}
 		_ = json.Unmarshal(waits, &l.state.Waits)
+		_ = json.Unmarshal(fired, &l.fired)
 		due = append(due, l)
 	}
 	rows.Close()
@@ -204,9 +207,32 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if def == nil {
 		// this build's registry has no loop for it: leave the row to a
 		// build that does
-		return c.looked(ctx, l, start, Looking{}, nil)
+		return c.looked(ctx, l, start, Looking{}, nil, l.fired)
+	}
+	said := &lookSaid{}
+	fired := l.fired
+	if len(def.Deadlines) > 0 {
+		// the declared deadlines' waits follow the state as it stands
+		state, _, err := c.load(ctx, c.db, l.aggregate, l.namespace, l.id)
+		if err != nil {
+			return err
+		}
+		begin, stop, still := keepDeadlines(def.Deadlines, state, l.state.Waits, l.fired, start)
+		said.waits, said.stopped, fired = append(said.waits, begin...), append(said.stopped, stop...), still
+		kept := l.state.Waits[:0:0]
+		for _, w := range l.state.Waits {
+			if !contains(stop, w.Name) {
+				kept = append(kept, w)
+			}
+		}
+		l.state.Waits = append(kept, begin...)
 	}
 	told := l.state.Look(start)
+	for _, w := range told.Expired {
+		if isDeadlineWait(w.Name) && !contains(fired, w.Name) {
+			fired = append(fired, w.Name)
+		}
+	}
 	told.Aggregate, told.Namespace, told.ID = l.aggregate, l.namespace, l.id
 	// an approval nobody answered takes its deadline action before the
 	// look that is told its wait has expired
@@ -217,7 +243,6 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if told.Approvals, err = c.approvalsOf(ctx, l.aggregate, l.namespace, l.id); err != nil {
 		return err
 	}
-	said := &lookSaid{}
 	lctx := withReader(ctx, c)
 	lctx = WithLooking(lctx, told)
 	lctx = context.WithValue(lctx, lookSaidKey{}, said)
@@ -240,14 +265,14 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	// dropped with it, and the waits it was told had expired are told
 	// again
 	if lookErr != nil {
-		told, said = Looking{}, &lookSaid{}
+		told, said, fired = Looking{}, &lookSaid{}, l.fired
 	}
 	if len(said.approvals) > 0 {
 		if err := c.writeApprovals(ctx, c.db, l.aggregate, l.namespace, l.id, said.approvals); err != nil {
 			return err
 		}
 	}
-	if err := c.looked(ctx, l, start, told, said); err != nil {
+	if err := c.looked(ctx, l, start, told, said, fired); err != nil {
 		return err
 	}
 	return lookErr
@@ -258,7 +283,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 // wait started from outside while it ran is kept), and the next look by
 // LoopState.NextLook — an event that arrived after start brings it to
 // within LoopSoon.
-func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid) error {
+func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid, fired []string) error {
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -296,10 +321,17 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 			next = asked
 		}
 	}
+	if fired == nil {
+		fired = []string{}
+	}
+	firedRaw, err := json.Marshal(fired)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE loom_loop_due SET looked_at=$5, next_look=$6, waits=$7, leased_until=NULL
+		UPDATE loom_loop_due SET looked_at=$5, next_look=$6, waits=$7, leased_until=NULL, deadlines_fired=$8
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw); err != nil {
+		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw, firedRaw); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

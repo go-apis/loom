@@ -14,6 +14,13 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A @loop declares a deadline on its own state.** `deadline <name>
+  after <d> while <field> in (<values>)` on a string or enum field: loom
+  starts the wait when the field enters the values, ends it when it
+  leaves, tells the look once when it expires and starts it again only
+  after the field has left. It does what a `policy <name>Timer` with its
+  list of arming and cancelling events did (adopt rule `timer-policy`).
+  Schema: `loom_loop_due` gains `deadlines_fired`.
 - **`loomgen.NewPartialRegistry`: the registry a test builds.** It is
   the whole registry from an `Impl` that need not bind everything: a
   declaration nothing is bound to is there with its definition and no
