@@ -350,6 +350,9 @@ type AggregateDef struct {
 	// LoopEvery and sooner when an event arrives for it (loop.go,
 	// looprun.go). Nil for an aggregate with no loop.
 	Look func(ctx context.Context) ([]Command, error)
+	// Deadlines are the waits a @loop aggregate declares on its own
+	// state, kept by loom (DeadlineDef).
+	Deadlines []DeadlineDef
 	// ReadRoles (@role on the aggregate block) gates the generated
 	// GraphQL reads — the singular get and its Changed subscription.
 	ReadRoles []string

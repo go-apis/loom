@@ -120,7 +120,13 @@ Rules enforced at parse/validate time:
   (`loom.LoopState.NextLook`, `loop.go`): no later than `LoopEvery` (a
   minute) after the last look, within `LoopSoon` (a second) of an event
   that has arrived since, and at the first deadline among the loop's
-  `Wait`s (a name, an owner, a deadline). A look reads why it was called
+  `Wait`s (a name, an owner, a deadline). A `@loop` aggregate may declare
+  `deadline <name> after <d> while <field> in (<values>)` on its own
+  state: loom keeps that wait itself (`DeadlineWait(name)`, owner
+  `loom`) — the look that finds the field in the values starts it, After
+  from then; the look that finds it out ends it; when it expires the look
+  is told once, and it does not start again until the field has left
+  the values (`loom_loop_due.deadlines_fired`). A look reads why it was called
   with `loom.LookingAt(ctx)`: whether an event arrived, and which waits
   have expired. `loomtest.Loop` runs a look under that rule with no
   database

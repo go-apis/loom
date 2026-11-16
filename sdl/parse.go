@@ -447,12 +447,80 @@ func (p *parser) aggregate() error {
 				return err
 			}
 			agg.Uploads = append(agg.Uploads, up)
+		case "deadline":
+			if !agg.Loop {
+				return p.errf(t, "aggregate %s: a deadline belongs to a @loop aggregate: its look is told when it expires", name)
+			}
+			dl, err := p.deadline(name)
+			if err != nil {
+				return err
+			}
+			agg.Deadlines = append(agg.Deadlines, dl)
 		default:
 			return p.errf(t, "unexpected %q in aggregate %s", t.text, name)
 		}
 	}
+	for _, dl := range agg.Deadlines {
+		var field *schema.Payload
+		if agg.State != nil {
+			field = agg.State.Properties[dl.Field]
+		}
+		if field == nil {
+			return fmt.Errorf("aggregate %s: deadline %s holds while %s is one of its values, but the state has no field %s", name, dl.Name, dl.Field, dl.Field)
+		}
+		// a string, or a reference to an enum (a named type's values
+		// are checked where the schema directory is whole)
+		if !(field.Type == "string" && field.Format == "") && field.Ref == "" {
+			return fmt.Errorf("aggregate %s: deadline %s: %s is not a string or an enum; a deadline holds on one", name, dl.Name, dl.Field)
+		}
+	}
 	p.out.Aggregates = append(p.out.Aggregates, agg)
 	return nil
+}
+
+// deadline parses `deadline <name> after <duration> while <field> in
+// (<value>, ...)`; values are strings or bare enum values.
+func (p *parser) deadline(agg string) (*schema.Deadline, error) {
+	p.next() // deadline
+	name, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	if !p.accept("after") {
+		return nil, p.errf(p.peek(), "aggregate %s: deadline %s: expected `after <duration>`, got %q", agg, name, p.peek().text)
+	}
+	after := p.next()
+	if after.kind != tNumber {
+		return nil, p.errf(after, "aggregate %s: deadline %s: after wants a duration (30s, 5m, 1h, 1d), got %q", agg, name, after.text)
+	}
+	dl := &schema.Deadline{Name: name, After: after.text}
+	if _, err := dl.Duration(); err != nil {
+		return nil, p.errf(after, "aggregate %s: %v", agg, err)
+	}
+	if !p.accept("while") {
+		return nil, p.errf(p.peek(), "aggregate %s: deadline %s: expected `while <field> in (...)`, got %q", agg, name, p.peek().text)
+	}
+	if dl.Field, err = p.ident(); err != nil {
+		return nil, err
+	}
+	if !p.accept("in") {
+		return nil, p.errf(p.peek(), "aggregate %s: deadline %s: expected `in (...)`, got %q", agg, name, p.peek().text)
+	}
+	if err := p.expect("("); err != nil {
+		return nil, err
+	}
+	for !p.accept(")") {
+		v := p.next()
+		if v.kind != tString && v.kind != tIdent {
+			return nil, p.errf(v, "aggregate %s: deadline %s: a value is a string or an enum value, got %q", agg, name, v.text)
+		}
+		dl.Values = append(dl.Values, v.text)
+		p.accept(",")
+	}
+	if len(dl.Values) == 0 {
+		return nil, p.errf(p.peek(), "aggregate %s: deadline %s: name at least one value it holds while", agg, name)
+	}
+	return dl, nil
 }
 
 // record parses state-of-record declarations: like an aggregate but with

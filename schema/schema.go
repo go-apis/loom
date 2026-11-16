@@ -113,9 +113,14 @@ type Aggregate struct {
 	// never hand-rolls the wait the way a process does with NotYet and
 	// @retry. One loop per aggregate type, not per instance — see
 	// ADR 0012.
-	Loop     bool       `yaml:"loop,omitempty" json:"loop,omitempty"`
-	State    *Payload   `yaml:"state" json:"state"`
-	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Loop bool `yaml:"loop,omitempty" json:"loop,omitempty"`
+	// Deadlines (`deadline <name> after <d> while <field> in (...)`, on a
+	// @loop aggregate) are waits loom keeps itself: started when the
+	// state enters one of the values, ended when it leaves, told to the
+	// look once when it expires.
+	Deadlines []*Deadline `yaml:"deadlines,omitempty" json:"deadlines,omitempty"`
+	State     *Payload    `yaml:"state" json:"state"`
+	Commands  []*Command  `yaml:"commands,omitempty" json:"commands,omitempty"`
 	// Events names the events declared inside the aggregate's block, in
 	// the order written. The state folds every one that is not @retired
 	// as well as every event a command emits, so an event keeps its fold
@@ -477,6 +482,26 @@ func (s *Schedule) Interval() (time.Duration, error) {
 		return 0, fmt.Errorf("schedule %s: every %q is not an interval (30s, 5m, 1h, 1d)", s.Name, s.Every)
 	}
 	return d * unit, nil
+}
+
+// Deadline is a wait a @loop aggregate declares on its own state: it
+// holds while Field is one of Values, and expires After from the look
+// that found it holding.
+type Deadline struct {
+	Name   string   `yaml:"name" json:"name"`
+	After  string   `yaml:"after" json:"after"`
+	Field  string   `yaml:"field" json:"field"`
+	Values []string `yaml:"values" json:"values"`
+}
+
+// Duration parses After, as a schedule's interval is parsed (30s, 5m,
+// 1h, 1d).
+func (d *Deadline) Duration() (time.Duration, error) {
+	iv, err := (&Schedule{Name: d.Name, Every: d.After}).Interval()
+	if err != nil {
+		return 0, fmt.Errorf("deadline %s: after %q is not a duration (30s, 5m, 1h, 1d)", d.Name, d.After)
+	}
+	return iv, nil
 }
 
 var uuidShape = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)

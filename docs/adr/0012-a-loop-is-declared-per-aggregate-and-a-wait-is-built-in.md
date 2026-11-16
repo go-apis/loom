@@ -127,3 +127,12 @@ DESIGN.md's "Not yet built").
   deadline. Answered in time by someone holding the role, or settled by
   its deadline action, it calls its instance's look, which reads the
   outcome from `LookingAt(ctx).Approval(name)`.
+- **A deadline is declared on the state** (amended 2026-11-16). A
+  `@loop` aggregate declares `deadline <name> after <d> while <field> in
+  (<values>)` on a string or enum field. loom keeps the wait: the look
+  that finds the field in the values starts it (named
+  `deadline:<name>`, owned by `loom`, After from that look); the look
+  that finds it out ends it; expiry is told to the look once and is
+  remembered (`deadlines_fired`) until the field leaves the values. No
+  service lists the events that arm and cancel a timer. The generator
+  writes `AggregateDef.Deadlines`, each holding through `loom.ValueIn`.

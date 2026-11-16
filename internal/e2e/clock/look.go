@@ -48,3 +48,24 @@ func (l *Look) LookKiln(ctx context.Context) ([]loom.Command, error) {
 	}
 	return look(ctx)
 }
+
+// OvenLooks records each look at an oven: what it was told.
+var (
+	ovenMu   sync.Mutex
+	ovenTold = map[string][]loom.Looking{}
+)
+
+// OvenToldOf is every look made at the oven, oldest first.
+func OvenToldOf(id string) []loom.Looking {
+	ovenMu.Lock()
+	defer ovenMu.Unlock()
+	return append([]loom.Looking(nil), ovenTold[id]...)
+}
+
+func (l *Look) LookOven(ctx context.Context) ([]loom.Command, error) {
+	told := loom.LookingAt(ctx)
+	ovenMu.Lock()
+	ovenTold[told.ID.String()] = append(ovenTold[told.ID.String()], told)
+	ovenMu.Unlock()
+	return nil, nil
+}
