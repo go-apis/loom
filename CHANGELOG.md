@@ -14,6 +14,13 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **`docs/features.md` and `loom adopt`: what a service is missing.**
+  The guide says, for each feature, what it makes unnecessary and the
+  release that brought it; `go tool loom adopt` lists the places a
+  service still writes that code by hand (rules `ticker-goroutine`,
+  `self-rearming-timer`, `timer-policy`). From here on, a release that
+  adds a feature adds its entry to the guide and, where it can, an adopt
+  rule, and names the rule here.
 - **`loomgen.NewPartialRegistry`: the registry a test builds.** It is
   the whole registry from an `Impl` that need not bind everything: a
   declaration nothing is bound to is there with its definition and no
