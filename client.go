@@ -122,6 +122,8 @@ type Client struct {
 	batchNudge      chan struct{}  // batch enqueued: wake the batch runner
 	stepSem         chan struct{}  // bounds concurrent runner steps (see Config.StepConcurrency)
 	runnerIdlePoll  time.Duration  // Config.RunnerIdlePoll
+	notifyNudge     chan struct{}  // an append committed: tell other instances (notifyLog)
+	notifyOnce      sync.Once      // starts the notifier on the first append
 	leader          leaderFlag     // this instance holds the service's process lease (election.go)
 	gen             generation     // Config.Generation, Config.Revision as the election orders them
 	release         int64          // Config.Release, or LOOM_RELEASE
@@ -195,6 +197,7 @@ func New(cfg Config) (*Client, error) {
 		batchNudge:     make(chan struct{}, 1),
 		stepSem:        make(chan struct{}, cfg.StepConcurrency),
 		runnerIdlePoll: cfg.RunnerIdlePoll,
+		notifyNudge:    make(chan struct{}, 1),
 		watchers:       map[chan struct{}]bool{},
 		keys:           cfg.Keys,
 		blobs:          cfg.Blobs,
@@ -315,18 +318,17 @@ func (c *Client) dispatchOnce(ctx context.Context, cmds []Command) error {
 		return err
 	}
 
-	// NOTIFY inside the transaction: postgres delivers it atomically with
-	// commit — a crash between commit and the old post-commit notify lost
-	// the wake until the poll tick — and it costs no second pool acquire
-	// (the old notifyLog Exec was a starvation contributor under small
-	// pools).
-	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, '')`, "loom_"+c.reg.Service); err != nil {
-		return err
-	}
+	// No NOTIFY inside the transaction: a transaction that has queued one
+	// takes a cluster-wide lock at commit and holds it until the
+	// notification is queued, so every append serialised on it as well as
+	// on the log lock. Other instances are told after commit, coalesced
+	// (notifyLog); a crash between commit and that notify leaves them to
+	// their poll, as for any lost wake.
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	c.broadcastLog() // local fast path; other instances arrive via LISTEN
+	c.broadcastLog() // local fast path
+	c.notifyLog()    // other instances, via LISTEN
 	if published {
 		c.nudgeRelay()
 	}
