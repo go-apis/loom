@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-apis/loom/schema"
@@ -824,6 +825,20 @@ var (
 	writeFieldRules(&b, "\t\t", "FieldAllow", state)
 	writeDocs(&b, "\t\t", "Doc", ownerDoc, "FieldDocs", state)
 	fmt.Fprintf(&b, "\t\tNewState: func() %s { return &%s{} },\n", stateType, o.name)
+	if o.agg != nil && len(o.agg.Deadlines) > 0 {
+		// each declared deadline: its wait, and the state it holds in
+		b.WriteString("\t\tDeadlines: []loom.DeadlineDef{\n")
+		for _, d := range o.agg.Deadlines {
+			after, _ := d.Duration() // checked when the schema was read
+			vals := make([]string, len(d.Values))
+			for i, v := range d.Values {
+				vals[i] = strconv.Quote(v)
+			}
+			fmt.Fprintf(&b, "\t\t\t{Name: %q, After: %d, Holds: func(s loom.AggregateState) bool { return loom.ValueIn(s.(*%s).%s, %s) }},\n",
+				d.Name, int64(after), o.name, exported(d.Field), strings.Join(vals, ", "))
+		}
+		b.WriteString("\t\t},\n")
+	}
 	fmt.Fprintf(&b, "\t\tCommands: []*loom.%s{\n", cmdType)
 	for _, c := range o.commands() {
 		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))
