@@ -187,9 +187,58 @@ name, value, reason)`; the reason is not optional.
 ## Work that recurs is a schedule
 
 A look, a sweep or a reconcile that runs every so often is declared
-`schedule <name> every 5m -> <Command> @in(<namespace>)`. Do not write a
-command that re-arms itself with `loom.After`: its chain ends the first
-time a tick fails. A schedule ticks whatever came of the last one.
+`schedule <name> every 5m -> <Command> @in(<namespace>)`, or called
+directly with `Client.Every("name", every, fn)` when it is not a
+command. Do not write a command that re-arms itself with `loom.After`:
+its chain ends the first time a tick fails. A schedule ticks whatever
+came of the last one.
+
+`go tool loom adopt` finds the hand-written versions of this: a
+goroutine looping on `time.NewTicker` on every instance (rule
+`ticker-goroutine` — use `Client.Every`, or a `schedule`) and a tick
+that re-arms itself with `loom.After` (rule `self-rearming-timer` — use
+a `schedule`, or, when the wait belongs to one instance rather than the
+service, a `@loop` aggregate with `WaitFor`, below).
+
+## `@loop` aggregates and waits
+
+An aggregate declared `@loop` gets its look called for every live
+instance: at least every minute, within a second of an event for it,
+and at the first deadline among its waits. The look reads how the
+instance stands and returns the next step — it is not a list of events
+arming and cancelling a timer:
+
+```go
+func (l *Look) LookItem(ctx context.Context) ([]loom.Command, error) {
+	told := loom.LookingAt(ctx)
+	if _, late := told.ExpiredWait("hold"); late {
+		return []loom.Command{&loomgen.ReleaseItem{…}}, nil
+	}
+	state, _, err := loom.Load(ctx, "Item", told.Namespace, told.ID)
+	if err != nil {
+		return nil, err
+	}
+	if item := state.(*loomgen.Item); item.Held {
+		wait := loom.Wait{Name: "hold", Owner: "reviewer", Deadline: item.HeldAt.Add(time.Hour)}
+		if err := loom.WaitFor(ctx, wait); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+```
+
+A wait (`loom.WaitFor(ctx, loom.Wait{Name, Owner, Deadline})`) has a
+name, an owner and a deadline, kept by loom with the instance; a passed
+deadline calls the look, told which wait expired
+(`told.ExpiredWait(name)`). An approval is a wait with a record of who
+may answer it, and what happens at the deadline.
+
+`go tool loom adopt` finds the hand-written versions of this: a
+`policy <name>Timer` block listing every event that arms or cancels a
+timer (rule `timer-policy`) and a tick that re-arms itself with
+`loom.After` (rule `self-rearming-timer`) — both replaced by a `@loop`
+aggregate with `WaitFor`. See docs/features.md in go-apis/loom.
 
 ## Waiting for something is NotYet
 
