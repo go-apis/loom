@@ -41,11 +41,11 @@ unlike most of SDL's unknown-directive rejections, this one names the file
 and line, because the record path captures a position token before
 consuming directives.
 
-**Generation mirrors `EventUpcasts`/`Upcasts`** (the shared, no-owner
+**Generation mirrors EventUpcasts/Upcasts** (the shared, no-owner
 declaration that ADR 0008 carved out for a service-wide concern with no
 kind package of its own). Every aggregate declaring `@loop` gets a method,
 `Look<Name>(ctx context.Context) ([]loom.Command, error)`, on one
-service-wide interface, `Look`, written to `registry_gen.go` only when at
+service-wide interface, `Look`, written to `look_gen.go` only when at
 least one aggregate loops. `Impl` gets a `Look Look` field, and
 `NewRegistry` panics naming the stub when the schema declares `@loop` and
 `Impl.Look` is nil — the same loud, immediate boot failure an unbound
