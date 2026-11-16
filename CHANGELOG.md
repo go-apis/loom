@@ -32,6 +32,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   event's fields, mark the event `@retired`. A snapshot taken while a
   fold was missing does not refold the earlier rows; a replay from
   version 0 does.
+- **Projections fold a batch with one read and one write.** A projection
+  step read (and locked) its row and wrote it back for every event: two
+  round trips each. It now reads every row a batch touches at once, folds
+  the batch in memory in order, and writes each changed row once. A
+  backlog of 2,000 events folds at ~7,800 events/s, up from ~1,470
+  (`BenchmarkPerfProjectionCatchUp`). `@table` projections keep the
+  per-event fold.
+- **A load reads no snapshot for an aggregate without `@snapshot`.** One
+  round trip fewer on every load and dispatch: a dispatch to a new stream
+  ~1.69 ms from ~2.14 ms, a load of a 500-event stream ~1.03 ms from
+  ~1.38 ms (`internal/e2e/perf_bench_test.go`, local Postgres).
 
 ### Added
 
