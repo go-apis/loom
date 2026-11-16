@@ -191,6 +191,48 @@ A look, a sweep or a reconcile that runs every so often is declared
 command that re-arms itself with `loom.After`: its chain ends the first
 time a tick fails. A schedule ticks whatever came of the last one.
 
+## State that waits or must be watched is a @loop
+
+An aggregate whose instances wait on someone, time out, or need looking
+at until they reach an end is declared `aggregate X @loop` and given a
+look: `Look<X>(ctx) ([]loom.Command, error)`. loom calls it for each live
+instance, at least every minute, within a second of an event for it, and
+at the first deadline among its waits. Read the instance with
+`loom.LookingAt(ctx)` and `loom.Load`, and return the one next step;
+calling it again on unchanged state must change nothing.
+
+- Wait on someone with `loom.WaitFor(ctx, loom.Wait{Name, Owner,
+  Deadline})`; when the deadline passes the look is told
+  (`LookingAt(ctx).ExpiredWait(name)`) and decides what happens instead.
+  End an answered wait with `loom.StopWaiting(ctx, name)`.
+- Ask a person with `loom.AskApproval`; the outcome is on
+  `LookingAt(ctx).Approval(name)`.
+- `loom.LookDone(ctx)` when the instance has reached its end.
+
+Do not write a `policy <name>Timer` that arms and cancels a timer on a
+list of events, or a sweep that re-arms lost timers: the loop keeps the
+wait, and asks again if it is lost.
+
+## Before you hand-write it, check loom has it
+
+`go tool loom adopt` lists the places this repository writes by hand
+what its loom already does, and `docs/features.md` in go-apis/loom says
+what each feature makes unnecessary. When a change needs one of these,
+use the feature:
+
+| you are about to write | use instead | adopt rule |
+|---|---|---|
+| a goroutine looping on `time.NewTicker` for service-wide work | `cli.Every(name, interval, fn)` or a `schedule` | `ticker-goroutine` |
+| a tick that schedules the next tick with `loom.After` | a `schedule`, or a `@loop` with `WaitFor` | `self-rearming-timer` |
+| a `policy <name>Timer` arming and cancelling a timer on events | a `@loop` aggregate with `WaitFor` | `timer-policy` |
+| a retry loop or backoff fields on an aggregate | `@retry(max, min..max)` and `loom.NotYet` | |
+| an "already sent?" table or idempotency key for an outside call | `loom.Once` with a declared `effect` | |
+| an environment variable or own table for a value people change | a `setting` | |
+| a cursor loop over a list read | `loom.Every` / `loom.Pages` | |
+
+A cache each instance keeps in its own memory is the exception: every
+instance refreshes its own, and its ticker stays.
+
 ## Waiting for something is NotYet
 
 A reaction that has nothing to do yet returns `loom.NotYet("what it is
