@@ -628,7 +628,13 @@ generated switches, folds from generated assignments.
   would buy bidirectional streaming nobody needs at real compatibility
   cost. Resumability rides the global sequence (SSE id = seq →
   Last-Event-ID reconnect). Cross-instance wake-ups via pg LISTEN/NOTIFY
-  (`listenLoop`), which also makes runners multi-instance-responsive. A
+  (`listenLoop`), which also makes runners multi-instance-responsive. The
+  NOTIFY is sent after an append commits, never inside it (`notifyLog`):
+  a transaction that has queued a NOTIFY takes a cluster-wide lock at
+  commit, so every append serialised on it. Notifies coalesce — one
+  pending at a time, so the appends that commit while one is in flight
+  share the next — and a lost one (a crash between commit and notify) is
+  a lost wake the other instances' poll recovers. A
   gRPC transport can be added from the same registry later if a genuine
   internal-RPC need appears.
 

@@ -12,6 +12,18 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Changed
+
+- **An append no longer sends its NOTIFY inside its transaction.** A
+  transaction that has queued a `pg_notify` takes a cluster-wide lock at
+  commit, so every append was serialised on it as well as on the log
+  lock. The notify now goes after commit, coalesced (one pending at a
+  time, so a burst of appends shares one), and a lost one is recovered
+  by the other instances' poll. On a local Postgres,
+  `BenchmarkDispatchConcurrent` (internal/e2e) went from about 940 to
+  1,310 appends/s at 8 concurrent dispatchers and from 890 to 1,320 at
+  32.
+
 ### Added
 
 - **`loomgen.NewPartialRegistry`: the registry a test builds.** It is
