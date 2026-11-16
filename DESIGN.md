@@ -120,7 +120,11 @@ Rules enforced at parse/validate time:
   (`loom.LoopState.NextLook`, `loop.go`): no later than `LoopEvery` (a
   minute) after the last look, within `LoopSoon` (a second) of an event
   that has arrived since, and at the first deadline among the loop's
-  `Wait`s (a name, an owner, a deadline). A look reads why it was called
+  `Wait`s (a name, an owner, a deadline). After looks that failed in a
+  row the minute shortens to `loom.LoopBackoff(failures)`: a second after
+  the first failure, doubling with each one after, never past the minute;
+  `LoopState.AfterLook` counts them, and a look that succeeds clears
+  them. A look reads why it was called
   with `loom.LookingAt(ctx)`: whether an event arrived, and which waits
   have expired. `loomtest.Loop` runs a look under that rule with no
   database

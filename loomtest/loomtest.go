@@ -360,6 +360,19 @@ func (s *LoopScenario) EventAt(at time.Time) *LoopScenario {
 	return s
 }
 
+// Failing says the loop's last n looks failed in a row.
+func (s *LoopScenario) Failing(n int) *LoopScenario {
+	s.state.Failures = n
+	return s
+}
+
+// Failures is how many looks in a row have failed, the scenario's own
+// looks included: a look that errs adds one, and one that does not
+// clears them.
+func (s *LoopScenario) Failures() int {
+	return s.state.Failures
+}
+
 // Waiting adds something the loop is waiting on.
 func (s *LoopScenario) Waiting(w loom.Wait) *LoopScenario {
 	s.state.Waits = append(s.state.Waits, w)
@@ -375,7 +388,8 @@ func (s *LoopScenario) NextLook() time.Time {
 // Look calls the look as the runtime would at now: told whether an
 // event arrived and which waits have expired. What it dispatches is
 // handled and folded into the reader's state; the look is then noted as
-// made, and the expired waits as told.
+// made (loom.LoopState.AfterLook: failed when it or a command it
+// answered with erred), and the expired waits as told.
 func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 	s.t.Helper()
 	s.now, s.ran = now, true
@@ -393,7 +407,7 @@ func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 			s.events = append(s.events, events...)
 		}
 	}
-	s.state.Looked = now
+	s.state = s.state.AfterLook(now, s.err)
 	s.state.Waits = s.told.Waiting
 	return s
 }
