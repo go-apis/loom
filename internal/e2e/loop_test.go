@@ -2,7 +2,10 @@ package e2e_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,10 +20,18 @@ import (
 // loopClock is a started clock service on a fresh store.
 func loopClock(t *testing.T, ctx context.Context, start bool) (*loom.Client, *pgxpool.Pool) {
 	t.Helper()
+	return loopClockWith(t, ctx, start, loom.Config{})
+}
+
+// loopClockWith is loopClock with cfg's settings (its DB and Registry
+// are the clock's).
+func loopClockWith(t *testing.T, ctx context.Context, start bool, cfg loom.Config) (*loom.Client, *pgxpool.Pool) {
+	t.Helper()
 	clock.SetKilnLook(nil)
 	t.Cleanup(func() { clock.SetKilnLook(nil) })
 	pool := testDB(t, ctx)
-	cli, err := loom.New(loom.Config{DB: pool, Registry: clock.NewRegistry()})
+	cfg.DB, cfg.Registry = pool, clock.NewRegistry()
+	cli, err := loom.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,4 +273,142 @@ func TestLoopRecoversAPanickingLook(t *testing.T) {
 	}
 	// and the cracked kiln is tried again, and fails again
 	waitFor(t, ctx, "the cracked kiln's second failure", func() bool { return dueOf(t, ctx, cli, cracked).Failures >= 2 })
+}
+
+// TestLoopBacksOffAndCountsFailures: a look that fails three times and
+// then succeeds reads 1, 2, 3 failures in a row, with its next look 1s,
+// 2s, then 4s after each, and none once it succeeds — back to its
+// minute.
+func TestLoopBacksOffAndCountsFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	cli, _ := loopClock(t, ctx, true)
+
+	var mu sync.Mutex
+	failing := 3
+	clock.SetKilnLook(func(ctx context.Context) ([]loom.Command, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failing > 0 {
+			failing--
+			return nil, errors.New("the kiln is cold")
+		}
+		return nil, nil
+	})
+	kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+	if err := cli.Dispatch(ctx, &clockgen.LightKiln{CommandBase: kiln}); err != nil {
+		t.Fatal(err)
+	}
+	for want := 1; want <= 3; want++ {
+		waitFor(t, ctx, fmt.Sprintf("failure %d in a row", want), func() bool { return dueOf(t, ctx, cli, kiln).Failures >= want })
+		due := dueOf(t, ctx, cli, kiln)
+		if due.Failures != want {
+			t.Fatalf("read %d failures in a row, want %d", due.Failures, want)
+		}
+		if wait, backoff := due.NextLook.Sub(due.Looked), time.Second<<(want-1); wait != backoff {
+			t.Errorf("after failure %d the next look is %s after it, want %s", want, wait, backoff)
+		}
+		if due.LastError != "the kiln is cold" || due.Parked {
+			t.Errorf("after failure %d: last error %q, parked %v", want, due.LastError, due.Parked)
+		}
+	}
+	waitFor(t, ctx, "the look that succeeds", func() bool { return dueOf(t, ctx, cli, kiln).Failures == 0 })
+	due := dueOf(t, ctx, cli, kiln)
+	if due.LastError != "" {
+		t.Errorf("after a look that succeeded the last error is %q", due.LastError)
+	}
+	if wait := due.NextLook.Sub(due.Looked); wait != loom.LoopEvery {
+		t.Errorf("after a look that succeeded the next look is %s after it, want the minute", wait)
+	}
+}
+
+// TestLoopParksPastTheFailureLimit: a look that always fails is parked
+// once Config.LoopFailureLimit fail in a row, with a wait on its
+// operators. Parked, it is not looked at again on its own; an event
+// brings one look (which fails, and it stays parked), and ending the
+// operators' wait clears the count and looks at it at once. LoopDue and
+// Status both report it parked.
+func TestLoopParksPastTheFailureLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cli, _ := loopClockWith(t, ctx, true, loom.Config{LoopFailureLimit: 3})
+
+	var mu sync.Mutex
+	broken := true
+	clock.SetKilnLook(func(ctx context.Context) ([]loom.Command, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if broken {
+			return nil, errors.New("the kiln is cracked")
+		}
+		return nil, nil
+	})
+	looks := func(kiln loom.CommandBase) int {
+		n, _ := clock.KilnLooks(kiln.AggregateID.String())
+		return n
+	}
+	kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+	if err := cli.Dispatch(ctx, &clockgen.LightKiln{CommandBase: kiln}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "the kiln to be parked", func() bool { return dueOf(t, ctx, cli, kiln).Parked })
+	due := dueOf(t, ctx, cli, kiln)
+	if due.Failures != 3 || due.LastError != "the kiln is cracked" {
+		t.Errorf("parked with %d failures (%q), want 3", due.Failures, due.LastError)
+	}
+	var parkedOn *loom.Wait
+	for i, w := range due.Waits {
+		if w.Name == loom.LoopParkedWait {
+			parkedOn = &due.Waits[i]
+		}
+	}
+	if parkedOn == nil || parkedOn.Owner != loom.LoopParkedOwner {
+		t.Fatalf("parked holding waits %+v, want %s owned by %s", due.Waits, loom.LoopParkedWait, loom.LoopParkedOwner)
+	}
+	if got := due.NextLook.Sub(due.Looked); got != loom.LoopParkFor {
+		t.Errorf("parked, the next look is %s after the last, want %s", got, loom.LoopParkFor)
+	}
+	st, err := cli.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Loops.Parked != 1 || len(st.Loops.ParkedLoops) != 1 || st.Loops.ParkedLoops[0].ID != kiln.AggregateID || !st.Loops.ParkedLoops[0].Parked {
+		t.Errorf("Status.Loops reads %+v, want the kiln parked", st.Loops)
+	}
+
+	// parked, it is not looked at on its own: well past the 4s its
+	// backoff would have given, nothing has moved
+	seen := looks(kiln)
+	time.Sleep(6 * time.Second)
+	if n, d := looks(kiln), dueOf(t, ctx, cli, kiln); n != seen || d.Failures != 3 {
+		t.Fatalf("parked, the kiln was looked at %d more times (%d failures)", n-seen, d.Failures)
+	}
+
+	// an event brings one look; it fails, and the kiln stays parked
+	if err := cli.Dispatch(ctx, &clockgen.StokeKiln{CommandBase: kiln}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "a look for the event", func() bool { return looks(kiln) > seen })
+	waitFor(t, ctx, "the event's look to be noted", func() bool { return dueOf(t, ctx, cli, kiln).Failures == 4 })
+	if d := dueOf(t, ctx, cli, kiln); !d.Parked {
+		t.Error("a failed look for an event unparked the kiln")
+	}
+
+	// its operators fix it and answer the wait: it is looked at at once,
+	// succeeds, and is back on its minute
+	mu.Lock()
+	broken = false
+	mu.Unlock()
+	seen = looks(kiln)
+	if err := cli.EndWait(ctx, "Kiln", kiln.Namespace, kiln.AggregateID, loom.LoopParkedWait); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ctx, "a look once the operators answered", func() bool { return looks(kiln) > seen })
+	waitFor(t, ctx, "the kiln to be unparked", func() bool {
+		d := dueOf(t, ctx, cli, kiln)
+		return !d.Parked && d.Failures == 0 && d.LastError == ""
+	})
+	if st, err := cli.Status(ctx); err != nil || st.Loops.Parked != 0 {
+		t.Errorf("after the answer Status.Loops reads %+v (%v), want nothing parked", st.Loops, err)
+	}
 }

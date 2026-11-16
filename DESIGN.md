@@ -124,7 +124,13 @@ Rules enforced at parse/validate time:
   row the minute shortens to `loom.LoopBackoff(failures)`: a second after
   the first failure, doubling with each one after, never past the minute;
   `LoopState.AfterLook` counts them, and a look that succeeds clears
-  them. A look reads why it was called
+  them. A look that panics is recovered and counted like any failure.
+  Past `Config.LoopFailureLimit` (10) failures in a row the instance is
+  parked (`LoopState.ParkPast`): it holds the wait `loom.looks-failing`
+  on its `operators` for a day and has no minute, so only an event, that
+  wait's deadline, or `Client.EndWait` on it (which clears the count and
+  looks at once) brings a look. `Client.LoopDue` and `Status.Loops`
+  report the count, the last error and what is parked. A look reads why it was called
   with `loom.LookingAt(ctx)`: whether an event arrived, and which waits
   have expired. `loomtest.Loop` runs a look under that rule with no
   database
