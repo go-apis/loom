@@ -153,6 +153,20 @@ returns `loom.NotYet("what it waits for")` and is retried the same way.
 Makes unnecessary: retry loops with sleeps inside a reaction; a backoff
 ladder kept as fields on an aggregate; a timer armed to look again.
 
+### Background-work hooks and the redrive ladder
+
+**Since** unreleased · **adopt rule** none yet
+
+`Config.OnDeadLetter`, `OnRunnerLag` and `OnEffectInDoubt` are called
+once per occurrence, by the process lease holder, when a letter parks for
+good, a runner falls more than `RunnerLagThreshold` behind, or an effect
+is left in doubt. `Config.RedriveLadder` redrives a dead letter on a list
+of delays first; `loom.Persistent(err)` dead-letters a reaction at once.
+
+Makes unnecessary: a job that polls `/dead_letters` and redrives them by
+hand; a settle sweep over unsettled effects; an alert on runner lag
+built outside the service.
+
 ## Values people change
 
 ### Settings

@@ -87,6 +87,8 @@ ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS failing_seq bigint NOT NUL
 ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS attempts int NOT NULL DEFAULT 0;
 ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
 ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS stalled_since timestamptz;
+-- OnRunnerLag has been told the runner is behind (hooks.go)
+ALTER TABLE loom_checkpoints ADD COLUMN IF NOT EXISTS lag_notified_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS loom_dedup (
 	service   text NOT NULL,
@@ -273,6 +275,9 @@ CREATE TABLE IF NOT EXISTS loom_effects (
 	PRIMARY KEY (service, scope, key)
 );
 CREATE INDEX IF NOT EXISTS loom_effects_unsettled ON loom_effects (service, status) WHERE status <> 'done';
+-- a reaction found the effect in doubt; OnEffectInDoubt was told (hooks.go)
+ALTER TABLE loom_effects ADD COLUMN IF NOT EXISTS in_doubt_at timestamptz;
+ALTER TABLE loom_effects ADD COLUMN IF NOT EXISTS doubt_notified_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS loom_dead_letters (
 	id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -283,6 +288,12 @@ CREATE TABLE IF NOT EXISTS loom_dead_letters (
 	attempts  int NOT NULL,
 	parked_at timestamptz NOT NULL DEFAULT now()
 );
+-- the redrive ladder: redrives made, when the next is due (NULL: none
+-- left), and when OnDeadLetter was told (hooks.go)
+ALTER TABLE loom_dead_letters ADD COLUMN IF NOT EXISTS redrives int NOT NULL DEFAULT 0;
+ALTER TABLE loom_dead_letters ADD COLUMN IF NOT EXISTS redrive_at timestamptz;
+ALTER TABLE loom_dead_letters ADD COLUMN IF NOT EXISTS notified_at timestamptz;
+CREATE INDEX IF NOT EXISTS loom_dead_letters_redrive ON loom_dead_letters (service, redrive_at) WHERE redrive_at IS NOT NULL;
 `
 
 // Migrate applies the storage schema, including any @table entity tables

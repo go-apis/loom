@@ -94,8 +94,13 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 			}
 		}
 	}
-	if localProcesses {
+	// the watchdog runs on the lease holder: a service watched for its
+	// dead letters or lag stands for the lease even with no local process
+	if localProcesses || c.watching() {
 		go c.runElection(ctx, poll)
+	}
+	if c.watching() {
+		go c.runWatchdog(ctx, poll)
 	}
 	return nil
 }
@@ -892,6 +897,10 @@ func (c *Client) reactWithRetry(ctx context.Context, p *ReactorDef, evt *Event) 
 		if IsNotYet(err) {
 			return err
 		}
+		// will not pass: dead-letter it now (hooks.go)
+		if IsPersistent(err) {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return err
@@ -1033,9 +1042,9 @@ func (c *Client) parkOn(ctx context.Context, q dbConn, runner string, evt *Event
 	c.log.ErrorContext(ctx, "parking event to dead letters", "runner", runner, "type", evt.Type, "error", cause)
 	c.tel.count(ctx, c.tel.parked, 1, attribute.String("loom.runner", runner))
 	_, err := q.Exec(ctx, `
-		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
-		VALUES ($1,$2,$3,$4,$5)`,
-		c.reg.Service, runner, raw, cause.Error(), attempts)
+		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts, redrive_at)
+		VALUES ($1,$2,$3,$4,$5,$6)`,
+		c.reg.Service, runner, raw, cause.Error(), attempts, c.firstRedrive(runner, cause))
 	return err
 }
 
@@ -1088,7 +1097,9 @@ type DeadLetter struct {
 	Envelope json.RawMessage `json:"envelope"`
 	Error    string          `json:"error"`
 	Attempts int             `json:"attempts"`
-	ParkedAt time.Time       `json:"parked_at"`
+	// Redrives is how many times Config.RedriveLadder has redriven it.
+	Redrives int       `json:"redrives"`
+	ParkedAt time.Time `json:"parked_at"`
 }
 
 // DeadLetters lists parked deliveries, oldest first.
@@ -1097,7 +1108,7 @@ func (c *Client) DeadLetters(ctx context.Context, limit int) ([]DeadLetter, erro
 		limit = 100
 	}
 	rows, err := c.db.Query(ctx, `
-		SELECT id, runner, envelope, error, attempts, parked_at
+		SELECT id, runner, envelope, error, attempts, redrives, parked_at
 		FROM loom_dead_letters
 		WHERE service=$1
 		ORDER BY id ASC
@@ -1110,7 +1121,7 @@ func (c *Client) DeadLetters(ctx context.Context, limit int) ([]DeadLetter, erro
 	var out []DeadLetter
 	for rows.Next() {
 		var d DeadLetter
-		if err := rows.Scan(&d.ID, &d.Runner, &d.Envelope, &d.Error, &d.Attempts, &d.ParkedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Runner, &d.Envelope, &d.Error, &d.Attempts, &d.Redrives, &d.ParkedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

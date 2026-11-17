@@ -250,10 +250,12 @@ func (c *Client) claimEffect(ctx context.Context, p *ReactorDef, scope, key stri
 		}
 		hook := c.reconcile[effectName(key)]
 		if hook == nil {
+			c.markInDoubt(ctx, scope, key)
 			return nil, false, &EffectInDoubtError{Scope: scope, Key: key}
 		}
 		result, executed, herr := hook(ctx, scope, key)
 		if herr != nil {
+			c.markInDoubt(ctx, scope, key)
 			return nil, false, &EffectInDoubtError{Scope: scope, Key: key, Reconcile: herr}
 		}
 		if !executed {
@@ -277,7 +279,8 @@ func (c *Client) claimEffect(ctx context.Context, p *ReactorDef, scope, key stri
 // one more attempt, running again.
 func (c *Client) reclaimEffect(ctx context.Context, scope, key, from string) (replay json.RawMessage, run bool, err error) {
 	tag, err := c.db.Exec(ctx, `
-		UPDATE loom_effects SET status='running', attempts=attempts+1, error='', started_at=now(), settled_at=NULL
+		UPDATE loom_effects SET status='running', attempts=attempts+1, error='', started_at=now(), settled_at=NULL,
+			in_doubt_at=NULL, doubt_notified_at=NULL
 		WHERE service=$1 AND scope=$2 AND key=$3 AND status=$4`,
 		c.reg.Service, scope, key, from)
 	if err != nil {

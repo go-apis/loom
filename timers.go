@@ -346,9 +346,9 @@ func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, met
 func (c *Client) parkTimer(ctx context.Context, q executor, key, cmdType string, cmdRaw []byte, cause error) error {
 	envelope, _ := json.Marshal(map[string]any{"timer_key": key, "command_type": cmdType, "command": json.RawMessage(cmdRaw)})
 	_, err := q.Exec(ctx, `
-		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
-		VALUES ($1,'timer',$2,$3,$4)`,
-		c.reg.Service, envelope, cause.Error(), processRetries)
+		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts, redrive_at)
+		VALUES ($1,'timer',$2,$3,$4,$5)`,
+		c.reg.Service, envelope, cause.Error(), processRetries, c.firstRedrive("timer", cause))
 	return err
 }
 

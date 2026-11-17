@@ -65,6 +65,39 @@ type Config struct {
 	// still parks for an operator. See ReconcileFunc.
 	Reconcile map[string]ReconcileFunc
 
+	// OnDeadLetter is called once for each dead letter, on the instance
+	// holding the process lease, when no redrive is left to heal it: its
+	// RedriveLadder is spent, it was parked with a Persistent error, or
+	// it has no redrive (a skipped projection event). Optional. See
+	// hooks.go.
+	OnDeadLetter func(ctx context.Context, letter DeadLetter)
+
+	// RedriveLadder is the delays, from the park and then from each failed
+	// redrive, at which a process or timer dead letter is redriven before
+	// OnDeadLetter is called: []time.Duration{time.Minute, 10 *
+	// time.Minute} redrives a letter a minute after it parks and ten
+	// minutes after that, then reports it. Empty (the default) redrives
+	// nothing on its own.
+	RedriveLadder []time.Duration
+
+	// OnRunnerLag is called once, on the instance holding the process
+	// lease, when a projection or local-event process runner falls behind
+	// by more than RunnerLagThreshold: the oldest event of a type it
+	// subscribes to that it has not handled was appended longer ago than
+	// that. It is called again only after the runner has caught up to
+	// within the threshold. Optional.
+	OnRunnerLag func(ctx context.Context, lag RunnerLag)
+
+	// RunnerLagThreshold is OnRunnerLag's threshold. Default 1m.
+	RunnerLagThreshold time.Duration
+
+	// OnEffectInDoubt is called once, on the instance holding the process
+	// lease, for each Once effect a reaction found claimed and never
+	// settled (the call may or may not have happened) that neither
+	// @idempotent nor its Reconcile hook could settle. The effect stays in
+	// doubt for ResolveEffect. Optional.
+	OnEffectInDoubt func(ctx context.Context, effect EffectRecord)
+
 	// SeriesPartitionAhead is how many days of @retain series partitions
 	// maintenance keeps created in advance on plain Postgres. Default 7.
 	SeriesPartitionAhead int
@@ -158,6 +191,13 @@ type Client struct {
 
 	reconcile map[string]ReconcileFunc // Config.Reconcile, by effect name
 
+	// background-work hooks (hooks.go)
+	onDeadLetter    func(context.Context, DeadLetter)
+	onRunnerLag     func(context.Context, RunnerLag)
+	onEffectInDoubt func(context.Context, EffectRecord)
+	ladder          []time.Duration
+	lagThreshold    time.Duration
+
 	seriesAhead int           // Config.SeriesPartitionAhead
 	logLockWait time.Duration // Config.LogLockWait
 	seriesFuncs atomic.Bool   // the series partition functions exist (seriesfuncs.go)
@@ -197,30 +237,38 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 	c := &Client{
-		db:             cfg.DB,
-		bus:            cfg.Bus,
-		reg:            cfg.Registry,
-		log:            cfg.Logger.With("service", cfg.Registry.Service),
-		readerNudge:    make(chan struct{}, 1),
-		fan:            &logFanout{},
-		relayNudge:     make(chan struct{}, 1),
-		batchNudge:     make(chan struct{}, 1),
-		stepSem:        make(chan struct{}, cfg.StepConcurrency),
-		runnerIdlePoll: cfg.RunnerIdlePoll,
-		notifyNudge:    make(chan struct{}, 1),
-		watchers:       map[chan struct{}]bool{},
-		keys:           cfg.Keys,
-		blobs:          cfg.Blobs,
-		deks:           map[string][]byte{},
-		tables:         buildTables(cfg.Registry),
-		series:         buildSeries(cfg.Registry),
-		tel:            newTelemetry(cfg.Registry.Service),
-		retries:        cfg.ConflictRetries,
-		loopFails:      cfg.LoopFailureLimit,
-		reconcile:      cfg.Reconcile,
-		seriesAhead:    cfg.SeriesPartitionAhead,
-		gen:            generationFrom(cfg.Generation, cfg.Revision),
-		release:        releaseFrom(cfg.Release),
+		db:              cfg.DB,
+		bus:             cfg.Bus,
+		reg:             cfg.Registry,
+		log:             cfg.Logger.With("service", cfg.Registry.Service),
+		readerNudge:     make(chan struct{}, 1),
+		fan:             &logFanout{},
+		relayNudge:      make(chan struct{}, 1),
+		batchNudge:      make(chan struct{}, 1),
+		stepSem:         make(chan struct{}, cfg.StepConcurrency),
+		runnerIdlePoll:  cfg.RunnerIdlePoll,
+		notifyNudge:     make(chan struct{}, 1),
+		watchers:        map[chan struct{}]bool{},
+		keys:            cfg.Keys,
+		blobs:           cfg.Blobs,
+		deks:            map[string][]byte{},
+		tables:          buildTables(cfg.Registry),
+		series:          buildSeries(cfg.Registry),
+		tel:             newTelemetry(cfg.Registry.Service),
+		retries:         cfg.ConflictRetries,
+		loopFails:       cfg.LoopFailureLimit,
+		reconcile:       cfg.Reconcile,
+		onDeadLetter:    cfg.OnDeadLetter,
+		onRunnerLag:     cfg.OnRunnerLag,
+		onEffectInDoubt: cfg.OnEffectInDoubt,
+		ladder:          cfg.RedriveLadder,
+		lagThreshold:    cfg.RunnerLagThreshold,
+		seriesAhead:     cfg.SeriesPartitionAhead,
+		gen:             generationFrom(cfg.Generation, cfg.Revision),
+		release:         releaseFrom(cfg.Release),
+	}
+	if c.lagThreshold <= 0 {
+		c.lagThreshold = defaultRunnerLagThreshold
 	}
 	if c.seriesAhead <= 0 {
 		c.seriesAhead = defaultSeriesPartitionAhead
