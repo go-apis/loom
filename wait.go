@@ -113,8 +113,8 @@ func (c *Client) Wait(ctx context.Context, aggregate, namespace string, id uuid.
 		return fmt.Errorf("loom: %s declares no @loop: a wait belongs to a loop", aggregate)
 	}
 	w.Deadline = w.Deadline.UTC()
-	return c.changeWaits(ctx, aggregate, namespace, id, true, func(held []Wait) []Wait {
-		return settleWaits(held, Looking{}, &lookSaid{waits: []Wait{w}})
+	return c.changeWaits(ctx, aggregate, namespace, id, true, func(s LoopState) (LoopState, bool) {
+		return s.Waited(w), false
 	})
 }
 
@@ -123,8 +123,8 @@ func (c *Client) Wait(ctx context.Context, aggregate, namespace string, id uuid.
 // instance's LoopParkedWait unparks it: its failures are cleared and it
 // is looked at again at once.
 func (c *Client) EndWait(ctx context.Context, aggregate, namespace string, id uuid.UUID, name string) error {
-	return c.changeWaits(ctx, aggregate, namespace, id, false, func(held []Wait) []Wait {
-		return settleWaits(held, Looking{}, &lookSaid{stopped: []string{name}})
+	return c.changeWaits(ctx, aggregate, namespace, id, false, func(s LoopState) (LoopState, bool) {
+		return s.WaitEnded(name)
 	})
 }
 
@@ -132,7 +132,7 @@ func (c *Client) EndWait(ctx context.Context, aggregate, namespace string, id uu
 // brings its next look to the first deadline, when that is sooner.
 // create writes the row for an instance that has none. A parked
 // instance left without its LoopParkedWait is unparked and due at once.
-func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, id uuid.UUID, create bool, change func([]Wait) []Wait) error {
+func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, id uuid.UUID, create bool, change func(LoopState) (LoopState, bool)) error {
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -163,9 +163,11 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 	if err != nil {
 		return err
 	}
-	var held []Wait
-	_ = json.Unmarshal(raw, &held)
-	waits := change(held)
+	var held LoopState
+	_ = json.Unmarshal(raw, &held.Waits)
+	held.Parked = parked
+	changed, lookNow := change(held)
+	waits := changed.Waits
 	out, err := json.Marshal(waits)
 	if err != nil {
 		return err
@@ -182,7 +184,7 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 		c.reg.Service, aggregate, namespace, id, out, first); err != nil {
 		return err
 	}
-	if parked && !holdsWait(waits, LoopParkedWait) {
+	if lookNow {
 		// its operators answered: look again now, from a clean count
 		if _, err := tx.Exec(ctx, `
 			UPDATE loom_loop_due SET parked=false, failures=0, next_look=clock_timestamp()

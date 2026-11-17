@@ -76,7 +76,13 @@ func TestALoopKeepsItsDeclaredDeadline(t *testing.T) {
 	dispatch(&clockgen.HeatOven{CommandBase: oven})
 	looks := len(clock.OvenToldOf(oven.AggregateID.String()))
 	waitFor(t, ctx, "a look for the event", func() bool { return len(clock.OvenToldOf(oven.AggregateID.String())) > looks })
-	time.Sleep(2500 * time.Millisecond)
+	waitFor(t, ctx, "the event's look to be noted", func() bool {
+		due, ok, err := cli.LoopDue(ctx, "Oven", oven.Namespace, oven.AggregateID)
+		return err == nil && ok && !due.Event.After(due.Looked)
+	})
+	// that look read what fired from the row: a deadline started again
+	// would be held now (loomtest's TestADeclaredDeadlineIsKeptInABubble
+	// walks the hour after)
 	if _, ok := held(); ok {
 		t.Error("a fired deadline started again while the oven stayed heating")
 	}

@@ -151,8 +151,23 @@ Rules enforced at parse/validate time:
   looks at once) brings a look. `Client.LoopDue` and `Status.Loops`
   report the count, the last error and what is parked. A look reads why it was called
   with `loom.LookingAt(ctx)`: whether an event arrived, and which waits
-  have expired. `loomtest.Loop` runs a look under that rule with no
-  database
+  have expired. The part of a look that reads no clock and no store is
+  one `loom.LookTurn` (`StartLook`, `Context`, `End`): the declared
+  deadlines kept, what the look is told, what it says, and the state and
+  next look after it. The runner makes every look through one, and
+  `loomtest.Loop` / `loomtest.LoopOf` make the same turns with no
+  database. Their `RunFor` / `RunUntil` sleep to each look the rule
+  makes due and to each timer (`loomtest.Timers`, which holds what
+  `loom.At` / `loom.After` schedule), so inside a `testing/synctest`
+  bubble a test walks a backoff, a park, a day's wait or a week's
+  approval in no real time and in the same order every run. An
+  approval's deadline action and an answer's checks are
+  `ApprovalRecord.PastDeadline` / `Answer`, and an outside wait's start
+  and end `LoopState.Waited` / `WaitEnded`, shared the same way. Left
+  out, being the store's: claims and leases, the newest-generation rule,
+  a look's commands as one unit of work, the reactions they start, and
+  supervisors' children; a durable `@retry`'s backoff is jittered
+  (`math/rand`), so it is not walked in a bubble either
 - an `upload` needs an `on uploaded` command; both lifecycle commands must
   belong to the enclosing aggregate/record and carry exactly one required
   `file` field (loom fills it); upload names are service-unique — they

@@ -225,9 +225,10 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		_, _, err := c.looked(ctx, l, start, Looking{}, nil, l.fired, false, nil, nil, 0)
 		return err
 	}
-	said := &lookSaid{}
-	fired := l.fired
-	var parent *ChildRef // the instance's supervisor, when it declares one
+	var (
+		parent *ChildRef // the instance's supervisor, when it declares one
+		agg    AggregateState
+	)
 	if len(def.Deadlines) > 0 || def.Parent != nil {
 		// the declared deadlines' waits follow the state as it stands,
 		// and the state names the instance's parent
@@ -240,22 +241,10 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 				parent = &ChildRef{Aggregate: def.Parent.Aggregate, Namespace: l.namespace, ID: pid}
 			}
 		}
-		begin, stop, still := keepDeadlines(def.Deadlines, state, l.state.Waits, l.fired, start)
-		said.waits, said.stopped, fired = append(said.waits, begin...), append(said.stopped, stop...), still
-		kept := l.state.Waits[:0:0]
-		for _, w := range l.state.Waits {
-			if !contains(stop, w.Name) {
-				kept = append(kept, w)
-			}
-		}
-		l.state.Waits = append(kept, begin...)
+		agg = state
 	}
-	told := l.state.Look(start)
-	for _, w := range told.Expired {
-		if isDeadlineWait(w.Name) && !contains(fired, w.Name) {
-			fired = append(fired, w.Name)
-		}
-	}
+	turn := StartLook(l.state, l.fired, def.Deadlines, agg, start)
+	told := &turn.Told
 	told.Aggregate, told.Namespace, told.ID = l.aggregate, l.namespace, l.id
 	if c.supervises(l.aggregate) {
 		children, err := c.childrenOf(ctx, l.aggregate, l.namespace, l.id)
@@ -266,16 +255,14 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	}
 	// an approval nobody answered takes its deadline action before the
 	// look that is told its wait has expired
-	if err := c.settleAtDeadline(ctx, l.aggregate, l.namespace, l.id, told.Expired); err != nil {
+	if err := c.settleAtDeadline(ctx, l.aggregate, l.namespace, l.id, start, told.Expired); err != nil {
 		return err
 	}
 	var err error
 	if told.Approvals, err = c.approvalsOf(ctx, l.aggregate, l.namespace, l.id); err != nil {
 		return err
 	}
-	lctx := withReader(ctx, c)
-	lctx = WithLooking(lctx, told)
-	lctx = context.WithValue(lctx, lookSaidKey{}, said)
+	lctx := turn.Context(withReader(ctx, c))
 	lookErr := func() (err error) {
 		// a look that panics has failed; it does not take the process
 		defer func() {
@@ -290,7 +277,11 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		}
 		return err
 	}()
-	if lookErr == nil && said.done {
+	// a look that failed started and ended nothing: what it said is
+	// dropped with it, and the waits it was told had expired are told
+	// again
+	turn.settle(lookErr)
+	if turn.Done() {
 		// done, unless an event has arrived since the look began
 		_, err := c.db.Exec(ctx, `
 			DELETE FROM loom_loop_due
@@ -301,18 +292,12 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 			return err
 		}
 	}
-	// a look that failed started and ended nothing: what it said is
-	// dropped with it, and the waits it was told had expired are told
-	// again
-	if lookErr != nil {
-		told, said, fired = Looking{}, &lookSaid{}, l.fired
-	}
-	if len(said.approvals) > 0 {
-		if err := c.writeApprovals(ctx, c.db, l.aggregate, l.namespace, l.id, said.approvals); err != nil {
+	if asked := turn.Approvals(); len(asked) > 0 {
+		if err := c.writeApprovals(ctx, c.db, l.aggregate, l.namespace, l.id, asked); err != nil {
 			return err
 		}
 	}
-	parked, lastErr, err := c.looked(ctx, l, start, told, said, fired, true, lookErr, parent, len(told.ChildNotes))
+	parked, lastErr, err := c.looked(ctx, l, start, turn.Told, turn.said, turn.Fired, true, lookErr, parent, len(turn.Told.ChildNotes))
 	if err != nil {
 		return err
 	}
@@ -323,18 +308,18 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		if parked {
 			notes = append(notes, ChildNote{ChildRef: self, What: ChildParked, LastError: lastErr, At: start})
 		}
-		for _, w := range told.Expired {
+		for _, w := range turn.Told.Expired {
 			notes = append(notes, ChildNote{ChildRef: self, What: ChildWaitExpired, Wait: w.Name, At: start})
 		}
-		if lookErr == nil && said.done {
+		if turn.Done() {
 			notes = append(notes, ChildNote{ChildRef: self, What: ChildDone, At: start})
 		}
 		if err := c.noteParent(ctx, *parent, notes); err != nil {
 			return err
 		}
 	}
-	if lookErr == nil && len(said.restarts) > 0 {
-		if err := c.restartChildren(ctx, ChildRef{Aggregate: l.aggregate, Namespace: l.namespace, ID: l.id}, said.restarts); err != nil {
+	if restarts := turn.Restarts(); lookErr == nil && len(restarts) > 0 {
+		if err := c.restartChildren(ctx, ChildRef{Aggregate: l.aggregate, Namespace: l.namespace, ID: l.id}, restarts); err != nil {
 			return err
 		}
 	}
@@ -377,21 +362,11 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 	}
 	var holding []Wait
 	_ = json.Unmarshal(held, &holding)
-	waiting := settleWaits(holding, told, said)
-
-	state := LoopState{Looked: start, Waits: waiting, Failures: prior.Failures, LastError: prior.LastError, Parked: prior.Parked}
-	if made {
-		state = state.AfterLook(start, lookErr).ParkPast(c.loopFails)
-	}
+	prior.Waits = holding
 	if event != nil {
-		state.Event = *event
+		prior.Event = *event
 	}
-	next := state.NextLook()
-	if said != nil && said.again > 0 {
-		if asked := start.Add(said.again); asked.Before(next) {
-			next = asked
-		}
-	}
+	state, next := lookEnded(prior, start, told, said, made, lookErr, c.loopFails)
 	raw, err := json.Marshal(state.Waits)
 	if err != nil {
 		return false, "", err
