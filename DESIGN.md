@@ -729,6 +729,29 @@ console, redrive) never face the internet. GraphQL numbers: schema
 `int` is int64 and emits/serves the `Long` scalar everywhere — money in
 cents must not squeeze through a 32-bit Int (decided 2026-07-17).
 
+The gateway serves agents too. `graphql.New` builds the MCP server
+(package `mcp`: search, describe, dispatch, get, list) over its own
+executor, and the handler answers any path ending in `/mcp` with it and
+any path under `/.well-known/oauth-protected-resource` with the RFC 9728
+sign-in document naming `Config.Issuer`; every other path is GraphQL.
+Mount it at the root (`mux.Handle("/", gateway)`) and a service serves
+MCP with no wiring of its own; `MCPOptions.Off` opts out (both paths
+404). Each tool call is one in-process operation of the same gateway,
+so Auth, Policy, `@role`, `@allow`, the depth limit and redaction apply
+exactly as to an HTTP caller. The Executor contract lives in
+`internal/gateway` so `graphql` can import `mcp` without a cycle;
+`graphql.Executor` and `graphql.Result` are aliases of it.
+
+The MCP server speaks MCP 2026-07-28 (go-sdk v1.8.0, stateless
+streamable HTTP): no `initialize`, no `Mcp-Session-Id`, `server/discover`,
+the version in each request's `_meta`, `resultType` on every result.
+Clients on 2025-11-25 and earlier, with `initialize` and a session id,
+are still served. It advertises tools (no `listChanged`: the five never
+change) and nothing else. Not yet mapped: an approval or wait a command
+opens answering `input_required`, and a loop instance's work as a task
+(`io.modelcontextprotocol/tasks`) — both need the dispatch to wait on a
+look that runs after the command commits.
+
 Input nullability follows the schema, not Go: a GraphQL input field is
 NonNull exactly when the schema marks it required, at a command's top
 level (`CommandDef.Required`) and inside a nested type

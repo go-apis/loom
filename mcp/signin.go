@@ -77,9 +77,9 @@ func (s SignIn) Metadata() (http.Handler, error) {
 	}), nil
 }
 
-// challenge is the WWW-Authenticate a request with no usable token is
+// Challenge is the WWW-Authenticate a request with no usable token is
 // answered with: where to read how to sign in.
-func (s SignIn) challenge() (string, error) {
+func (s SignIn) Challenge() (string, error) {
 	meta, err := s.MetadataURL()
 	if err != nil {
 		return "", err

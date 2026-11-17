@@ -229,6 +229,32 @@ command that cannot be undone.
 Makes unnecessary: hand-written resolvers, REST handlers and MCP tools
 over the same commands, and the access checks repeated in each.
 
+### Every gateway serves MCP
+
+**Since** the release after v0.127.0 · **adopt rule** none yet
+
+The gateway `graphql.New` returns serves its MCP server at `/mcp` and,
+with `Config.Issuer`, the OAuth protected-resource document naming the
+issuer, with no wiring of the service's own. A caller may do through MCP
+exactly what it may do through GraphQL: each tool call is one gateway
+operation under the same Auth, roles and `@allow` rules.
+`MCPOptions.Off` opts out.
+
+Makes unnecessary: a hand-mounted `mcp.New`/`mcp.Mount` and a
+hand-written `SignIn` beside every gateway.
+
+### MCP 2026-07-28
+
+**Since** the release after v0.127.0 · **adopt rule** none yet
+
+The MCP server is stateless as MCP 2026-07-28 has it: a client calls a
+tool in one request, with no `initialize` and no session, and
+`server/discover` says what the server speaks. Clients on 2025-11-25,
+with `initialize` and `Mcp-Session-Id`, keep working.
+
+Makes unnecessary: session affinity or sticky routing in front of a
+service's MCP endpoint.
+
 ## Running
 
 ### Generations and the process lease

@@ -27,6 +27,21 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   forward. Schema: `loom_timers`, `loom_batch_items` and `loom_plans`
   gain `command_version` (default 1, so rows already stored read as
   version 1, the only version a command had).
+- **Every gateway serves its MCP server.** `graphql.New` serves the
+  generated MCP server (search, describe, dispatch, get, list) at any
+  path ending in `/mcp`, and with `graphql.Config.Issuer` set, the RFC
+  9728 protected-resource document naming that issuer at
+  `/.well-known/oauth-protected-resource` (and `…/mcp`), which a 401
+  from `/mcp` names. Each call is one gateway operation under the
+  caller's Auth, Policy, `@role` and `@allow` gates. Mount the gateway
+  at the root to reach it; `graphql.Config.MCP` (`MCPOptions`) names
+  the server, sets its public `Resource` and `Scopes`, or opts out with
+  `Off`. `mcp.SignIn.Challenge` is exported.
+- **The MCP server speaks MCP 2026-07-28.** Stateless: no `initialize`,
+  no `Mcp-Session-Id`, `server/discover`, `resultType` on every result
+  (go-sdk v1.8.0). Clients on 2025-11-25 with `initialize` and a session
+  id are still served, with the same tools, inputs and results. The
+  server advertises tools only: no `listChanged`, and no `logging`.
 
 - **A loop supervises its children.** `@supervised_by(Parent, field)` on
   a `@loop` aggregate: a child that is parked, reaches its end or has a
