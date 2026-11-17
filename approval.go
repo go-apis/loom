@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -201,28 +200,18 @@ func (c *Client) AnswerApproval(ctx context.Context, aggregate, namespace string
 	if rec == nil {
 		return nil, fmt.Errorf("loom: %s %s has no approval %q", aggregate, id, name)
 	}
-	if rec.Settled() {
-		return nil, fmt.Errorf("loom: approval %q is %s already, by %s", name, rec.Status, rec.AnsweredBy)
-	}
 	var now time.Time
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return nil, err
 	}
-	if !now.Before(rec.Deadline) {
-		return nil, fmt.Errorf("loom: approval %q passed its deadline at %s: what it declared for the deadline stands", name, rec.Deadline.Format(time.RFC3339))
+	answered, err := rec.Answer(MetaFrom(ctx).Actor, answer, now)
+	if err != nil {
+		return nil, err
 	}
-	if !contains(answer.Roles, rec.Role) {
-		return nil, fmt.Errorf("%w (%s)", ErrNotYourApproval, rec.Role)
-	}
-	status := ApprovalRejected
-	if answer.Approve {
-		status = ApprovalApproved
-	}
-	actor := MetaFrom(ctx).Actor
 	if _, err := tx.Exec(ctx, `
 		UPDATE loom_approvals SET status=$6, answered_by=$7, reason=$8, answered_at=$9
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4 AND name=$5`,
-		c.reg.Service, aggregate, namespace, id, name, status, actor, strings.TrimSpace(answer.Reason), now); err != nil {
+		c.reg.Service, aggregate, namespace, id, name, answered.Status, answered.AnsweredBy, answered.Reason, now); err != nil {
 		return nil, err
 	}
 	// an answer is news for the loop: look now
@@ -238,25 +227,34 @@ func (c *Client) AnswerApproval(ctx context.Context, aggregate, namespace string
 	if err := c.EndWait(ctx, aggregate, namespace, id, approvalWait(name)); err != nil {
 		return nil, err
 	}
-	rec.Status, rec.AnsweredBy, rec.Reason, rec.AnsweredAt = status, actor, strings.TrimSpace(answer.Reason), &now
-	return rec, nil
+	return &answered, nil
 }
 
 // settleAtDeadline gives each approval whose wait has expired its
 // declared deadline action, if it is still open.
-func (c *Client) settleAtDeadline(ctx context.Context, aggregate, namespace string, id uuid.UUID, expired []Wait) error {
+func (c *Client) settleAtDeadline(ctx context.Context, aggregate, namespace string, id uuid.UUID, at time.Time, expired []Wait) error {
 	for _, w := range expired {
-		name, ok := strings.CutPrefix(w.Name, "approval:")
+		name, ok := approvalOfWait(w.Name)
 		if !ok {
 			continue
 		}
+		rec, err := c.approval(ctx, c.db, aggregate, namespace, id, name, false)
+		if err != nil {
+			return err
+		}
+		if rec == nil {
+			continue
+		}
+		settled, changed := rec.PastDeadline(at)
+		if !changed {
+			continue
+		}
+		// an answer that landed since the read stands
 		if _, err := c.db.Exec(ctx, `
-			UPDATE loom_approvals
-			SET status = CASE at_deadline WHEN 'approve' THEN 'approved' WHEN 'reject' THEN 'rejected' ELSE 'expired' END,
-			    answered_by = $6, answered_at = now()
+			UPDATE loom_approvals SET status=$6, answered_by=$7, answered_at=$8
 			WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4 AND name=$5
-			  AND status = 'open' AND deadline <= now()`,
-			c.reg.Service, aggregate, namespace, id, name, ApprovalByDeadline); err != nil {
+			  AND status = 'open'`,
+			c.reg.Service, aggregate, namespace, id, name, settled.Status, settled.AnsweredBy, at); err != nil {
 			return err
 		}
 	}

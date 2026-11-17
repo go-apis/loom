@@ -72,6 +72,26 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   `redrive_at`, `notified_at`; `loom_checkpoints` gains `lag_notified_at`;
   `loom_effects` gains `in_doubt_at`, `doubt_notified_at`. `DeadLetter`
   gains `Redrives`.
+- **loomtest runs time in a bubble.** `LoopScenario.RunFor` /
+  `RunUntil` make each look as the runtime's rule makes it due, and
+  fire each timer at its time, sleeping in between: inside
+  `synctest.Test` a test of a loop's backoff and parking, a wait a day
+  out or an approval a week out runs in no real time and the same way
+  every run. `loomtest.LoopOf(t, reg, aggregate, ns, id)` looks with the
+  registry's own look and keeps the aggregate's declared deadlines;
+  `FailureLimit`, `Dispatch`, `EndWait`, `Answer`, `Approval`, `Looks`,
+  `State`, `Parked` and `Done` round it out. `loomtest.Timers` holds
+  what `loom.At` / `loom.After` / `loom.CancelTimer` schedule and fires
+  it at its time; `ReactorScenario.Commands` hands a reaction's
+  commands to it. The scenario now ends a look as the runner does:
+  parked past the failure limit, `WaitFor` / `StopWaiting` /
+  `LookAgain` / `LookDone` / `AskApproval` honoured, a panic counted as
+  a failure. Underneath, the runner's pure part of a look is one
+  exported `loom.LookTurn` (`StartLook`), with `LoopState.Waited` /
+  `WaitEnded`, `ApprovalRecord.PastDeadline` / `Answer`,
+  `loom.ApprovalWait`, `loom.Scheduled` and `loom.CancelsTimer`, so the
+  harness and the runner share one rule. Two e2e tests drop 8.5s of
+  sleeps now walked in a bubble.
 
 - **A loop supervises its children.** `@supervised_by(Parent, field)` on
   a `@loop` aggregate: a child that is parked, reaches its end or has a

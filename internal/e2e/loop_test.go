@@ -376,13 +376,10 @@ func TestLoopParksPastTheFailureLimit(t *testing.T) {
 		t.Errorf("Status.Loops reads %+v, want the kiln parked", st.Loops)
 	}
 
-	// parked, it is not looked at on its own: well past the 4s its
-	// backoff would have given, nothing has moved
+	// parked, it is not looked at on its own: its next look is a day
+	// out (above). That nothing moves in the meantime is the rule's, and
+	// loomtest's TestALoopBacksOffAndParksInABubble walks the day.
 	seen := looks(kiln)
-	time.Sleep(6 * time.Second)
-	if n, d := looks(kiln), dueOf(t, ctx, cli, kiln); n != seen || d.Failures != 3 {
-		t.Fatalf("parked, the kiln was looked at %d more times (%d failures)", n-seen, d.Failures)
-	}
 
 	// an event brings one look; it fails, and the kiln stays parked
 	if err := cli.Dispatch(ctx, &clockgen.StokeKiln{CommandBase: kiln}); err != nil {

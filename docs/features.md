@@ -174,6 +174,33 @@ func (l *Look) LookItem(ctx context.Context) ([]loom.Command, error) {
 		return []loom.Command{&loomgen.Triage{Verdict: v.Label /* ... */}}, nil
 	}
 	return nil, nil // failed or expired: decide what happens instead
+### Time in a bubble: `loomtest` and `testing/synctest`
+
+**Since** the release after v0.127.0 · **adopt rule** none yet
+
+`loomtest.LoopOf(t, reg, "Item", ns, id)` looks at one instance of a
+`@loop` aggregate with no database, by the runner's own rule (one
+`loom.LookTurn` per look). `RunFor(d)` makes each look as it falls due —
+the minute, a second after an event, a wait's deadline, the backoff, the
+day a parked instance waits — and fires each `loom.At` / `loom.After`
+timer at its time. Inside `synctest.Test` the clock is the bubble's: a
+week of looks runs in milliseconds, the same way every run.
+`loomtest.Timers` does the same for the timers a reaction returns.
+
+Makes unnecessary: `time.Sleep` in tests of a backoff, a deadline or an
+expiry; an injected clock threaded through looks and reactions;
+end-to-end tests against Postgres to check when a look happens.
+
+```go
+func TestItemReleasedAfterADay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reader := (&loomtest.Reader{}).AddAggregate("Item", "shop", id, &loomgen.Item{Held: true, HeldAt: time.Now()})
+		item := loomtest.LoopOf(t, reg, "Item", "shop", id).Reading(reader)
+		item.RunFor(24 * time.Hour)
+		if last := item.Looks()[len(item.Looks())-1]; len(last.Commands) != 1 {
+			t.Fatalf("at the day the look answered %v", last.Commands)
+		}
+	})
 }
 ```
 
