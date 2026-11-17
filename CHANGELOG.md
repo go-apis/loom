@@ -69,6 +69,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   after the field has left. It does what a `policy <name>Timer` with its
   list of arming and cancelling events did (adopt rule `timer-policy`).
   Schema: `loom_loop_due` gains `deadlines_fired`.
+- **A failing look backs off, a panicking look is a failure, and a
+  look that keeps failing is parked.** The loop runner counts each
+  instance's failed looks in a row (`LoopState.Failures`,
+  `LastError`) and looks again after `LoopBackoff(failures)` — 1s,
+  doubling, never past `LoopEvery` — instead of every minute. A look
+  that panics is recovered and counted, not a crash. Past
+  `Config.LoopFailureLimit` (default 10) the instance is parked with
+  the wait `loom.looks-failing` on its `operators`; an event, the wait
+  ended with `Client.EndWait`, or its day-long deadline brings it back.
+  `Client.LoopDue` and the new `Status.Loops` report it. Schema:
+  `loom_loop_due` gains `failures`, `last_error` and `parked`.
 - **`loomgen.NewPartialRegistry`: the registry a test builds.** It is
   the whole registry from an `Impl` that need not bind everything: a
   declaration nothing is bound to is there with its definition and no

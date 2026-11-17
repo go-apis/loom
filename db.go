@@ -173,6 +173,9 @@ CREATE TABLE IF NOT EXISTS loom_loop_due (
 );
 CREATE INDEX IF NOT EXISTS loom_loop_due_next ON loom_loop_due (service, next_look);
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS deadlines_fired jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS failures int NOT NULL DEFAULT 0;
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS parked boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS loom_approvals (
 	service        text NOT NULL,

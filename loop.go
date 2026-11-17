@@ -29,7 +29,37 @@ const (
 	LoopEvery = time.Minute
 	// LoopSoon is how soon after an event the loop is looked at.
 	LoopSoon = time.Second
+	// LoopBackoffFirst is how soon a look that failed is looked at
+	// again. Each further failure in a row doubles it, up to LoopEvery.
+	LoopBackoffFirst = time.Second
+	// LoopFailureLimit is how many looks in a row may fail before the
+	// instance is parked (Config.LoopFailureLimit sets another).
+	LoopFailureLimit = 10
+	// LoopParkFor is how long a parked instance waits on its operators
+	// before it is looked at once more: nothing waits for ever.
+	LoopParkFor = 24 * time.Hour
+	// LoopParkedWait names the wait a parked instance holds, and
+	// LoopParkedOwner who is to answer it: ending it (Client.EndWait)
+	// looks at the instance again at once, its failures cleared.
+	LoopParkedWait  = "loom.looks-failing"
+	LoopParkedOwner = "operators"
 )
+
+// LoopBackoff is the longest a loop goes without a look after failures
+// failed looks in a row: LoopEvery for none, LoopBackoffFirst after the
+// first, doubling with each one after, never past LoopEvery. A failure
+// is most often passing — a refused command, a store blip — so the
+// next look comes soon, and less soon each time it fails again.
+func LoopBackoff(failures int) time.Duration {
+	if failures <= 0 {
+		return LoopEvery
+	}
+	d := LoopBackoffFirst
+	for i := 1; i < failures && d < LoopEvery; i++ {
+		d *= 2
+	}
+	return min(d, LoopEvery)
+}
 
 // Wait is something a loop is waiting on: an answer that is someone's to
 // give, and the time after which the loop stops waiting for it.
@@ -57,17 +87,75 @@ type LoopState struct {
 	Event time.Time
 	// Waits is what the loop is waiting on.
 	Waits []Wait
+	// Failures is how many looks in a row have failed, up to the last
+	// one: zero once a look succeeds.
+	Failures int
+	// LastError is why the last look failed; empty once one succeeds.
+	LastError string
+	// Parked is whether the instance is parked: its looks failed
+	// LoopFailureLimit times in a row, and it is looked at again only
+	// for an event, its LoopParkedWait answered, or a deadline.
+	Parked bool
+}
+
+// AfterLook is the state once a look made at at has ended, failed when
+// err is not nil: a failure adds one to the failures in a row and is
+// kept as LastError, and a look that did not fail ends the run and
+// unparks the instance.
+func (s LoopState) AfterLook(at time.Time, err error) LoopState {
+	s.Looked = at
+	if err != nil {
+		s.Failures++
+		s.LastError = err.Error()
+	} else {
+		s.Failures, s.LastError, s.Parked = 0, "", false
+		s.Waits = withoutWait(s.Waits, LoopParkedWait)
+	}
+	return s
+}
+
+// ParkPast parks the instance once its failures in a row reach limit:
+// it holds LoopParkedWait, owned by LoopParkedOwner, until LoopParkFor
+// after its last look, and is looked at no sooner unless an event
+// arrives or the wait is answered. A failure while parked waits again
+// from that look. Below the limit it changes nothing.
+func (s LoopState) ParkPast(limit int) LoopState {
+	if limit <= 0 || s.Failures < limit {
+		return s
+	}
+	s.Parked = true
+	s.Waits = append(withoutWait(s.Waits, LoopParkedWait), Wait{
+		Name:     LoopParkedWait,
+		Owner:    LoopParkedOwner,
+		Deadline: s.Looked.Add(LoopParkFor).UTC(),
+	})
+	return s
+}
+
+func withoutWait(waits []Wait, name string) []Wait {
+	out := make([]Wait, 0, len(waits))
+	for _, w := range waits {
+		if w.Name != name {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // NextLook is when the loop is to be looked at next: the earliest of
-// LoopEvery after the last look, LoopSoon after an event that has
-// arrived since, and the first deadline among its waits. A loop never
-// looked at is due at once: the zero time.
+// LoopEvery after the last look (LoopBackoff of its failures, when the
+// last looks failed), LoopSoon after an event that has arrived since,
+// and the first deadline among its waits. A parked loop has no minute:
+// only the event and the deadlines, LoopParkedWait's among them. A loop
+// never looked at is due at once: the zero time.
 func (s LoopState) NextLook() time.Time {
 	if s.Looked.IsZero() {
 		return time.Time{}
 	}
-	next := s.Looked.Add(LoopEvery)
+	next := s.Looked.Add(LoopBackoff(s.Failures))
+	if s.Parked {
+		next = s.Looked.Add(LoopParkFor)
+	}
 	if s.Event.After(s.Looked) {
 		if soon := s.Event.Add(LoopSoon); soon.Before(next) {
 			next = soon
