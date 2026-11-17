@@ -19,7 +19,7 @@ func openTicket(t *testing.T) (loom.CommandBase, *loomtest.LoopScenario) {
 	t.Helper()
 	ticket := loom.CommandBase{Namespace: "desk", AggregateID: uuid.New()}
 	reader := (&loomtest.Reader{}).AddAggregate("Ticket", "desk", ticket.AggregateID, &clockgen.Ticket{Status: "open"})
-	return ticket, loomtest.Loop(t, clock.NewRegistry(), clock.DecideTicket).Reading(reader).For("Ticket", "desk", ticket.AggregateID)
+	return ticket, loomtest.Loop(t, clock.NewRegistry(), clock.DecideTicket).Reading(reader).Instance("Ticket", "desk", ticket.AggregateID)
 }
 
 // TestALookAsksAnAgentAndDecidesOnItsAnswer: with no database and no

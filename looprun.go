@@ -245,7 +245,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	}
 	turn := StartLook(l.state, l.fired, def.Deadlines, agg, start)
 	// what AskAgent needs to know, beside whatever the deadlines said
-	turn.said.agentDefs, turn.said.meshOn, turn.said.meshTenant = def.Agents, c.mesh != nil, c.meshTenant
+	turn.Mesh(def.Agents, c.mesh != nil, c.meshTenant)
 	told := &turn.Told
 	told.Aggregate, told.Namespace, told.ID = l.aggregate, l.namespace, l.id
 	if c.supervises(l.aggregate) {
@@ -348,12 +348,6 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		}
 	}
 	return lookErr
-}
-
-// newSaid is what a look at one of the aggregate's instances starts
-// out having said: nothing, and what AskAgent needs to know.
-func (def *AggregateDef) newSaid(c *Client) *lookSaid {
-	return &lookSaid{agentDefs: def.Agents, meshOn: c.mesh != nil, meshTenant: c.meshTenant}
 }
 
 // looked notes a look made at start: the lease given up, the waits as

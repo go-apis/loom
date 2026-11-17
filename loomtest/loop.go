@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/go-apis/loom"
+	"github.com/go-apis/loom/mesh"
 )
 
 // --- loops ---
@@ -61,9 +63,15 @@ type LoopScenario struct {
 	asked     time.Time // a look due sooner than the rule says: LookAgain, or an answer
 	fired     []string
 	approvals map[string]loom.ApprovalRecord
-	done      bool
-	made      []LookMade
-	looking   bool
+	// the instance's agent requests, the agents its last look asked, and
+	// the fake Mesh their jobs are offered to (Mesh)
+	agents  map[string]loom.AgentRecord
+	asks    []loom.AgentAsked
+	mesh    *mesh.Fake
+	tenant  string
+	done    bool
+	made    []LookMade
+	looking bool
 
 	now    time.Time
 	told   loom.Looking
@@ -306,6 +314,7 @@ func (s *LoopScenario) NextLook() time.Time {
 func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 	s.t.Helper()
 	s.now, s.ran = now, true
+	s.settleFromMesh(now)
 	var (
 		defs []loom.DeadlineDef
 		agg  loom.AggregateState
@@ -330,6 +339,15 @@ func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 		}
 	}
 	turn.Told.Approvals = s.approvalList()
+	// an agent that did not answer in time is expired before the look
+	// that is told its wait has, and the look is told how its agents stand
+	s.expireAgents(turn.Told.Expired, now)
+	turn.Told.Agents = s.agentList()
+	var agentDefs []loom.AgentDef
+	if s.def != nil {
+		agentDefs = s.def.Agents
+	}
+	turn.Mesh(agentDefs, true, cmpOr(s.tenant, "loomtest"))
 	s.told = turn.Told
 
 	s.cmds, s.err = s.call(turn.Context(loom.WithStateReader(context.Background(), s.reader)))
@@ -353,6 +371,13 @@ func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 		s.asked = next
 	}
 	s.fired = turn.Fired
+	s.asks = nil
+	if s.err == nil {
+		s.asks = turn.Agents()
+		if err := s.openAgents(now); err != nil {
+			s.t.Fatalf("loomtest: offering an agent's job: %v", err)
+		}
+	}
 	for _, a := range turn.Approvals() {
 		s.approvals[a.Name] = loom.ApprovalRecord{Approval: a, Aggregate: s.told.Aggregate, Namespace: s.told.Namespace, ID: s.told.ID, Status: loom.ApprovalOpen, AskedAt: now}
 	}
@@ -529,4 +554,157 @@ func sleepUntil(at time.Time) {
 	if d := time.Until(at); d > 0 {
 		time.Sleep(d)
 	}
+}
+
+// --- agents ---
+
+// Mesh offers the jobs of the agents the look asks to f, for tenant
+// when an ask names none: f.Finish and f.Fail settle them before the
+// next look, as Mesh's hook would, and the instance is looked at at
+// once. With no Mesh the asks are only recorded (Asked, Agents). The
+// scenario must name its instance (Instance, LoopOf) for its look to
+// ask the agents its aggregate declares.
+func (s *LoopScenario) Mesh(f *mesh.Fake, tenant string) *LoopScenario {
+	s.mesh, s.tenant = f, tenant
+	return s
+}
+
+// AgentAnswered records an agent's request as it stands — settled, with
+// Mesh's outcome, when its Status is empty it is finished — for the next
+// look to read with LookingAt(ctx).Agent. An open one holds its wait
+// until its deadline.
+func (s *LoopScenario) AgentAnswered(rec loom.AgentRecord) *LoopScenario {
+	if s.agents == nil {
+		s.agents = map[string]loom.AgentRecord{}
+	}
+	if rec.Status == "" {
+		rec.Status = loom.AgentFinished
+	}
+	s.agents[rec.Name] = rec
+	s.state, _ = s.state.WaitEnded(loom.AgentWait(rec.Name))
+	if !rec.Settled() {
+		s.state = s.state.Waited(loom.Wait{Name: loom.AgentWait(rec.Name), Owner: loom.AgentOwner, Deadline: rec.Deadline})
+	}
+	return s
+}
+
+// Agents is the instance's agent requests as they stand after the last
+// look: what the next look reads.
+func (s *LoopScenario) Agents() map[string]loom.AgentRecord {
+	out := map[string]loom.AgentRecord{}
+	for k, v := range s.agents {
+		out[k] = v
+	}
+	return out
+}
+
+// Asked is the agents the last look asked, with what it asked them; an
+// ask while the agent's request was open is among them, and changed
+// nothing.
+func (s *LoopScenario) Asked() []loom.AgentAsked {
+	s.t.Helper()
+	s.mustRun()
+	return s.asks
+}
+
+func (s *LoopScenario) agentList() []loom.AgentRecord {
+	if len(s.agents) == 0 {
+		return nil
+	}
+	out := make([]loom.AgentRecord, 0, len(s.agents))
+	for _, r := range s.agents {
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b loom.AgentRecord) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
+// settleFromMesh settles each open request whose job the fake Mesh has
+// ended, as its hook would: the wait ends and the instance is looked at
+// at once.
+func (s *LoopScenario) settleFromMesh(now time.Time) {
+	if s.mesh == nil {
+		return
+	}
+	for name, rec := range s.agents {
+		if rec.Settled() || rec.JobID == "" {
+			continue
+		}
+		o, ok := s.mesh.Ended(rec.JobID)
+		if !ok {
+			continue
+		}
+		rec.Status = loom.AgentFailed
+		if o.End == mesh.EndFinished {
+			rec.Status = loom.AgentFinished
+		}
+		at := now
+		rec.EndedAt, rec.Outcome = &at, &o
+		s.agents[name] = rec
+		if !s.done {
+			s.eventAt(now)
+			s.state, _ = s.state.WaitEnded(loom.AgentWait(name))
+		}
+	}
+}
+
+// expireAgents expires each open request whose wait the look is told
+// has run out, and cancels its job, as the runtime does before that
+// look.
+func (s *LoopScenario) expireAgents(expired []loom.Wait, now time.Time) {
+	for _, w := range expired {
+		name, ok := strings.CutPrefix(w.Name, "agent:")
+		rec, held := s.agents[name]
+		if !ok || !held || rec.Settled() || now.Before(rec.Deadline) {
+			continue
+		}
+		at := now
+		rec.Status, rec.EndedAt = loom.AgentExpired, &at
+		s.agents[name] = rec
+		if s.mesh != nil && rec.JobID != "" {
+			_ = s.mesh.CancelJob(context.Background(), rec.JobID, "loom: the agent's deadline passed")
+		}
+	}
+}
+
+// openAgents records the asks the last look made, as the runtime does: a
+// new request for an agent whose last is settled or that never asked,
+// waited on until its deadline and its job offered to the fake Mesh;
+// nothing for one still open.
+func (s *LoopScenario) openAgents(now time.Time) error {
+	for _, a := range s.asks {
+		prior, had := s.agents[a.Def.Name]
+		if had && !prior.Settled() {
+			continue
+		}
+		rec := loom.AgentRecord{
+			Aggregate: s.told.Aggregate, Namespace: s.told.Namespace, ID: s.told.ID, Name: a.Def.Name, Kind: a.Def.Kind,
+			Attempt: prior.Attempt + 1, Ask: a.Ask, Status: loom.AgentRequested,
+			Deadline: now.Add(a.Def.Deadline).UTC(), AskedAt: now,
+		}
+		if s.mesh != nil {
+			o, err := rec.MeshOffer(s.reg.Service)
+			if err != nil {
+				return err
+			}
+			got, err := s.mesh.OfferJob(context.Background(), o)
+			if err != nil {
+				return err
+			}
+			rec.JobID = got.JobID
+		}
+		if s.agents == nil {
+			s.agents = map[string]loom.AgentRecord{}
+		}
+		s.agents[rec.Name] = rec
+		s.state = s.state.Waited(loom.Wait{Name: loom.AgentWait(rec.Name), Owner: loom.AgentOwner, Deadline: rec.Deadline})
+	}
+	return nil
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

@@ -53,9 +53,9 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   ending the wait and looking at once; an agent that never answers is
   `expired`, its job cancelled, and the look told. New package
   `loom/mesh`: Mesh's offer, hook and outcome shapes, `Sign`/`Verify`,
-  `HTTPClient` and `Fake`. `loomtest.LoopScenario` gains `For`, `Mesh`,
-  `AgentAnswered`, `Agents` and `Asked`, and honours `WaitFor` and
-  `StopWaiting`. Config: `Mesh`, `MeshTenant`, `MeshHookSecret`. Schema:
+  `HTTPClient` and `Fake`. `loomtest.LoopScenario` gains `Mesh`,
+  `AgentAnswered`, `Agents` and `Asked` (on a named `Instance`), and
+  `loom.LookTurn` gains `Mesh` and `Agents`. Config: `Mesh`, `MeshTenant`, `MeshHookSecret`. Schema:
   `loom_agents`.
   ([ADR 0017](docs/adr/0017-a-loop-asks-an-agent-through-mesh.md))
 - **loom tells a service when its background work goes wrong.**

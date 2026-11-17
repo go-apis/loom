@@ -231,43 +231,10 @@ func (l Looking) Agent(name string) (AgentRecord, bool) {
 	return AgentRecord{}, false
 }
 
-// LookFor is what a look harness says about the instance it looks at
-// (RecordLook): its declared agents, and the Mesh it reaches.
-type LookFor struct {
-	Agents     []AgentDef
-	MeshTenant string
-	// NoMesh says no Mesh is configured: AskAgent is refused.
-	NoMesh bool
-}
-
-// LookSaid is what a look said beside the commands it returned.
-type LookSaid struct {
-	Done    bool
-	Again   time.Duration
-	Waits   []Wait
-	Stopped []string
-	// Agents is the agents it asked, with what it asked them.
-	Agents []AgentAsked
-}
-
 // AgentAsked is one AskAgent a look made.
 type AgentAsked struct {
 	Def AgentDef
 	Ask AgentAsk
-}
-
-// RecordLook makes ctx one a look can say things under (LookDone,
-// WaitFor, AskAgent, ...) outside the runtime, for a test harness, and
-// answers what the look said once it has run.
-func RecordLook(ctx context.Context, f LookFor) (context.Context, func() LookSaid) {
-	s := &lookSaid{agentDefs: f.Agents, meshOn: !f.NoMesh, meshTenant: f.MeshTenant}
-	return context.WithValue(ctx, lookSaidKey{}, s), func() LookSaid {
-		out := LookSaid{Done: s.done, Again: s.again, Waits: s.waits, Stopped: s.stopped}
-		for _, a := range s.agents {
-			out.Agents = append(out.Agents, AgentAsked{Def: a.def, Ask: a.ask})
-		}
-		return out
-	}
 }
 
 // --- the runtime ---

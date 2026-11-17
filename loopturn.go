@@ -101,6 +101,23 @@ func (t *LookTurn) Done() bool { return t.ended && t.said.done }
 // none when it failed.
 func (t *LookTurn) Approvals() []Approval { return t.said.approvals }
 
+// Mesh tells the look the agents its aggregate declares and the Mesh
+// they are asked of (AskAgent): whether one is configured, and the
+// tenant a job runs for when an ask names none.
+func (t *LookTurn) Mesh(defs []AgentDef, on bool, tenant string) {
+	t.said.agentDefs, t.said.meshOn, t.said.meshTenant = defs, on, tenant
+}
+
+// Agents is the agents the look asked (AskAgent), once it ended; none
+// when it failed.
+func (t *LookTurn) Agents() []AgentAsked {
+	out := make([]AgentAsked, 0, len(t.said.agents))
+	for _, a := range t.said.agents {
+		out = append(out, AgentAsked{Def: a.def, Ask: a.ask})
+	}
+	return out
+}
+
 // Restarts is the children the look restarted (RestartChild), once it
 // ended; none when it failed.
 func (t *LookTurn) Restarts() []ChildRef { return t.said.restarts }
