@@ -58,6 +58,20 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   `StopWaiting`. Config: `Mesh`, `MeshTenant`, `MeshHookSecret`. Schema:
   `loom_agents`.
   ([ADR 0017](docs/adr/0017-a-loop-asks-an-agent-through-mesh.md))
+- **loom tells a service when its background work goes wrong.**
+  `Config.OnDeadLetter`, `Config.OnRunnerLag` (with
+  `RunnerLagThreshold`, default 1m: the oldest unhandled subscribed event
+  is older than that) and `Config.OnEffectInDoubt`, each called once per
+  occurrence on the instance holding the process lease.
+  `Config.RedriveLadder` redrives a process or timer dead letter on a list
+  of delays before `OnDeadLetter` is called, so a passing failure heals
+  itself. `loom.Persistent(err)` marks an error that will not pass: the
+  reaction is dead-lettered at once, with no retries. Effects already
+  settle through `Config.Reconcile`; `OnEffectInDoubt` reports the ones it
+  cannot. Schema (additive): `loom_dead_letters` gains `redrives`,
+  `redrive_at`, `notified_at`; `loom_checkpoints` gains `lag_notified_at`;
+  `loom_effects` gains `in_doubt_at`, `doubt_notified_at`. `DeadLetter`
+  gains `Redrives`.
 
 - **A loop supervises its children.** `@supervised_by(Parent, field)` on
   a `@loop` aggregate: a child that is parked, reaches its end or has a

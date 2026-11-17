@@ -61,6 +61,9 @@ func (r *RetryPolicy) backoff(n int) time.Duration {
 // exhausted handles a reaction whose immediate attempts all failed: park
 // it, or under @retry arm its durable retry.
 func (c *Client) exhausted(ctx context.Context, runner string, p *ReactorDef, evt *Event, cause error) error {
+	if IsPersistent(cause) { // will not pass: no backoff to wait out (hooks.go)
+		return c.parkOn(ctx, c.db, runner, evt, cause, 1)
+	}
 	if p.Retry == nil {
 		if IsNotYet(cause) {
 			// loud, and once: there is nothing to look again with
@@ -148,7 +151,7 @@ func (c *Client) fireRetry(ctx context.Context, d dueTimer) (retErr error) {
 	rec.Attempts++
 	rec.LastError = cause.Error()
 	// a policy removed or tightened since the row was armed still ends
-	if p.Retry == nil || rec.Attempts >= p.Retry.Max {
+	if p.Retry == nil || rec.Attempts >= p.Retry.Max || IsPersistent(cause) {
 		if IsNotYet(cause) {
 			cause = fmt.Errorf("still not ready after looking %d more times: %w", rec.Attempts, cause)
 		}

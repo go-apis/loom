@@ -519,6 +519,48 @@ generated switches, folds from generated assignments.
   each failed attempt logs `durable retry failed; re-arming` at WARN with
   the attempt and max, and each fire is a `loom.retry.fire` span. No
   schema change: the rows reuse `loom_timers`' columns.
+- **Persistent errors** (`loom.Persistent(err)`, `IsPersistent`): a
+  reaction failing with an error so marked will not pass by trying again,
+  so it skips the immediate attempts, `@retry`'s backoff and the redrive
+  ladder: it parks at once (attempts = 1) and is reported to
+  `OnDeadLetter`. Every other error retries as before.
+- **Background-work hooks** (`hooks.go`): `Config.OnDeadLetter`,
+  `OnRunnerLag` and `OnEffectInDoubt` tell a service its background work
+  went wrong instead of it polling. A watchdog loop runs every poll on the
+  instance holding the process lease (a service with hooks and no local
+  process stands for the lease too). Each hook is called at most once per
+  occurrence, and "once" lives in the store — the row is claimed before
+  the hook runs — so a change of leader does not repeat it. A hook runs
+  on the watchdog goroutine; a panic is recovered and logged.
+  - **Redrive ladder** (`Config.RedriveLadder []time.Duration`): a
+    process or timer letter parks with `redrive_at = now + ladder[0]`;
+    the watchdog redrives due letters (`RedriveDeadLetter`), and each
+    failure bumps `redrives` and sets the next step, or `NULL` when the
+    ladder is spent (or the error is Persistent). A letter whose redrive
+    succeeds is deleted — the failure passed, nobody is told. Empty ladder
+    (the default): no automatic redrive.
+  - **OnDeadLetter(ctx, DeadLetter)**: called once for each letter with
+    `redrive_at IS NULL` (ladder spent, Persistent, no ladder, or a runner
+    with no redrive such as a skipped projection event), marking
+    `notified_at`. Letters parked before the upgrade are reported once.
+  - **OnRunnerLag(ctx, RunnerLag)**: a runner's lag is the age of the
+    oldest event of a type it subscribes to past its checkpoint (zero when
+    it has none to handle) — a time, so it reads the same for a busy and a
+    quiet log, and an event of a type the runner ignores never counts.
+    Past `RunnerLagThreshold` (default 1m) the hook is called once and
+    `loom_checkpoints.lag_notified_at` set; back within it the mark clears
+    and a later crossing is reported again. Projections and local-event
+    processes; foreign (bus) subscriptions have no checkpoint.
+  - **OnEffectInDoubt(ctx, EffectRecord)**: `Config.Reconcile` already
+    settles an in-doubt effect (it asks the other side; `@idempotent`
+    re-runs it), so this is the only new piece for effects. When a
+    reaction finds a claim neither can settle it marks
+    `loom_effects.in_doubt_at`; the watchdog reports each marked,
+    still-running row once (`doubt_notified_at`). A re-claim clears both
+    marks; `ResolveEffect` ends the doubt.
+  Schema: `loom_dead_letters` gains `redrives`, `redrive_at`,
+  `notified_at`; `loom_checkpoints` gains `lag_notified_at`;
+  `loom_effects` gains `in_doubt_at`, `doubt_notified_at`. All additive.
 - **Metadata**: correlation ids propagate across dispatches and the bus;
   causation records the triggering event. Both are columns, not folklore.
 - **Observability**: OTel API only (no SDK dependency, no exporters, no
