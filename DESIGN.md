@@ -130,10 +130,14 @@ Rules enforced at parse/validate time:
   become API surface (`create{Name}Upload`)
 - a projection's `key(field)` must name a required uuid field on that
   event's payload — a missing key would route to the nil row
+- an aggregate's state folds every event its commands emit and every
+  event declared in its block that is not `@retired`, emitted or not: a
+  command deleted or changed to stop emitting an event leaves the event's
+  fold in place, so its stored rows replay as before (ADR 0016)
 - `event X @retired` keeps a declaration alive for its stored rows alone:
   the payload struct stays generated, so replays and rebuilds still decode
-  X and then fold nothing (folds are generated from what commands emit,
-  and a retired event is emitted by nothing) — decode-skip, cleanly.
+  X and then fold nothing (a retired event has no case in any fold) —
+  decode-skip, cleanly.
   Nothing may emit it, subscribe to it (policy, process, or projection
   `on`), or `upcast` it: all four are validation errors. Deleting the
   declaration instead is what leaves the log holding a type nothing can

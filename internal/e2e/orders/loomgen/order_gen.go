@@ -122,6 +122,10 @@ func (s *Order) Fold(eventType string, data any) error {
 	case *OrderCancelled:
 		s.Reason = e.Reason
 		s.Status = e.Status
+	case *OrderDispatched:
+		vShippedAt := e.ShippedAt
+		s.ShippedAt = &vShippedAt
+		s.Status = e.Status
 	case *OrderPlaced:
 		s.Currency = e.Currency
 		s.CustomerId = e.CustomerId

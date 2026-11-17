@@ -67,9 +67,12 @@ the loom version this repo pins ({{LOOM_VERSION}}); `go tool loom skill
   at the log's head (`@from(head)` is the default): events between the
   old checkpoint and the deploy are never reacted to. A renamed
   projection rebuilds from the origin.
-- **Never delete an event declaration.** Mark it `@retired`; the log
-  keeps rows that must still decode. `Migrate` refuses a log holding a
-  type the registry does not declare.
+- **Never delete an event declaration.** The log keeps rows that must
+  still decode, and `Migrate` refuses a log holding a type the registry
+  does not declare. To stop producing an event, delete its emitter and
+  keep the declaration in the aggregate's block: the aggregate still
+  folds it, so its rows replay as before. Mark it `@retired` only when
+  its rows should fold nothing.
 
 ## Writing handlers
 

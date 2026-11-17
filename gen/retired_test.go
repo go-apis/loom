@@ -55,9 +55,10 @@ aggregate Order {
 		t.Fatal(err)
 	}
 	// the struct survives so stored rows still decode. The fold does not
-	// name it — folds are generated from what commands emit, and a retired
-	// event is emitted by nothing — so replay decodes the row and folds
-	// nothing, which is exactly what retiring means.
+	// name it, though Order declares it — a fold takes every event its
+	// aggregate emits or declares, except a retired one (ADR 0016) — so
+	// replay decodes the row and folds nothing, which is exactly what
+	// retiring means.
 	if !strings.Contains(string(models), "type Gone struct") {
 		t.Errorf("@retired dropped the event struct — stored rows would stop decoding")
 	}

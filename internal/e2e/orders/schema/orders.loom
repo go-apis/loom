@@ -64,6 +64,14 @@ aggregate Order @snapshot(5) {
     reason: string!
   }
 
+  // An older ShipOrder emitted this. No command emits it now, but the
+  // log still holds its rows, so it stays declared here and Order still
+  // folds it (ADR 0016, TestAnEventNothingEmitsStillFolds).
+  event OrderDispatched {
+    status: OrderStatus!
+    shipped_at: timestamp!
+  }
+
   // a different field name than the state's `contract` on purpose: folds
   // match by name, and a merely-requested upload must not read as attached
   event ContractRequested {
