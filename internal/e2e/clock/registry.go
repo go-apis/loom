@@ -17,5 +17,6 @@ func NewRegistry() *loom.Registry {
 	impl.Anvil(&Anvil{})
 	impl.Kiln(&Kiln{})
 	impl.Oven(&Oven{})
+	impl.Loaf(&Loaf{})
 	return loomgen.NewRegistry(impl)
 }

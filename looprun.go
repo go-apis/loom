@@ -145,6 +145,9 @@ type dueLook struct {
 	state                LoopState
 	// fired is the declared deadlines that expired and have held since
 	fired []string
+	// notes is what happened to the instance's children since its last
+	// look (supervise.go)
+	notes []ChildNote
 }
 
 // lookDue claims up to limit due looks and makes each. It answers how
@@ -160,7 +163,7 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE d.service=$1 AND d.aggregate_type=due.aggregate_type AND d.namespace=due.namespace AND d.aggregate_id=due.aggregate_id
-		RETURNING d.aggregate_type, d.namespace, d.aggregate_id, d.looked_at, d.event_at, d.waits, d.deadlines_fired`,
+		RETURNING d.aggregate_type, d.namespace, d.aggregate_id, d.looked_at, d.event_at, d.waits, d.deadlines_fired, d.child_notes`,
 		c.reg.Service, limit, int(loopLease.Seconds()))
 	if err != nil {
 		return 0, err
@@ -171,8 +174,9 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 			l             dueLook
 			looked, event *time.Time
 			waits, fired  []byte
+			notes         []byte
 		)
-		if err := rows.Scan(&l.aggregate, &l.namespace, &l.id, &looked, &event, &waits, &fired); err != nil {
+		if err := rows.Scan(&l.aggregate, &l.namespace, &l.id, &looked, &event, &waits, &fired, &notes); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -184,6 +188,7 @@ func (c *Client) lookDue(ctx context.Context, limit int) (int, error) {
 		}
 		_ = json.Unmarshal(waits, &l.state.Waits)
 		_ = json.Unmarshal(fired, &l.fired)
+		_ = json.Unmarshal(notes, &l.notes)
 		due = append(due, l)
 	}
 	rows.Close()
@@ -217,15 +222,23 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if def == nil {
 		// this build's registry has no loop for it: leave the row to a
 		// build that does
-		return c.looked(ctx, l, start, Looking{}, nil, l.fired, false, nil)
+		_, _, err := c.looked(ctx, l, start, Looking{}, nil, l.fired, false, nil, nil, 0)
+		return err
 	}
 	said := &lookSaid{}
 	fired := l.fired
-	if len(def.Deadlines) > 0 {
-		// the declared deadlines' waits follow the state as it stands
+	var parent *ChildRef // the instance's supervisor, when it declares one
+	if len(def.Deadlines) > 0 || def.Parent != nil {
+		// the declared deadlines' waits follow the state as it stands,
+		// and the state names the instance's parent
 		state, _, err := c.load(ctx, c.db, l.aggregate, l.namespace, l.id)
 		if err != nil {
 			return err
+		}
+		if def.Parent != nil {
+			if pid := uuidOf(def.Parent.ID(state)); pid != uuid.Nil {
+				parent = &ChildRef{Aggregate: def.Parent.Aggregate, Namespace: l.namespace, ID: pid}
+			}
 		}
 		begin, stop, still := keepDeadlines(def.Deadlines, state, l.state.Waits, l.fired, start)
 		said.waits, said.stopped, fired = append(said.waits, begin...), append(said.stopped, stop...), still
@@ -244,6 +257,13 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		}
 	}
 	told.Aggregate, told.Namespace, told.ID = l.aggregate, l.namespace, l.id
+	if c.supervises(l.aggregate) {
+		children, err := c.childrenOf(ctx, l.aggregate, l.namespace, l.id)
+		if err != nil {
+			return err
+		}
+		told.Children, told.ChildNotes = children, l.notes
+	}
 	// an approval nobody answered takes its deadline action before the
 	// look that is told its wait has expired
 	if err := c.settleAtDeadline(ctx, l.aggregate, l.namespace, l.id, told.Expired); err != nil {
@@ -292,8 +312,31 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 			return err
 		}
 	}
-	if err := c.looked(ctx, l, start, told, said, fired, true, lookErr); err != nil {
+	parked, lastErr, err := c.looked(ctx, l, start, told, said, fired, true, lookErr, parent, len(told.ChildNotes))
+	if err != nil {
 		return err
+	}
+	// what the parent is told, outside this instance's row lock
+	if parent != nil {
+		self := ChildRef{Aggregate: l.aggregate, Namespace: l.namespace, ID: l.id}
+		var notes []ChildNote
+		if parked {
+			notes = append(notes, ChildNote{ChildRef: self, What: ChildParked, LastError: lastErr, At: start})
+		}
+		for _, w := range told.Expired {
+			notes = append(notes, ChildNote{ChildRef: self, What: ChildWaitExpired, Wait: w.Name, At: start})
+		}
+		if lookErr == nil && said.done {
+			notes = append(notes, ChildNote{ChildRef: self, What: ChildDone, At: start})
+		}
+		if err := c.noteParent(ctx, *parent, notes); err != nil {
+			return err
+		}
+	}
+	if lookErr == nil && len(said.restarts) > 0 {
+		if err := c.restartChildren(ctx, ChildRef{Aggregate: l.aggregate, Namespace: l.namespace, ID: l.id}, said.restarts); err != nil {
+			return err
+		}
 	}
 	return lookErr
 }
@@ -306,27 +349,31 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 // LoopState.NextLook — an event that arrived after start brings it to
 // within LoopSoon. A look not made (no loop in this build) leaves the
 // failures as they stand.
-func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid, fired []string, made bool, lookErr error) error {
+// It answers whether this look parked the instance, and why its last
+// look failed. parent is recorded on the row; toldNotes is how many of
+// the row's child notes the look was told, dropped now that it was.
+func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid, fired []string, made bool, lookErr error, parent *ChildRef, toldNotes int) (parked bool, lastErr string, err error) {
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	defer tx.Rollback(ctx)
 	var (
 		event *time.Time
 		held  []byte
+		notes []byte
 		prior LoopState
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT event_at, waits, failures, last_error, parked FROM loom_loop_due
+		SELECT event_at, waits, failures, last_error, parked, child_notes FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4
 		FOR UPDATE`,
-		c.reg.Service, l.aggregate, l.namespace, l.id).Scan(&event, &held, &prior.Failures, &prior.LastError, &prior.Parked)
+		c.reg.Service, l.aggregate, l.namespace, l.id).Scan(&event, &held, &prior.Failures, &prior.LastError, &prior.Parked, &notes)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil // done with, by LookDone
+		return false, "", nil // done with, by LookDone
 	}
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	var holding []Wait
 	_ = json.Unmarshal(held, &holding)
@@ -347,23 +394,46 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 	}
 	raw, err := json.Marshal(state.Waits)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	if fired == nil {
 		fired = []string{}
 	}
 	firedRaw, err := json.Marshal(fired)
 	if err != nil {
-		return err
+		return false, "", err
+	}
+	// the notes the look was told are done with; any that came while it
+	// ran are kept for the next
+	var pending []ChildNote
+	_ = json.Unmarshal(notes, &pending)
+	if lookErr == nil && toldNotes > 0 {
+		pending = pending[min(toldNotes, len(pending)):]
+	}
+	if pending == nil {
+		pending = []ChildNote{}
+	}
+	notesRaw, err := json.Marshal(pending)
+	if err != nil {
+		return false, "", err
+	}
+	var parentType *string
+	var parentID *uuid.UUID
+	if parent != nil {
+		parentType, parentID = &parent.Aggregate, &parent.ID
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE loom_loop_due SET looked_at=$5, next_look=$6, waits=$7, leased_until=NULL,
-		       failures=$8, last_error=$9, parked=$10, deadlines_fired=$11
+		       failures=$8, last_error=$9, parked=$10, deadlines_fired=$11, child_notes=$12,
+		       parent_type=coalesce($13, parent_type), parent_id=coalesce($14, parent_id)
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw, state.Failures, state.LastError, state.Parked, firedRaw); err != nil {
-		return err
+		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw, state.Failures, state.LastError, state.Parked, firedRaw, notesRaw, parentType, parentID); err != nil {
+		return false, "", err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, "", err
+	}
+	return state.Parked && !prior.Parked, state.LastError, nil
 }
 
 // LoopDue is what the runtime holds about one looping instance.
@@ -373,6 +443,12 @@ type LoopDue struct {
 	ID        uuid.UUID `json:"id"`
 	// NextLook is when it is next looked at.
 	NextLook time.Time `json:"next_look"`
+	// Parent is the instance's supervisor, once a look has read it from
+	// the state (@supervised_by); RestartedAt and RestartedBy are its
+	// last restart by that parent (RestartChild).
+	Parent      *ChildRef  `json:"parent,omitempty"`
+	RestartedAt *time.Time `json:"restarted_at,omitempty"`
+	RestartedBy string     `json:"restarted_by,omitempty"`
 	LoopState
 }
 
@@ -381,13 +457,17 @@ type LoopDue struct {
 // for an instance with no looks due: never created, or done.
 func (c *Client) LoopDue(ctx context.Context, aggregate, namespace string, id uuid.UUID) (due LoopDue, ok bool, err error) {
 	var (
+		parentType *string
+		parentID   *uuid.UUID
+	)
+	var (
 		looked, event *time.Time
 		waits         []byte
 	)
 	err = c.db.QueryRow(ctx, `
-		SELECT next_look, looked_at, event_at, waits, failures, last_error, parked FROM loom_loop_due
+		SELECT next_look, looked_at, event_at, waits, failures, last_error, parked, parent_type, parent_id, restarted_at, restarted_by FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, aggregate, namespace, id).Scan(&due.NextLook, &looked, &event, &waits, &due.Failures, &due.LastError, &due.Parked)
+		c.reg.Service, aggregate, namespace, id).Scan(&due.NextLook, &looked, &event, &waits, &due.Failures, &due.LastError, &due.Parked, &parentType, &parentID, &due.RestartedAt, &due.RestartedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return due, false, nil
 	}
@@ -395,6 +475,9 @@ func (c *Client) LoopDue(ctx context.Context, aggregate, namespace string, id uu
 		return due, false, err
 	}
 	due.Aggregate, due.Namespace, due.ID = aggregate, namespace, id
+	if parentType != nil && parentID != nil {
+		due.Parent = &ChildRef{Aggregate: *parentType, Namespace: namespace, ID: *parentID}
+	}
 	if looked != nil {
 		due.Looked = *looked
 	}

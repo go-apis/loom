@@ -119,8 +119,14 @@ type Aggregate struct {
 	// state enters one of the values, ended when it leaves, told to the
 	// look once when it expires.
 	Deadlines []*Deadline `yaml:"deadlines,omitempty" json:"deadlines,omitempty"`
-	State     *Payload    `yaml:"state" json:"state"`
-	Commands  []*Command  `yaml:"commands,omitempty" json:"commands,omitempty"`
+	// SupervisedBy (`@supervised_by(Parent, field)` on a @loop aggregate)
+	// names the @loop aggregate whose look supervises this one's
+	// instances, and the state field holding the parent's id: a child
+	// that is parked, finishes or has a wait run out is told to its
+	// parent's look.
+	SupervisedBy *Supervisor `yaml:"supervised_by,omitempty" json:"supervised_by,omitempty"`
+	State        *Payload    `yaml:"state" json:"state"`
+	Commands     []*Command  `yaml:"commands,omitempty" json:"commands,omitempty"`
 	// Events names the events declared inside the aggregate's block, in
 	// the order written. The state folds every one that is not @retired
 	// as well as every event a command emits, so an event keeps its fold
@@ -482,6 +488,13 @@ func (s *Schedule) Interval() (time.Duration, error) {
 		return 0, fmt.Errorf("schedule %s: every %q is not an interval (30s, 5m, 1h, 1d)", s.Name, s.Every)
 	}
 	return d * unit, nil
+}
+
+// Supervisor is a @loop aggregate's parent: the aggregate that
+// supervises it and the child's state field holding the parent's id.
+type Supervisor struct {
+	Parent string `yaml:"parent" json:"parent"`
+	Field  string `yaml:"field" json:"field"`
 }
 
 // Deadline is a wait a @loop aggregate declares on its own state: it
@@ -1494,6 +1507,27 @@ func (s *Schema) Validate() error {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		fail("undeclared types: %v", missing)
+	}
+
+	for _, a := range s.Aggregates {
+		sup := a.SupervisedBy
+		if sup == nil {
+			continue
+		}
+		var parent *Aggregate
+		for _, b := range s.Aggregates {
+			if b.Name == sup.Parent {
+				parent = b
+			}
+		}
+		switch {
+		case parent == nil:
+			fail("aggregate %s: @supervised_by names %s, which is not an aggregate of %s", a.Name, sup.Parent, s.Service)
+		case !parent.Loop:
+			fail("aggregate %s: @supervised_by names %s, which has no @loop: a supervisor is told through its look", a.Name, sup.Parent)
+		case parent.Name == a.Name:
+			fail("aggregate %s: an aggregate cannot supervise itself", a.Name)
+		}
 	}
 
 	if len(errs) > 0 {

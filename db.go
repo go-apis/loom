@@ -173,6 +173,12 @@ CREATE TABLE IF NOT EXISTS loom_loop_due (
 );
 CREATE INDEX IF NOT EXISTS loom_loop_due_next ON loom_loop_due (service, next_look);
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS deadlines_fired jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS parent_type text;
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS parent_id uuid;
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS child_notes jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS restarted_at timestamptz;
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS restarted_by text NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS loom_loop_due_parent ON loom_loop_due (service, parent_type, parent_id) WHERE parent_id IS NOT NULL;
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS failures int NOT NULL DEFAULT 0;
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS parked boolean NOT NULL DEFAULT false;

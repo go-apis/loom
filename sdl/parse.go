@@ -389,8 +389,8 @@ func (p *parser) aggregate() error {
 	}
 	agg := &schema.Aggregate{Name: name, Doc: doc, ReadAllow: p.allows}
 	for d := range dirs {
-		if d != "snapshot" && d != "table" && d != "role" && d != "allow" && d != "loop" {
-			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role, @loop)", name, d)
+		if d != "snapshot" && d != "table" && d != "role" && d != "allow" && d != "loop" && d != "supervised_by" {
+			return fmt.Errorf("aggregate %s: unknown directive @%s (aggregates take @snapshot, @table, @role, @loop, @supervised_by)", name, d)
 		}
 	}
 	// @role on the block gates the aggregate's generated READS (get +
@@ -413,6 +413,15 @@ func (p *parser) aggregate() error {
 	}
 	if _, ok := dirs["loop"]; ok {
 		agg.Loop = true
+	}
+	if args, ok := dirs["supervised_by"]; ok {
+		if !agg.Loop {
+			return fmt.Errorf("aggregate %s: @supervised_by belongs to a @loop aggregate: its instances are what the parent supervises", name)
+		}
+		if len(args) != 2 {
+			return fmt.Errorf("aggregate %s: @supervised_by wants the parent aggregate and the state field holding its id, e.g. @supervised_by(Goal, goal_id)", name)
+		}
+		agg.SupervisedBy = &schema.Supervisor{Parent: args[0], Field: args[1]}
 	}
 
 	if err := p.expect("{"); err != nil {
@@ -458,6 +467,18 @@ func (p *parser) aggregate() error {
 			agg.Deadlines = append(agg.Deadlines, dl)
 		default:
 			return p.errf(t, "unexpected %q in aggregate %s", t.text, name)
+		}
+	}
+	if sup := agg.SupervisedBy; sup != nil {
+		var field *schema.Payload
+		if agg.State != nil {
+			field = agg.State.Properties[sup.Field]
+		}
+		if field == nil {
+			return fmt.Errorf("aggregate %s: @supervised_by reads the parent's id from %s, but the state has no field %s", name, sup.Field, sup.Field)
+		}
+		if field.Type != "string" || field.Format != "uuid" {
+			return fmt.Errorf("aggregate %s: @supervised_by: %s is not a uuid; it holds the parent's id", name, sup.Field)
 		}
 	}
 	for _, dl := range agg.Deadlines {

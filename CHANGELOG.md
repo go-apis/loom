@@ -12,6 +12,16 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Added
+
+- **A loop supervises its children.** `@supervised_by(Parent, field)` on
+  a `@loop` aggregate: a child that is parked, reaches its end or has a
+  wait run out brings its parent's look to within a second, and the
+  parent is told `Looking.Children` and `Looking.ChildNotes` (each note
+  once). `loom.RestartChild` clears a child's failures and parking and
+  looks at it at once. Schema: `loom_loop_due` gains `parent_type`,
+  `parent_id`, `child_notes`, `restarted_at` and `restarted_by`.
+
 ### Changed
 
 - **An aggregate folds every event it declares, emitted or not.** The

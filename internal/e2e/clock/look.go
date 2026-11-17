@@ -66,6 +66,51 @@ func (l *Look) LookOven(ctx context.Context) ([]loom.Command, error) {
 	told := loom.LookingAt(ctx)
 	ovenMu.Lock()
 	ovenTold[told.ID.String()] = append(ovenTold[told.ID.String()], told)
+	script := ovenScript
 	ovenMu.Unlock()
+	if script != nil {
+		return script(ctx)
+	}
 	return nil, nil
+}
+
+var (
+	ovenScript func(ctx context.Context) ([]loom.Command, error)
+	loafMu     sync.Mutex
+	loafLook   func(ctx context.Context) ([]loom.Command, error)
+	loafSeen   = map[string]int{}
+)
+
+// SetOvenScript scripts what an oven's look does beyond recording what
+// it was told; nil, the default, does nothing more.
+func SetOvenScript(f func(ctx context.Context) ([]loom.Command, error)) {
+	ovenMu.Lock()
+	defer ovenMu.Unlock()
+	ovenScript = f
+}
+
+// SetLoafLook scripts the look at a loaf; nil does nothing.
+func SetLoafLook(f func(ctx context.Context) ([]loom.Command, error)) {
+	loafMu.Lock()
+	defer loafMu.Unlock()
+	loafLook = f
+}
+
+// LoafLooks is how many looks have been made at the loaf.
+func LoafLooks(id string) int {
+	loafMu.Lock()
+	defer loafMu.Unlock()
+	return loafSeen[id]
+}
+
+func (l *Look) LookLoaf(ctx context.Context) ([]loom.Command, error) {
+	told := loom.LookingAt(ctx)
+	loafMu.Lock()
+	loafSeen[told.ID.String()]++
+	look := loafLook
+	loafMu.Unlock()
+	if look == nil {
+		return nil, nil
+	}
+	return look(ctx)
 }

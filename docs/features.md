@@ -103,6 +103,31 @@ func (l *Look) LookItem(ctx context.Context) ([]loom.Command, error) {
 }
 ```
 
+### Supervision: `@supervised_by`
+
+**Since** the release after v0.126.0 · **adopt rule** none yet
+
+A `@loop` aggregate names its parent: `aggregate Item @loop
+@supervised_by(Goal, goal_id)`. A child that is parked (its looks failed
+ten times in a row), reaches its end, or has a wait run out unanswered
+brings its parent's look forward, and the parent is told which children
+and why (`Looking.Children`, `Looking.ChildNotes`). The parent decides
+with commands, or `loom.RestartChild`.
+
+Makes unnecessary: watchdogs that sweep for stalled or stuck children and
+nudge their parents; parents polling their children's state.
+
+```go
+func (l *Look) LookGoal(ctx context.Context) ([]loom.Command, error) {
+	for _, ch := range loom.LookingAt(ctx).Children {
+		if ch.Parked {
+			loom.RestartChild(ctx, ch.ChildRef) // or cancel it, or ask a person
+		}
+	}
+	return nil, nil
+}
+```
+
 ## Calling the outside world
 
 ### Effects: `loom.Once`

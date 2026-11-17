@@ -209,6 +209,11 @@ type Looking struct {
 	// Approvals is the instance's approvals as they stand: open, or
 	// settled by an answer or by their deadline (approval.go).
 	Approvals []ApprovalRecord
+	// Children is the live children of a supervisor's instance, as
+	// they stand (supervise.go); ChildNotes is what happened to its
+	// children since its last look, each told once.
+	Children   []Child
+	ChildNotes []ChildNote
 }
 
 // ExpiredWait is the expired wait of that name, if there is one.
@@ -245,6 +250,8 @@ type lookSaid struct {
 	stopped []string
 	// approvals the look asked for (approval.go)
 	approvals []Approval
+	// children the look restarted (supervise.go)
+	restarts []ChildRef
 }
 
 type lookSaidKey struct{}

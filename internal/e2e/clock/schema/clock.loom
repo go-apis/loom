@@ -126,3 +126,27 @@ aggregate Oven @loop {
     status: string!
   }
 }
+
+/// A loaf baking in an oven: the oven supervises its loaves.
+aggregate Loaf @loop @supervised_by(Oven, oven_id) {
+  state {
+    oven_id: uuid
+    status: string
+  }
+
+  /// Put a loaf in an oven.
+  command BakeLoaf {
+    oven_id: uuid!
+  } -> LoafBaking
+
+  /// Take it out.
+  command FinishLoaf -> LoafFinished
+
+  event LoafBaking {
+    oven_id: uuid!
+  }
+
+  event LoafFinished {
+    status: string!
+  }
+}

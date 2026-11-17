@@ -150,3 +150,14 @@ DESIGN.md's "Not yet built").
   look. A look that succeeds clears the count and unparks it.
   `Client.LoopDue` and `Status.Loops` report the count, the last error
   and the parked instances.
+- **A loop supervises its children** (amended 2026-11-17, the second half
+  of a supervisor for loops). `@supervised_by(Parent, field)` on a `@loop`
+  aggregate makes each instance a child of the Parent instance whose id
+  `field` holds. Supervision is ownership of failure, not process restart:
+  loops are level-triggered and nothing lives between looks. A child that
+  is parked, finishes, or has a wait run out notes it on the parent's row
+  and brings the parent's look forward; the parent is told its children
+  and the notes (each once) and acts with commands, or restarts a child
+  with `RestartChild`. Restarts are recorded on the child's row
+  (`restarted_at`, `restarted_by`), not as events: loop state is loom's,
+  not the schema's. Escalation is a parent failing its own looks.

@@ -353,6 +353,9 @@ type AggregateDef struct {
 	// Deadlines are the waits a @loop aggregate declares on its own
 	// state, kept by loom (DeadlineDef).
 	Deadlines []DeadlineDef
+	// Parent is the aggregate whose look supervises this one's
+	// instances (@supervised_by), nil for none.
+	Parent *ParentDef
 	// ReadRoles (@role on the aggregate block) gates the generated
 	// GraphQL reads — the singular get and its Changed subscription.
 	ReadRoles []string

@@ -13,5 +13,6 @@ import (
 // the wait is built in — until it has commands to dispatch.
 type Look interface {
 	LookKiln(ctx context.Context) ([]loom.Command, error)
+	LookLoaf(ctx context.Context) ([]loom.Command, error)
 	LookOven(ctx context.Context) ([]loom.Command, error)
 }

@@ -839,6 +839,11 @@ var (
 		}
 		b.WriteString("\t\t},\n")
 	}
+	if o.agg != nil && o.agg.SupervisedBy != nil {
+		// the instance's supervisor: its aggregate, and the id the state holds
+		fmt.Fprintf(&b, "\t\tParent: &loom.ParentDef{Aggregate: %q, ID: func(s loom.AggregateState) any { return s.(*%s).%s }},\n",
+			o.agg.SupervisedBy.Parent, o.name, exported(o.agg.SupervisedBy.Field))
+	}
 	fmt.Fprintf(&b, "\t\tCommands: []*loom.%s{\n", cmdType)
 	for _, c := range o.commands() {
 		fmt.Fprintf(&b, "\t\t\t{\n\t\t\t\tName: %q,\n\t\t\t\tNew: func() loom.Command { return &%s{} },\n\t\t\t\tEmits: %s,\n", c.Name, c.Name, stringSlice(c.Emits))

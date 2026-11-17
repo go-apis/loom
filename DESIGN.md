@@ -126,7 +126,19 @@ Rules enforced at parse/validate time:
   `loom`) — the look that finds the field in the values starts it, After
   from then; the look that finds it out ends it; when it expires the look
   is told once, and it does not start again until the field has left
-  the values (`loom_loop_due.deadlines_fired`). A look reads why it was called
+  the values (`loom_loop_due.deadlines_fired`). A `@loop` aggregate may
+  declare `@supervised_by(Parent, field)`: its instances are children of
+  the Parent instance whose id `field` holds (the runner records it on the
+  child's row at each look). A child that is parked, reaches its end
+  (`LookDone`) or is told a wait ran out leaves a `ChildNote` on its
+  parent's row and brings the parent's look to within `LoopSoon`, outside
+  its own row lock so parent and child never wait on each other. The
+  parent's look is told `Looking.Children` (its live children: failures,
+  parked, last error, waits) and `Looking.ChildNotes` (each note once),
+  and decides with ordinary commands, or `loom.RestartChild` (failures
+  cleared, unparked, looked at at once, `restarted_at`/`restarted_by` on
+  the child's row). A parent that fails its own looks is parked and told
+  to its own supervisor: escalation is failing. A look reads why it was called
   `Wait`s (a name, an owner, a deadline). After looks that failed in a
   row the minute shortens to `loom.LoopBackoff(failures)`: a second after
   the first failure, doubling with each one after, never past the minute;

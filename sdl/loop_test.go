@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-apis/loom/schema"
 	"github.com/go-apis/loom/sdl"
 )
 
@@ -104,6 +105,63 @@ func TestParseADeadlineRefused(t *testing.T) {
 		_, err := sdl.Parse(c.src)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("a deadline %s: error %v, want one naming %q", name, err, c.want)
+		}
+	}
+}
+
+const supervisedSchema = `
+service orders
+
+aggregate Goal @loop {
+  state { title: string }
+  command SetGoal -> GoalSet
+  event GoalSet { title: string! }
+}
+
+aggregate Quiet {
+  state { note: string }
+  command Note -> Noted
+  event Noted { note: string! }
+}
+
+aggregate Item %s {
+  state {
+    goal_id: uuid
+    status: string
+  }
+  command AddItem -> ItemAdded
+  event ItemAdded { goal_id: uuid! }
+}
+`
+
+func TestParseSupervisedBy(t *testing.T) {
+	s, err := sdl.Parse(strings.Replace(supervisedSchema, "%s", "@loop @supervised_by(Goal, goal_id)", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item *schema.Aggregate
+	for _, a := range s.Aggregates {
+		if a.Name == "Item" {
+			item = a
+		}
+	}
+	if sup := item.SupervisedBy; sup == nil || sup.Parent != "Goal" || sup.Field != "goal_id" {
+		t.Fatalf("Item's supervisor is %+v, want Goal via goal_id", item.SupervisedBy)
+	}
+}
+
+func TestParseSupervisedByRefused(t *testing.T) {
+	for name, c := range map[string]struct{ dirs, want string }{
+		"on an aggregate with no @loop": {"@supervised_by(Goal, goal_id)", "@loop aggregate"},
+		"naming a missing aggregate":    {"@loop @supervised_by(Order, goal_id)", "not an aggregate"},
+		"naming a parent with no @loop": {"@loop @supervised_by(Quiet, goal_id)", "has no @loop"},
+		"reading a missing field":       {"@loop @supervised_by(Goal, owner_id)", "no field owner_id"},
+		"reading a field not a uuid":    {"@loop @supervised_by(Goal, status)", "not a uuid"},
+		"with one argument":             {"@loop @supervised_by(Goal)", "the parent aggregate and the state field"},
+	} {
+		_, err := sdl.Parse(strings.Replace(supervisedSchema, "%s", c.dirs, 1))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("@supervised_by %s: error %v, want one naming %q", name, err, c.want)
 		}
 	}
 }
