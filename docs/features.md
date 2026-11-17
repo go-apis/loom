@@ -142,6 +142,40 @@ before the version existed read as v1.
 Makes unnecessary: keeping a command's fields additive forever because a
 timer might still hold the old shape; draining timers and waits before a
 deploy; a handler that accepts two shapes of its own command.
+### Agent steps: `agent` and Mesh
+
+**Since** the release after v0.127.0 · **adopt rule** none yet
+
+A `@loop` aggregate declares `agent triage { kind: "triage", deadline:
+30m }`. Its look asks with the generated `AskItemTriage(ctx, ask)`; loom
+records the request, offers one Mesh job of the kind under an
+idempotency key, and waits on `mesh` until the deadline. Mesh's signed
+hook, mounted with `graphql.MeshHooks`, records the outcome and looks at
+once; an agent that never answers is expired and the look told. The look
+reads `LookingAt(ctx).Agent("triage")`. `loomtest` tests the decision
+with `mesh.Fake` or a recorded outcome, and no database.
+
+Makes unnecessary: a hand-written Mesh client, offer idempotency keys,
+a hook handler with HMAC checks and seq dedupe, a table of jobs in
+flight, and a sweeper for agents that never answered.
+
+```go
+func (l *Look) LookItem(ctx context.Context) ([]loom.Command, error) {
+	told := loom.LookingAt(ctx)
+	triage, asked := told.Agent(loomgen.ItemTriageAgent)
+	switch {
+	case !asked || !triage.Settled():
+		return nil, loomgen.AskItemTriage(ctx, loom.AgentAsk{}) // a no-op while open
+	case triage.Status == loom.AgentFinished:
+		var v Verdict
+		if err := triage.Result(&v); err != nil {
+			return nil, err
+		}
+		return []loom.Command{&loomgen.Triage{Verdict: v.Label /* ... */}}, nil
+	}
+	return nil, nil // failed or expired: decide what happens instead
+}
+```
 
 ## Calling the outside world
 

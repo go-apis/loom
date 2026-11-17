@@ -112,6 +112,15 @@ type Config struct {
 	// Generation. Zero (the default) takes LOOM_RELEASE; with neither,
 	// the build writes floors of zero and is never refused.
 	Release int64
+
+	// Mesh offers the jobs a @loop aggregate's declared agents are asked
+	// as (agent.go): mesh.HTTPClient against Mesh, mesh.Fake in tests.
+	// Required to ask an agent. MeshTenant is the tenant a job runs for
+	// when the ask names none, and MeshHookSecret the secret Mesh signs
+	// its job hooks with, which Client.MeshHook verifies.
+	Mesh           Mesh
+	MeshTenant     string
+	MeshHookSecret []byte
 }
 
 type Client struct {
@@ -161,6 +170,10 @@ type Client struct {
 	seriesAhead int           // Config.SeriesPartitionAhead
 	logLockWait time.Duration // Config.LogLockWait
 	seriesFuncs atomic.Bool   // the series partition functions exist (seriesfuncs.go)
+
+	mesh       Mesh   // Config.Mesh
+	meshTenant string // Config.MeshTenant
+	meshSecret []byte // Config.MeshHookSecret
 }
 
 func New(cfg Config) (*Client, error) {
@@ -206,6 +219,9 @@ func New(cfg Config) (*Client, error) {
 		relayNudge:     make(chan struct{}, 1),
 		batchNudge:     make(chan struct{}, 1),
 		stepSem:        make(chan struct{}, cfg.StepConcurrency),
+		mesh:           cfg.Mesh,
+		meshTenant:     cfg.MeshTenant,
+		meshSecret:     cfg.MeshHookSecret,
 		runnerIdlePoll: cfg.RunnerIdlePoll,
 		notifyNudge:    make(chan struct{}, 1),
 		watchers:       map[chan struct{}]bool{},

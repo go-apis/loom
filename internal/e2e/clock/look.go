@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/go-apis/loom"
+
+	"github.com/go-apis/loom/internal/e2e/clock/loomgen"
 )
 
 // Look implements loomgen.Look — each @loop aggregate's recurring look.
@@ -113,4 +115,75 @@ func (l *Look) LookLoaf(ctx context.Context) ([]loom.Command, error) {
 		return nil, nil
 	}
 	return look(ctx)
+}
+
+// TicketLooks records each look at a ticket: what it was told.
+var (
+	ticketMu     sync.Mutex
+	ticketTold   = map[string][]loom.Looking{}
+	ticketScript func(ctx context.Context) ([]loom.Command, error)
+)
+
+// TicketToldOf is every look made at the ticket, oldest first.
+func TicketToldOf(id string) []loom.Looking {
+	ticketMu.Lock()
+	defer ticketMu.Unlock()
+	return append([]loom.Looking(nil), ticketTold[id]...)
+}
+
+// SetTicketScript scripts the look at a ticket in place of DecideTicket;
+// nil, the default, decides with DecideTicket.
+func SetTicketScript(f func(ctx context.Context) ([]loom.Command, error)) {
+	ticketMu.Lock()
+	defer ticketMu.Unlock()
+	ticketScript = f
+}
+
+func (l *Look) LookTicket(ctx context.Context) ([]loom.Command, error) {
+	told := loom.LookingAt(ctx)
+	ticketMu.Lock()
+	ticketTold[told.ID.String()] = append(ticketTold[told.ID.String()], told)
+	script := ticketScript
+	ticketMu.Unlock()
+	if script != nil {
+		return script(ctx)
+	}
+	return DecideTicket(ctx)
+}
+
+// TriageResult is what the triage agent answers.
+type TriageResult struct {
+	Verdict string `json:"verdict"`
+}
+
+// DecideTicket is a ticket's next step: an open ticket asks the triage
+// agent, and is closed with its verdict once it answers — "failed" when
+// its job failed, "unanswered" when it ran out of time.
+func DecideTicket(ctx context.Context) ([]loom.Command, error) {
+	told := loom.LookingAt(ctx)
+	state, version, err := loom.Load(ctx, "Ticket", told.Namespace, told.ID)
+	if err != nil {
+		return nil, err
+	}
+	if version == 0 || state.(*loomgen.Ticket).Status != "open" {
+		return nil, nil
+	}
+	ticket := loom.CommandBase{Namespace: told.Namespace, AggregateID: told.ID}
+	triage, asked := told.Agent(loomgen.TicketTriageAgent)
+	switch {
+	case !asked:
+		return nil, loomgen.AskTicketTriage(ctx, loom.AgentAsk{})
+	case triage.Status == loom.AgentFinished:
+		var res TriageResult
+		if err := triage.Result(&res); err != nil {
+			return nil, err
+		}
+		return []loom.Command{&loomgen.CloseTicket{CommandBase: ticket, Verdict: res.Verdict}}, nil
+	case triage.Status == loom.AgentFailed:
+		return []loom.Command{&loomgen.CloseTicket{CommandBase: ticket, Verdict: "failed"}}, nil
+	case triage.Status == loom.AgentExpired:
+		return []loom.Command{&loomgen.CloseTicket{CommandBase: ticket, Verdict: "unanswered"}}, nil
+	}
+	// asked, and still waiting: ask again, which does nothing while open
+	return nil, loomgen.AskTicketTriage(ctx, loom.AgentAsk{})
 }

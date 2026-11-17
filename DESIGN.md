@@ -143,6 +143,10 @@ Rules enforced at parse/validate time:
   from then; the look that finds it out ends it; when it expires the look
   is told once, and it does not start again until the field has left
   the values (`loom_loop_due.deadlines_fired`). A `@loop` aggregate may
+  declare `agent <name> { kind: "<kind>", deadline: <d> }`: an agent step
+  its look asks of Mesh, a job of that kind waited on for `<d>` (both
+  required; refused on an aggregate that is not `@loop`; see "An agent
+  step is a wait on Mesh" below, ADR 0017). A `@loop` aggregate may
   declare `@supervised_by(Parent, field)`: its instances are children of
   the Parent instance whose id `field` holds (the runner records it on the
   child's row at each look). A child that is parked, reaches its end
@@ -347,6 +351,36 @@ generated switches, folds from generated assignments.
   it came out with `LookingAt(ctx).Approval(name)`. The gateway serves
   `approvals` and `answerApproval`, and checks the caller's role in the
   namespace (`approval.go`, `graphql/approvals.go`).
+- **An agent step is a wait on Mesh.** A `@loop` aggregate declares
+  `agent triage { kind: "triage", deadline: 30m }`; the generator writes
+  `AggregateDef.Agents` and, beside the `Look` interface,
+  `Ask<Aggregate><Agent>(ctx, loom.AgentAsk)` and a name constant. A
+  look asks with it (or `loom.AskAgent(ctx, name, ask)`): after a look
+  that did not fail, the runner records the request in `loom_agents`
+  (status `requested`, attempt n, the ask, the deadline from the look),
+  starts a wait `AgentWait(name)` owned by `mesh` until the deadline,
+  and offers one Mesh job (`Config.Mesh`, `POST /v1/jobs`) under an
+  idempotency key naming the service, instance, agent and attempt, with
+  `refs.loom` naming them too. An ask while the request is open changes
+  nothing, so a level-triggered look may ask on every look; a request
+  with no job yet — the offer failed, or the process died between
+  recording and offering — is offered again at each look under the same
+  key, and Mesh converges on the same job. `Client.MeshHook` (mounted at
+  the gateway with `graphql.MeshHooks`, routed by `refs.loom.service`)
+  verifies `X-Mesh-Signature` under `Config.MeshHookSecret` (401 if
+  not; 400 for a body that is not a feed entry); a `job.ended` entry for
+  an open request records it `finished` (end `finished`) or `failed`
+  (any other end) with Mesh's outcome, ends the wait and brings the next
+  look to now; anything else is 200 and changes nothing, so a retried
+  hook settles once. A `job.confirm` ask is answered `run` while the
+  request is open and `cancel` once it is not. At the deadline the runner
+  marks an open request `expired` and cancels its job before the look
+  that is told the wait expired. The look reads how it came out with
+  `LookingAt(ctx).Agent(name)`. `mesh.HTTPClient` follows Mesh's own API
+  (mesh-api `server/jobs.go`, `server/cancel.go`, `conformance/`);
+  `mesh.Fake` takes offers the same way and posts signed hooks, and
+  `loomtest.LoopScenario.Mesh`/`AgentAnswered` test a look's agent
+  decisions with no database (`agent.go`, `mesh/`, ADR 0017).
 - **An event type has a floor.** The release that first writes an event
   type is recorded with that event, in `loom_event_floors`, on the
   appending transaction: first write wins. `Start` refuses, with a

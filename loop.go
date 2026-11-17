@@ -214,6 +214,9 @@ type Looking struct {
 	// children since its last look, each told once.
 	Children   []Child
 	ChildNotes []ChildNote
+	// Agents is the instance's agent requests as they stand: open, or
+	// settled by Mesh's outcome or by their deadline (agent.go).
+	Agents []AgentRecord
 }
 
 // ExpiredWait is the expired wait of that name, if there is one.
@@ -252,6 +255,12 @@ type lookSaid struct {
 	approvals []Approval
 	// children the look restarted (supervise.go)
 	restarts []ChildRef
+	// agents the look asked (agent.go), and what the runtime tells
+	// AskAgent: the aggregate's declared agents and its Mesh
+	agents     []agentAsked
+	agentDefs  []AgentDef
+	meshOn     bool
+	meshTenant string
 }
 
 type lookSaidKey struct{}

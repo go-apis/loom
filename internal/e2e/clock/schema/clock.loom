@@ -150,3 +150,33 @@ aggregate Loaf @loop @supervised_by(Oven, oven_id) {
     status: string!
   }
 }
+
+/// A ticket an agent triages: the fixture for `agent`. Its look asks
+/// the triage agent through Mesh and closes the ticket on the answer;
+/// a sweep that nobody answers runs out after 2s.
+aggregate Ticket @loop {
+  state {
+    status: string
+    verdict: string
+  }
+
+  /// Open a ticket.
+  command OpenTicket -> TicketOpened
+
+  /// Close it with the agent's verdict.
+  command CloseTicket {
+    verdict: string!
+  } -> TicketClosed
+
+  agent triage { kind: "triage", deadline: 30m }
+  agent sweep { kind: "sweep", deadline: 2s }
+
+  event TicketOpened {
+    status: string!
+  }
+
+  event TicketClosed {
+    status: string!
+    verdict: string!
+  }
+}
