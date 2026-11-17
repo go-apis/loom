@@ -74,6 +74,10 @@ type Event struct {
 	At            time.Time `json:"at"`
 	Meta          Metadata  `json:"meta"`
 	Data          any       `json:"data"`
+	// Command is the command whose handling wrote the event, empty for
+	// one no command wrote. Stored, not read back on the log's hot
+	// paths: CompareFork reads it.
+	Command string `json:"command,omitempty"`
 
 	// raw is the decrypted-but-undecoded payload carried by the local log
 	// read path (readLog). Runners decode lazily, per subscriber, so one

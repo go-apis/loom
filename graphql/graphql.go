@@ -102,6 +102,13 @@ type Config struct {
 	// no tenant, so under DefaultPolicy only All access reads it; a
 	// Policy lets operators in by its Field name.
 	Status bool
+	// Fork adds the `forkStream` mutation and the `compareFork` query
+	// (loom.Client.ForkStream, CompareFork): re-run an instance from a
+	// step in another namespace, and read the re-run against its source.
+	// A fork reads one namespace and writes another, so it names no one
+	// tenant: under DefaultPolicy only All access with Mutate forks, and
+	// only All access compares. A Policy lets operators in by Field name.
+	Fork bool
 	// MaxDepth bounds query nesting (fields, through fragments). Zero
 	// means DefaultMaxDepth; negative disables the check. Declared joins
 	// make the type graph cyclic, so an unbounded public gateway would
@@ -171,6 +178,11 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	if cfg.Status {
 		if err := b.statusQuery(cfg.Services); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Fork {
+		if err := b.forkFields(cfg.Services); err != nil {
 			return nil, err
 		}
 	}

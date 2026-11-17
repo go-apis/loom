@@ -40,6 +40,7 @@ func billingRegistry(raise billinggen.RaiseOnOrderReactions) *loom.Registry {
 	impl.CaptureOnPaid(&billing.CaptureOnPaid{})
 	impl.Invoice(&billing.Invoice{})
 	impl.Payee(&billing.Payee{})
+	impl.Contact(&billing.Contact{})
 	impl.LedgerEntry(&billing.LedgerEntry{})
 	return billinggen.NewRegistry(impl)
 }

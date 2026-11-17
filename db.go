@@ -41,6 +41,9 @@ CREATE INDEX IF NOT EXISTS loom_events_by_service_seq ON loom_events (service, g
 -- cheap at negligible write/storage cost
 CREATE INDEX IF NOT EXISTS loom_events_at_brin ON loom_events USING brin (at);
 CREATE INDEX IF NOT EXISTS loom_events_correlation ON loom_events (service, correlation_id);
+-- the command whose handling wrote the event: what a fork's comparison
+-- (CompareFork) reads as the commands a run issued
+ALTER TABLE loom_events ADD COLUMN IF NOT EXISTS command text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS loom_snapshots (
 	service        text NOT NULL,
@@ -286,6 +289,17 @@ CREATE TABLE IF NOT EXISTS loom_keys (
 	PRIMARY KEY (service, namespace, stream_id)
 );
 
+-- a fork's stream seals under its source's data key (pii.go keyHome):
+-- of_namespace is where that key lives
+CREATE TABLE IF NOT EXISTS loom_key_aliases (
+	service      text NOT NULL,
+	namespace    text NOT NULL,
+	stream_id    uuid NOT NULL,
+	of_namespace text NOT NULL,
+	created_at   timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (service, namespace, stream_id)
+);
+
 CREATE TABLE IF NOT EXISTS loom_effects (
 	service    text NOT NULL,
 	scope      text NOT NULL,
@@ -496,10 +510,10 @@ func (c *Client) appendEvents(ctx context.Context, tx pgx.Tx, evts []*Event) err
 			}
 		}
 		err = tx.QueryRow(ctx, `
-			INSERT INTO loom_events (service, namespace, aggregate_type, aggregate_id, version, type, schema_version, at, correlation_id, causation_id, actor, data)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			INSERT INTO loom_events (service, namespace, aggregate_type, aggregate_id, version, type, schema_version, at, correlation_id, causation_id, actor, data, command)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 			RETURNING global_seq`,
-			e.Service, e.Namespace, e.AggregateType, e.AggregateID, e.Version, e.Type, e.SchemaVersion, e.At, e.Meta.CorrelationID, e.Meta.CausationID, e.Meta.Actor, data,
+			e.Service, e.Namespace, e.AggregateType, e.AggregateID, e.Version, e.Type, e.SchemaVersion, e.At, e.Meta.CorrelationID, e.Meta.CausationID, e.Meta.Actor, data, e.Command,
 		).Scan(&e.GlobalSeq)
 		if err != nil {
 			var pgErr *pgconn.PgError

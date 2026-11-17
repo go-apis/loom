@@ -26,13 +26,13 @@ func TestRegistryOwnersInNameOrder(t *testing.T) {
 	for _, e := range reg.Events {
 		events = append(events, e.Name)
 	}
-	if got := strings.Join(aggs, " "); got != "Invoice Payee" {
+	if got := strings.Join(aggs, " "); got != "Contact Invoice Payee" {
 		t.Fatalf("aggregates %s", got)
 	}
 	if got := strings.Join(recs, " "); got != "LedgerEntry" {
 		t.Fatalf("records %s", got)
 	}
-	if got := strings.Join(events, " "); got != "InvoicePaid InvoiceRaised LedgerEntryPosted OrderPlaced PayeeRegistered" {
+	if got := strings.Join(events, " "); got != "ContactRecorded InvoicePaid InvoiceRaised LedgerEntryPosted OrderPlaced PayeeRegistered" {
 		t.Fatalf("events %s", got)
 	}
 	if len(reg.Tables) != 1 || reg.Tables[0].Entity != "Payee" {
@@ -50,6 +50,7 @@ func TestRegistryOwnersInNameOrder(t *testing.T) {
 	impl.RaiseOnOrder(&billing.RaiseOnOrder{})
 	impl.CaptureOnPaid(&billing.CaptureOnPaid{})
 	impl.Invoice(&billing.Invoice{})
+	impl.Contact(&billing.Contact{})
 	impl.LedgerEntry(&billing.LedgerEntry{})
 	billinggen.NewRegistry(impl)
 }

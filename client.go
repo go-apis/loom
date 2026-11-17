@@ -191,6 +191,9 @@ type Client struct {
 	blobs BlobStore
 	dekMu sync.Mutex
 	deks  map[string][]byte // unwrapped per-stream data keys
+	// keyHomes maps a stream to the namespace its data key lives in:
+	// its own, or a fork's source's (keyHome)
+	keyHomes map[string]string
 
 	tables map[string]*tableSQL  // @table entities: precomputed SQL by entity
 	series map[string]*seriesSQL // series: precomputed SQL by name
@@ -268,6 +271,7 @@ func New(cfg Config) (*Client, error) {
 		keys:            cfg.Keys,
 		blobs:           cfg.Blobs,
 		deks:            map[string][]byte{},
+		keyHomes:        map[string]string{},
 		tables:          buildTables(cfg.Registry),
 		series:          buildSeries(cfg.Registry),
 		tel:             newTelemetry(cfg.Registry.Service),
@@ -549,6 +553,7 @@ func (c *Client) handleCommand(ctx context.Context, tx pgx.Tx, cmd Command, meta
 			At:            nowUTC(),
 			Meta:          meta,
 			Data:          payload,
+			Command:       cmdName,
 		}
 		if err := state.Fold(name, payload); err != nil {
 			return nil, err
@@ -645,6 +650,7 @@ func (c *Client) handleRecordCommand(ctx context.Context, tx pgx.Tx, rec *Record
 			At:            nowUTC(),
 			Meta:          meta,
 			Data:          payload,
+			Command:       def.Name,
 		})
 	}
 	if len(events) > 0 {

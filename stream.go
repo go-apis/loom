@@ -128,6 +128,13 @@ func (c *Client) listenOnce(ctx context.Context, channel string) error {
 			}
 			continue
 		}
+		// a fork's key alias was written: drop a cached "no alias"
+		if rest, ok := strings.CutPrefix(n.Payload, "keys:"); ok {
+			if ns, id, ok := strings.Cut(rest, ":"); ok {
+				c.dropDEK(ns, id)
+			}
+			continue
+		}
 		// an instance announced itself: look again at who is alive now,
 		// not at the next beat (instances.go)
 		if n.Payload == instanceArrived {

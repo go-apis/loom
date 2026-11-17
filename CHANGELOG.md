@@ -14,6 +14,18 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A run is forked and re-run from a step** ([ADR 0018](docs/adr/0018-a-run-is-forked-and-re-run-from-a-step.md)).
+  `Client.ForkStream` copies an instance's events up to a version into
+  another namespace with the settled effects of reactions to them, so
+  the service carries on from that step on today's code and `loom.Once`
+  replays the recorded results. A stream with `@pii` fields forks: the
+  fork shares its source's data key, so shredding the source redacts the
+  fork too. `Client.CompareFork` lists the commands and events where the
+  re-run parts from its source. `graphql.Config.Fork` serves
+  `forkStream` and `compareFork` on the gateway and MCP to All access
+  only. Schema: `loom_events` gains `command` (the command that wrote
+  the event, `Event.Command`), and `loom_key_aliases` is new.
+
 - **A stored command carries its schema version and is upcast when it
   runs.** A command takes `@v(n)`, and `upcast X @from(n)` — the event
   syntax — declares a hop for it; `loom generate` emits a

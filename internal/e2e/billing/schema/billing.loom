@@ -59,6 +59,23 @@ aggregate Payee @snapshot(1) @table {
   }
 }
 
+// a contact's email is @pii in its events and its state, and the
+// aggregate is plain (not @table): forkable, so a fork shares the
+// stream's data key and a shred reaches both (fork_test.go)
+aggregate Contact @snapshot(1) {
+  state {
+    email: string @pii
+  }
+
+  command RecordContact {
+    email: string! @pii
+  } -> ContactRecorded
+
+  event ContactRecorded {
+    email: string! @pii
+  }
+}
+
 // declared joins: `spend` follows the invoice's customer over to the
 // orders service (CustomerSpend rows are keyed by customer id)
 entity InvoiceSummary {

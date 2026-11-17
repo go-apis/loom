@@ -721,7 +721,21 @@ generated switches, folds from generated assignments.
   that stream's PII becomes permanently unreadable and decodes as zero
   values, so replays and rebuilds keep working, redacted — erasure for an
   append-only store. Cached keys are evicted cluster-wide via the LISTEN
-  channel.
+  channel. A fork's stream has no key of its own: a `loom_key_aliases`
+  row points it at its source's namespace, so one person's stream has
+  one key however many forks copied it, and shredding the source
+  redacts every fork (ADR 0018).
+- **Forks** (`fork.go`, `compare.go`, ADR 0018): `ForkStream` copies an
+  instance's events up to a version into another namespace through
+  `appendEvents`, with the settled `loom_effects` of reactions to them
+  re-keyed to the copies, so the service re-runs the instance from that
+  step on today's code and `loom.Once` replays what the source recorded.
+  Copies are caused `fork:<ns>/<id>@<seq>` and are not put on the bus.
+  `CompareFork` lines the two runs up by position after the fork point
+  and lists the steps whose command (`loom_events.command`), event or
+  payload differ: a recorded run as a regression test of changed look or
+  agent code. The gateway serves both with `Config.Fork`, to All access
+  only.
 - **The log as a timeseries**: `global_seq` is monotonic and rows are
   append-only, so time queries are sequence-range queries. A BRIN index on
   `at` makes time-window scans cheap at ~zero write cost, and

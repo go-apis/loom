@@ -93,6 +93,7 @@ func (c *Client) Reset(ctx context.Context) ([]string, error) {
 	// the key rows are gone; a cached unwrapped key must not outlive them
 	c.dekMu.Lock()
 	c.deks = map[string][]byte{}
+	c.keyHomes = map[string]string{}
 	c.dekMu.Unlock()
 	c.fan.wakeAll()
 

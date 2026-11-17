@@ -280,6 +280,25 @@ included, and every instance drops its cached key.
 Makes unnecessary: a key-encryption package of the service's own; erasing
 personal data by rewriting events.
 
+### Forks: re-run an instance from a step
+
+**Since** the release after v0.128.0 · **adopt rule** none yet
+
+`Client.ForkStream(ctx, loom.ForkOptions{Aggregate, Namespace, ID,
+UpTo, ToNamespace})` copies an instance's events up to version `UpTo`
+into another namespace, where the service carries on from there on the
+code deployed now. Recorded `loom.Once` results replay, so only steps
+past the fork point reach the outside world; `@pii` data stays under
+the source's key and is shredded with it. `Client.CompareFork` lists
+the commands and events where the re-run parts from the source: a
+recorded run is a regression test for a changed look or agent step.
+`graphql.Config{Fork: true}` serves `forkStream` and `compareFork` to
+All access only, on the gateway and MCP.
+
+Makes unnecessary: hand SQL or a redrive to retry a failed run after a
+fix; waiting for new runs to try changed look or agent code; recorded
+fixtures kept by hand for an eval.
+
 ### Signed export
 
 **Since** v0.102.0 · **adopt rule** none yet

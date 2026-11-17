@@ -15,6 +15,7 @@ func NewRegistry() *loom.Registry {
 	impl.CaptureOnPaid(&CaptureOnPaid{})
 	impl.Invoice(&Invoice{})
 	impl.Payee(&Payee{})
+	impl.Contact(&Contact{})
 	impl.LedgerEntry(&LedgerEntry{})
 	return loomgen.NewRegistry(impl)
 }

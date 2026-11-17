@@ -105,7 +105,15 @@ func open(key, sealed []byte) ([]byte, error) {
 // it seals, so it is cached only once it is known to be committed: a key
 // this transaction inserted (xmin is its own xid) is used but not cached,
 // and the next read after the commit caches it.
+//
+// A fork's stream has no key of its own: it reads and writes under the
+// key of the stream it was forked from (keyHome), so the key is cached,
+// minted and shredded at that home.
 func (c *Client) dek(ctx context.Context, q querier, namespace string, id uuid.UUID, create bool) ([]byte, error) {
+	namespace, err := c.keyHome(ctx, q, namespace, id)
+	if err != nil {
+		return nil, err
+	}
 	cacheKey := namespace + "/" + id.String()
 	c.dekMu.Lock()
 	if k, ok := c.deks[cacheKey]; ok {
@@ -116,7 +124,7 @@ func (c *Client) dek(ctx context.Context, q querier, namespace string, id uuid.U
 
 	var wrapped []byte
 	var uncommitted bool // inserted by q's own still-open transaction
-	err := q.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		SELECT wrapped_dek, (xmin::text::bigint = txid_current_if_assigned() % 4294967296) IS TRUE
 		FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
 		c.reg.Service, namespace, id).Scan(&wrapped, &uncommitted)
@@ -174,7 +182,49 @@ func (c *Client) dek(ctx context.Context, q querier, namespace string, id uuid.U
 func (c *Client) dropDEK(namespace, id string) {
 	c.dekMu.Lock()
 	delete(c.deks, namespace+"/"+id)
+	delete(c.keyHomes, namespace+"/"+id)
 	c.dekMu.Unlock()
+}
+
+// keyHome is the namespace whose data key a stream's @pii fields are
+// sealed under: its own, or for a fork (ForkStream) the namespace of the
+// stream it was forked from, read from loom_key_aliases. A fork shares
+// its source's key rather than holding a copy, so shredding the source
+// shreds the fork's copies of the person's data too: there is one key
+// to delete, wherever the data was copied. Shredding a fork deletes its
+// alias alone, so the fork reads redacted and the source is untouched.
+//
+// An alias never changes once written, so it is cached; one this
+// transaction inserted is used but not cached until committed, as dek
+// does with keys. ForkStream's notify evicts a stale "no alias" on
+// every instance.
+func (c *Client) keyHome(ctx context.Context, q querier, namespace string, id uuid.UUID) (string, error) {
+	cacheKey := namespace + "/" + id.String()
+	c.dekMu.Lock()
+	home, ok := c.keyHomes[cacheKey]
+	c.dekMu.Unlock()
+	if ok {
+		return home, nil
+	}
+	home = namespace
+	var uncommitted bool
+	err := q.QueryRow(ctx, `
+		SELECT of_namespace, (xmin::text::bigint = txid_current_if_assigned() % 4294967296) IS TRUE
+		FROM loom_key_aliases WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
+		c.reg.Service, namespace, id).Scan(&home, &uncommitted)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	if uncommitted {
+		return home, nil
+	}
+	c.dekMu.Lock()
+	if len(c.keyHomes) > 16384 {
+		c.keyHomes = map[string]string{}
+	}
+	c.keyHomes[cacheKey] = home
+	c.dekMu.Unlock()
+	return home, nil
 }
 
 // encryptFields seals the named top-level fields of a JSON document under
@@ -295,7 +345,9 @@ func (c *Client) Shred(ctx context.Context, namespace string, id uuid.UUID) erro
 			return fmt.Errorf("loom: shred %s/%s files: %w", namespace, id, err)
 		}
 	}
+	// a fork's alias goes too: the fork stops reading its source's key
 	if _, err := c.db.Exec(ctx, `
+		WITH a AS (DELETE FROM loom_key_aliases WHERE service=$1 AND namespace=$2 AND stream_id=$3)
 		DELETE FROM loom_keys WHERE service=$1 AND namespace=$2 AND stream_id=$3`,
 		c.reg.Service, namespace, id); err != nil {
 		return err
