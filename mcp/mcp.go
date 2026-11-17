@@ -131,7 +131,10 @@ type callIn struct {
 }
 
 func (s *server) serverFor(ctx context.Context) *sdk.Server {
-	srv := sdk.NewServer(s.impl, nil)
+	// tools, and nothing else: the five never change while the server
+	// runs, so there is no list change to listen for, and no log is
+	// sent to a client (Logging is deprecated as of MCP 2026-07-28)
+	srv := sdk.NewServer(s.impl, &sdk.ServerOptions{Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}}})
 	yes, no := true, false
 	readOnly := &sdk.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &no}
 	sdk.AddTool(srv, &sdk.Tool{
