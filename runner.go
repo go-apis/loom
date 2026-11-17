@@ -439,6 +439,9 @@ func (c *Client) tryRunnerLock(ctx context.Context, tx pgx.Tx, runner string) (b
 // that failed alongside the error.
 func (c *Client) foldEvents(ctx context.Context, tx pgx.Tx, p *ProjectionDef, events []*Event) (int, error) {
 	table := c.tables[p.Entity] // @table: typed columns, not the doc store
+	if table == nil {
+		return c.foldEventsBatched(ctx, tx, p, events)
+	}
 	for i, evt := range events {
 		if !contains(p.Events, evt.Type) {
 			continue
@@ -446,6 +449,127 @@ func (c *Client) foldEvents(ctx context.Context, tx pgx.Tx, p *ProjectionDef, ev
 		if err := c.foldEvent(ctx, tx, p, table, evt); err != nil {
 			return i, fmt.Errorf("projection %s at seq %d (%s): %w", p.Name, evt.GlobalSeq, evt.Type, err)
 		}
+	}
+	return 0, nil
+}
+
+// foldEventsBatched folds a batch into the doc store with one read and
+// one write, not two round trips per event: it reads (and locks) every
+// row the batch touches at once, folds the events into them in order in
+// memory, and writes each changed row once. A fold that fails answers
+// its event's index with nothing written, as the per-event fold did; a
+// write that fails answers 0, the batch's first event, since one
+// statement wrote them all.
+func (c *Client) foldEventsBatched(ctx context.Context, tx pgx.Tx, p *ProjectionDef, events []*Event) (int, error) {
+	type key struct {
+		ns string
+		id uuid.UUID
+	}
+	type step struct {
+		i   int
+		evt *Event
+		k   key
+	}
+	var (
+		steps []step
+		keys  []key
+		seen  = map[key]bool{}
+	)
+	for i, evt := range events {
+		if !contains(p.Events, evt.Type) {
+			continue
+		}
+		// decode only what this projection subscribes to, into a copy:
+		// the batch is shared with every other runner on this instance
+		evt, err := c.decodeEvent(evt)
+		if err != nil {
+			return i, fmt.Errorf("projection %s at seq %d (%s): %w", p.Name, events[i].GlobalSeq, events[i].Type, err)
+		}
+		k := key{evt.Namespace, p.EntityID(evt)}
+		steps = append(steps, step{i, evt, k})
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	if len(steps) == 0 {
+		return 0, nil
+	}
+	nss := make([]string, len(keys))
+	ids := make([]uuid.UUID, len(keys))
+	for j, k := range keys {
+		nss[j], ids[j] = k.ns, k.id
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT e.namespace, e.id, e.data FROM loom_entities e
+		JOIN unnest($3::text[], $4::uuid[]) AS want(namespace, id) USING (namespace, id)
+		WHERE e.service=$1 AND e.entity_type=$2
+		ORDER BY e.namespace, e.id
+		FOR UPDATE OF e`,
+		c.reg.Service, p.Entity, nss, ids)
+	if err != nil {
+		return steps[0].i, err
+	}
+	stored := map[key][]byte{}
+	for rows.Next() {
+		var (
+			k    key
+			data []byte
+		)
+		if err := rows.Scan(&k.ns, &k.id, &data); err != nil {
+			rows.Close()
+			return steps[0].i, err
+		}
+		stored[k] = data
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return steps[0].i, err
+	}
+	states := map[key]EntityState{}
+	for _, st := range steps {
+		state, ok := states[st.k]
+		if !ok {
+			state = p.NewState()
+			if data, found := stored[st.k]; found {
+				if data, err = c.decryptFields(ctx, tx, st.k.ns, st.k.id, data, p.PII); err != nil {
+					return st.i, fmt.Errorf("projection %s at seq %d (%s): entity %s/%s: %w", p.Name, st.evt.GlobalSeq, st.evt.Type, p.Entity, st.k.id, err)
+				}
+				if err := json.Unmarshal(data, state); err != nil {
+					return st.i, fmt.Errorf("projection %s at seq %d (%s): entity %s/%s: %w", p.Name, st.evt.GlobalSeq, st.evt.Type, p.Entity, st.k.id, err)
+				}
+			}
+			states[st.k] = state
+		}
+		var ferr error
+		if p.Fold != nil { // @fold: the hand-written fold
+			ferr = p.Fold(state, st.evt)
+		} else {
+			ferr = state.Fold(st.evt.Type, st.evt.Data)
+		}
+		if ferr != nil {
+			return st.i, fmt.Errorf("projection %s at seq %d (%s): fold: %w", p.Name, st.evt.GlobalSeq, st.evt.Type, ferr)
+		}
+	}
+	docs := make([]string, len(keys))
+	for j, k := range keys {
+		out, err := json.Marshal(states[k])
+		if err != nil {
+			return steps[0].i, err
+		}
+		if out, err = c.encryptFields(ctx, tx, k.ns, k.id, out, p.PII); err != nil {
+			return steps[0].i, err
+		}
+		docs[j] = string(out)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO loom_entities (service, namespace, entity_type, id, data, updated_at)
+		SELECT $1, w.namespace, $2, w.id, w.data::jsonb, now()
+		FROM unnest($3::text[], $4::uuid[], $5::text[]) AS w(namespace, id, data)
+		ON CONFLICT (service, namespace, entity_type, id)
+		DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+		c.reg.Service, p.Entity, nss, ids, docs); err != nil {
+		return steps[0].i, err
 	}
 	return 0, nil
 }
