@@ -55,7 +55,10 @@ func TestSchedulesKeepTicking(t *testing.T) {
 	// both ring at the deploy; the one-second bell goes on, the hourly
 	// chime has rung once
 	waitFor(t, ctx, "the bell to ring three times", func() bool { return rings(bell) >= 3 })
-	if took := time.Since(started); took < 1500*time.Millisecond || took > 8*time.Second {
+	// wall time, as the schedule keeps it (Postgres's now()): a host whose
+	// wall clock is corrected forward in steps (WSL) advances it faster
+	// than the monotonic clock time.Since reads, and the ticks follow it
+	if took := time.Now().Round(0).Sub(started.Round(0)); took < 1500*time.Millisecond || took > 8*time.Second {
 		t.Errorf("three rings took %s; want the first at the start and one a second after", took)
 	}
 	if got := rings(chime); got != 1 {
