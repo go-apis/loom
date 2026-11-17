@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS loom_loop_due (
 	PRIMARY KEY (service, aggregate_type, namespace, aggregate_id)
 );
 CREATE INDEX IF NOT EXISTS loom_loop_due_next ON loom_loop_due (service, next_look);
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS deadlines_fired jsonb NOT NULL DEFAULT '[]';
 
 CREATE TABLE IF NOT EXISTS loom_approvals (
 	service        text NOT NULL,
