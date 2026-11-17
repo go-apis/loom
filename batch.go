@@ -117,11 +117,11 @@ func (c *Client) enqueueBatchTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, na
 		if raw, err = c.sealCommand(ctx, tx, cmd, raw); err != nil {
 			return fmt.Errorf("batch item %d (%s): %w", i, cmd.LoomCommand(), err)
 		}
-		rows = append(rows, []any{c.reg.Service, id, i, cmd.LoomCommand(), raw})
+		rows = append(rows, []any{c.reg.Service, id, i, cmd.LoomCommand(), raw, c.commandVersion(cmd.LoomCommand())})
 	}
 	_, err = tx.CopyFrom(ctx,
 		pgx.Identifier{"loom_batch_items"},
-		[]string{"service", "batch_id", "seq", "command_type", "command"},
+		[]string{"service", "batch_id", "seq", "command_type", "command", "command_version"},
 		pgx.CopyFromRows(rows))
 	return err
 }
@@ -209,6 +209,7 @@ func (c *Client) batchStep(ctx context.Context) (int, error) {
 		batchID uuid.UUID
 		seq     int
 		cmdType string
+		version int
 		raw     []byte
 	}
 
@@ -235,7 +236,7 @@ func (c *Client) batchStep(ctx context.Context) (int, error) {
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING batch_id, seq, command_type, command`,
+		RETURNING batch_id, seq, command_type, command_version, command`,
 		c.reg.Service, batchChunk)
 	if err != nil {
 		return 0, err
@@ -243,7 +244,7 @@ func (c *Client) batchStep(ctx context.Context) (int, error) {
 	var chunk []item
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.batchID, &it.seq, &it.cmdType, &it.raw); err != nil {
+		if err := rows.Scan(&it.batchID, &it.seq, &it.cmdType, &it.version, &it.raw); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -267,7 +268,7 @@ func (c *Client) batchStep(ctx context.Context) (int, error) {
 		raw, err := c.openCommand(ctx, c.db, it.cmdType, it.raw)
 		var cmd Command
 		if err == nil {
-			cmd, err = c.decodeCommand(it.cmdType, raw)
+			cmd, err = c.decodeStoredCommand(it.cmdType, it.version, raw)
 		}
 		if err != nil {
 			dispatchErr = err

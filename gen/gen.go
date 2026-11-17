@@ -82,7 +82,7 @@ func (g *generator) render() (map[string][]byte, error) {
 	}
 	// the two service-wide interfaces, each written once something
 	// declares a method of it
-	if len(g.upcastHops()) > 0 {
+	if len(g.upcastHops()) > 0 || len(g.commandUpcastHops()) > 0 {
 		files[filepath.Join(genDir, "upcasts_gen.go")] = g.upcasts()
 	}
 	if len(g.loopingAggregates()) > 0 {
@@ -857,6 +857,9 @@ var (
 		if c.Plan {
 			b.WriteString("\t\t\t\tPlan: true,\n")
 		}
+		if c.Version > 1 {
+			fmt.Fprintf(&b, "\t\t\t\tSchemaVersion: %d,\n", c.Version)
+		}
 		if req := requiredFields(c.Payload); len(req) > 0 {
 			fmt.Fprintf(&b, "\t\t\t\tRequired: %s,\n", stringSlice(req))
 		}
@@ -891,9 +894,25 @@ func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	bindMethod(b, o.name, fmt.Sprintf("the %s %s's handlers", kind, o.name), o.name+"Handlers", kind+":"+o.name)
 	b.WriteString("func init() {\n")
 	fmt.Fprintf(b, "\tloomRegister(loomOwner{kind: %q, name: %q, bind: %q, register: func(impl Impl, h any, r *loom.Registry) {\n", kind, o.name, o.name)
-	if o.agg != nil && o.agg.Loop {
-		// the loop's look is one method of the service-wide Look
-		fmt.Fprintf(b, "\t\thandlers, _ := h.(%sHandlers) // nil under NewPartialRegistry when nothing is bound\n\t\tdef := %s(handlers)\n\t\tdef.Look = impl.Look.%s\n\t\tr.%s = append(r.%s, def)\n", o.name, o.defFunc(), lookMethod(o.agg), field, field)
+	var cmdUps []string // a command's hops are methods of the service-wide CommandUpcasts
+	for i, c := range o.commands() {
+		if len(c.Upcasts) == 0 {
+			continue
+		}
+		var hops []string
+		for _, from := range c.Upcasts {
+			hops = append(hops, fmt.Sprintf("%d: impl.CommandUpcasts.%s", from, commandUpcastMethod(c, from)))
+		}
+		cmdUps = append(cmdUps, fmt.Sprintf("\t\tdef.Commands[%d].Upcasts = map[int]loom.UpcastFunc{%s} // %s\n", i, strings.Join(hops, ", "), c.Name))
+	}
+	if (o.agg != nil && o.agg.Loop) || len(cmdUps) > 0 {
+		fmt.Fprintf(b, "\t\thandlers, _ := h.(%sHandlers) // nil under NewPartialRegistry when nothing is bound\n\t\tdef := %s(handlers)\n", o.name, o.defFunc())
+		if o.agg != nil && o.agg.Loop {
+			// the loop's look is one method of the service-wide Look
+			fmt.Fprintf(b, "\t\tdef.Look = impl.Look.%s\n", lookMethod(o.agg))
+		}
+		b.WriteString(strings.Join(cmdUps, ""))
+		fmt.Fprintf(b, "\t\tr.%s = append(r.%s, def)\n", field, field)
 	} else {
 		fmt.Fprintf(b, "\t\thandlers, _ := h.(%sHandlers) // nil under NewPartialRegistry when nothing is bound\n\t\tr.%s = append(r.%s, %s(handlers))\n", o.name, field, field, o.defFunc())
 	}
@@ -1387,6 +1406,9 @@ type Impl struct {
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\t// Upcasts is the hand-written migration hops (upcasts_gen.go).\n\tUpcasts EventUpcasts\n")
 	}
+	if len(g.commandUpcastHops()) > 0 {
+		b.WriteString("\t// CommandUpcasts is the hand-written hops for stored commands\n\t// (upcasts_gen.go).\n\tCommandUpcasts CommandUpcasts\n")
+	}
 	if len(g.loopingAggregates()) > 0 {
 		b.WriteString("\t// Look is the recurring look each @loop aggregate declares (look_gen.go).\n\tLook Look\n")
 	}
@@ -1414,6 +1436,9 @@ func loomRegistry(impl Impl, partial bool) *loom.Registry {
 	// at boot with a pointed message instead of a nil-deref later
 	if len(g.upcastHops()) > 0 {
 		b.WriteString("\tif impl.Upcasts == nil {\n\t\tpanic(\"loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)\")\n\t}\n")
+	}
+	if len(g.commandUpcastHops()) > 0 {
+		b.WriteString("\tif impl.CommandUpcasts == nil {\n\t\tpanic(\"loomgen: the schema declares command upcasts — wire Impl.CommandUpcasts (see the CommandUpcasts stub; your registry.go predates it)\")\n\t}\n")
 	}
 	if len(g.loopingAggregates()) > 0 {
 		b.WriteString("\tif impl.Look == nil {\n\t\tpanic(\"loomgen: the schema declares @loop — wire Impl.Look (see the Look stub; your registry.go predates it)\")\n\t}\n")
@@ -1548,11 +1573,23 @@ func (g *generator) upcasts() string {
 	var b strings.Builder
 	b.WriteString(header)
 	fmt.Fprintf(&b, "package %s\n\n", g.genPkg)
-	b.WriteString("// EventUpcasts lifts stored payloads written under older @v versions:\n// raw JSON of version n in, raw JSON of version n+1 out. Hops chain at\n// decode time.\ntype EventUpcasts interface {\n")
-	for _, u := range g.upcastHops() {
-		fmt.Fprintf(&b, "\t%s(data []byte) ([]byte, error)\n", u.method)
+	if ups := g.upcastHops(); len(ups) > 0 {
+		b.WriteString("// EventUpcasts lifts stored payloads written under older @v versions:\n// raw JSON of version n in, raw JSON of version n+1 out. Hops chain at\n// decode time.\ntype EventUpcasts interface {\n")
+		for _, u := range ups {
+			fmt.Fprintf(&b, "\t%s(data []byte) ([]byte, error)\n", u.method)
+		}
+		b.WriteString("}\n")
 	}
-	b.WriteString("}\n")
+	if ups := g.commandUpcastHops(); len(ups) > 0 {
+		if len(g.upcastHops()) > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("// CommandUpcasts lifts stored commands (timers, batch items, plans)\n// written under older @v versions: raw JSON of version n in, raw JSON of\n// version n+1 out. Hops chain when the command is read to run.\ntype CommandUpcasts interface {\n")
+		for _, u := range ups {
+			fmt.Fprintf(&b, "\t%s(data []byte) ([]byte, error)\n", u.method)
+		}
+		b.WriteString("}\n")
+	}
 	return b.String()
 }
 
@@ -1747,6 +1784,37 @@ func upcastMethod(e *schema.Event, from int) string {
 
 // upcastHops lists every declared migration hop across all events, in
 // schema order — the shape behind the EventUpcasts interface and stub.
+func commandUpcastMethod(c *schema.Command, from int) string {
+	return fmt.Sprintf("%sFromV%d", exported(c.Name), from)
+}
+
+type commandUpcastHop struct {
+	command *schema.Command
+	from    int
+	method  string
+}
+
+// commandUpcastHops lists every declared hop for stored commands,
+// aggregates' then records', in schema order — the shape behind the
+// CommandUpcasts interface and stub.
+func (g *generator) commandUpcastHops() []commandUpcastHop {
+	var out []commandUpcastHop
+	add := func(cmds []*schema.Command) {
+		for _, c := range cmds {
+			for _, from := range c.Upcasts {
+				out = append(out, commandUpcastHop{command: c, from: from, method: commandUpcastMethod(c, from)})
+			}
+		}
+	}
+	for _, a := range g.s.Aggregates {
+		add(a.Commands)
+	}
+	for _, r := range g.s.Records {
+		add(r.Commands)
+	}
+	return out
+}
+
 func (g *generator) upcastHops() []upcastHop {
 	var out []upcastHop
 	for _, e := range g.s.Events {
@@ -2051,6 +2119,15 @@ func (g *generator) stubs() map[string]string {
 		}
 		out["upcasts.go"] = b.String()
 	}
+	if ups := g.commandUpcastHops(); len(ups) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "package %s\n\n", g.cfg.Package)
+		fmt.Fprintf(&b, "// CommandUpcasts implements %s.CommandUpcasts — migration for commands\n// loom stored to run later (timers, batch items, plans) under older @v\n// versions. Each hop takes the command JSON of one version and returns the\n// command JSON of the next; loom chains hops when the command is read to\n// run, so handlers only ever see the current shape. Keep aggregate_id and\n// namespace. Yours to edit.\ntype CommandUpcasts struct{}\n\n", g.genPkg)
+		for _, u := range ups {
+			fmt.Fprintf(&b, "// %s lifts a stored %s v%d → v%d.\nfunc (u *CommandUpcasts) %s(data []byte) ([]byte, error) {\n\tpanic(\"not implemented\")\n}\n\n", u.method, u.command.Name, u.from, u.from+1, u.method)
+		}
+		out["command_upcasts.go"] = b.String()
+	}
 
 	// look stub: service-wide, at the root in both layouts (one Look
 	// implements every @loop aggregate's method, like Upcasts)
@@ -2075,6 +2152,9 @@ func (g *generator) stubs() map[string]string {
 		fmt.Fprintf(&b, "func NewRegistry(deps %s.Deps) *loom.Registry {\n\timpl := %s.Impl(deps)\n", wirePkg, wirePkg)
 		if len(g.upcastHops()) > 0 {
 			b.WriteString("\timpl.Upcasts = &Upcasts{}\n")
+		}
+		if len(g.commandUpcastHops()) > 0 {
+			b.WriteString("\timpl.CommandUpcasts = &CommandUpcasts{}\n")
 		}
 		if len(g.loopingAggregates()) > 0 {
 			b.WriteString("\timpl.Look = &Look{}\n")
@@ -2117,6 +2197,9 @@ func (g *generator) stubs() map[string]string {
 	var fields []string
 	if len(g.upcastHops()) > 0 {
 		fields = append(fields, "Upcasts: &Upcasts{}")
+	}
+	if len(g.commandUpcastHops()) > 0 {
+		fields = append(fields, "CommandUpcasts: &CommandUpcasts{}")
 	}
 	if len(g.loopingAggregates()) > 0 {
 		fields = append(fields, "Look: &Look{}")

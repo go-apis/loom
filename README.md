@@ -125,7 +125,7 @@ loom.yml gives each kind its own package instead —
 myservice/
   loomgen/              # generated, regenerated every run
     loom_gen.go         # fixed: Impl, NewRegistry; names nothing in the schema
-    upcasts_gen.go      # the EventUpcasts interface, once an upcast is declared
+    upcasts_gen.go      # EventUpcasts / CommandUpcasts, once an upcast is declared
     look_gen.go         # the Look interface, once an aggregate declares @loop
     <aggregate>_gen.go  # one per aggregate and record: order_gen.go, …
     <name>_<kind>_gen.go  # one per policy, process, projection and
@@ -841,6 +841,28 @@ subscriber nothing. `Migrate` enforces the other half: it fails if the
 service's log holds any type the registry doesn't declare, so a dropped
 declaration is caught at deploy time rather than by whichever runner
 happens to read that row.
+
+### Commands at rest
+
+A command loom keeps to run later — a timer from `loom.After`, a batch
+item, a plan — is stored with its version, and can sleep across a deploy
+that changes its shape. Version the command and declare the hop the same
+way:
+
+```
+command CancelOrder @v(2) {
+  reason: string        // v1 called it `why`
+} -> OrderCancelled
+
+upcast CancelOrder @from(1)
+```
+
+`loom generate` adds `CancelOrderFromV1` to a `CommandUpcasts` interface
+and stub (command JSON of v1 in, of v2 out). A stored v1 command is lifted
+when it is read to run, so the handler sees only v2. `Migrate` refuses
+while a stored command holds a version no hop brings forward, naming the
+command and how many rows, so the deploy stops rather than the timer
+failing days later. Rows stored before versions existed read as v1.
 
 ## PII: encrypted at rest, shreddable forever
 

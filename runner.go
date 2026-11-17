@@ -1144,12 +1144,13 @@ func (c *Client) RedriveDeadLetter(ctx context.Context, id int64) error {
 		var parked struct {
 			Key         string          `json:"timer_key"`
 			CommandType string          `json:"command_type"`
+			Version     int             `json:"command_version"` // absent (parked before it was kept): 1
 			Command     json.RawMessage `json:"command"`
 		}
 		if err := json.Unmarshal(raw, &parked); err != nil {
 			return err
 		}
-		if err := c.fireTimer(ctx, parked.Key, parked.CommandType, parked.Command, nil); err != nil {
+		if err := c.fireTimer(ctx, parked.Key, parked.CommandType, parked.Version, parked.Command, nil); err != nil {
 			return err
 		}
 	default:

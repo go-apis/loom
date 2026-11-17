@@ -149,9 +149,9 @@ func (c *Client) Plan(ctx context.Context, cmd Command, ttl time.Duration) (*Pla
 		return nil, err
 	}
 	_, err = c.db.Exec(ctx, `
-		INSERT INTO loom_plans (service, id, namespace, command_type, command, meta, target_id, version, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		c.reg.Service, plan.ID, ns, name, raw, meta, id, version, plan.ExpiresAt)
+		INSERT INTO loom_plans (service, id, namespace, command_type, command, meta, target_id, version, expires_at, command_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		c.reg.Service, plan.ID, ns, name, raw, meta, id, version, plan.ExpiresAt, c.commandVersion(name))
 	if err != nil {
 		return nil, err
 	}
@@ -515,18 +515,19 @@ func (c *Client) RunPlan(ctx context.Context, namespace string, id uuid.UUID) er
 func (c *Client) heldPlan(ctx context.Context, q dbConn, namespace string, id uuid.UUID, lock bool) (Command, int, Metadata, error) {
 	var (
 		cmdType      string
+		cmdVersion   int
 		raw, metaRaw []byte
 		version      int
 		expires      time.Time
 		meta         Metadata
 	)
 	sql := `
-		SELECT command_type, command, meta, version, expires_at FROM loom_plans
+		SELECT command_type, command_version, command, meta, version, expires_at FROM loom_plans
 		WHERE service=$1 AND namespace=$2 AND id=$3`
 	if lock {
 		sql += ` FOR UPDATE`
 	}
-	err := q.QueryRow(ctx, sql, c.reg.Service, namespace, id).Scan(&cmdType, &raw, &metaRaw, &version, &expires)
+	err := q.QueryRow(ctx, sql, c.reg.Service, namespace, id).Scan(&cmdType, &cmdVersion, &raw, &metaRaw, &version, &expires)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !nowUTC().Before(expires)) {
 		return nil, 0, meta, ErrNoPlan
 	}
@@ -536,7 +537,7 @@ func (c *Client) heldPlan(ctx context.Context, q dbConn, namespace string, id uu
 	if raw, err = c.openCommand(ctx, q, cmdType, raw); err != nil {
 		return nil, 0, meta, err
 	}
-	cmd, err := c.decodeCommand(cmdType, raw)
+	cmd, err := c.decodeStoredCommand(cmdType, cmdVersion, raw)
 	if err != nil {
 		return nil, 0, meta, err
 	}

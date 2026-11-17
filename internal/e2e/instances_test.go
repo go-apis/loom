@@ -57,7 +57,7 @@ func TestTheNewestGenerationAliveDoesTheBackgroundWork(t *testing.T) {
 	instance := func(generation int64, revision string) (*loom.Client, *countingOrder, *countingSpend) {
 		t.Helper()
 		h, spend := &countingOrder{}, &countingSpend{}
-		impl := ordersgen.Impl{Upcasts: &orders.Upcasts{}}
+		impl := ordersgen.Impl{Upcasts: &orders.Upcasts{}, CommandUpcasts: &orders.CommandUpcasts{}}
 		impl.ScheduleAutoCancel(&orders.ScheduleAutoCancel{})
 		impl.DropAutoCancel(&orders.DropAutoCancel{})
 		impl.ShipOnPayment(&orders.ShipOnPayment{})

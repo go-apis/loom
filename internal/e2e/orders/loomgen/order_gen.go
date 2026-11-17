@@ -28,6 +28,8 @@ func (*AttachContract) LoomCommand() string { return "AttachContract" }
 
 type CancelOrder struct {
 	loom.CommandBase
+
+	Reason string `json:"reason"`
 }
 
 func (*CancelOrder) LoomCommand() string { return "CancelOrder" }
@@ -172,9 +174,10 @@ func aggregateDefOrder(h OrderHandlers) *loom.AggregateDef {
 				},
 			},
 			{
-				Name:  "CancelOrder",
-				New:   func() loom.Command { return &CancelOrder{} },
-				Emits: []string{"OrderCancelled"},
+				Name:          "CancelOrder",
+				New:           func() loom.Command { return &CancelOrder{} },
+				Emits:         []string{"OrderCancelled"},
+				SchemaVersion: 2,
 				Handle: func(ctx context.Context, state loom.AggregateState, cmd loom.Command) ([]any, error) {
 					evts, err := h.CancelOrder(ctx, state.(*Order), cmd.(*CancelOrder))
 					return asAny(evts), err
@@ -234,7 +237,9 @@ func (b Bound) Order() OrderHandlers {
 func init() {
 	loomRegister(loomOwner{kind: "aggregate", name: "Order", bind: "Order", register: func(impl Impl, h any, r *loom.Registry) {
 		handlers, _ := h.(OrderHandlers) // nil under NewPartialRegistry when nothing is bound
-		r.Aggregates = append(r.Aggregates, aggregateDefOrder(handlers))
+		def := aggregateDefOrder(handlers)
+		def.Commands[1].Upcasts = map[int]loom.UpcastFunc{1: impl.CommandUpcasts.CancelOrderFromV1} // CancelOrder
+		r.Aggregates = append(r.Aggregates, def)
 		r.Events = append(r.Events,
 			&loom.EventDef{Name: "ContractAttached", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractAttached{} }},
 			&loom.EventDef{Name: "ContractRequested", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &ContractRequested{} }},

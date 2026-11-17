@@ -91,7 +91,7 @@ func (c *Client) ensureSchedules(ctx context.Context) error {
 	for _, s := range c.allSchedules() {
 		// a function's row holds nothing to dispatch: the function is in
 		// the build, and the row is only its clock
-		ns, cmdType, raw := "", tickType, []byte("{}")
+		ns, cmdType, raw, version := "", tickType, []byte("{}"), 1
 		if s.Run == nil {
 			cmd := s.New()
 			var err error
@@ -100,18 +100,20 @@ func (c *Client) ensureSchedules(ctx context.Context) error {
 			}
 			ns, _ = cmd.CommandTarget()
 			cmdType = cmd.LoomCommand()
+			version = c.commandVersion(cmdType)
 		}
 		key := scheduleKeyPrefix + s.Name
 		keys = append(keys, key)
 		_, err := c.db.Exec(ctx, `
-			INSERT INTO loom_timers (service, namespace, key, command_type, command, meta, fire_at)
-			VALUES ($1,$2,$3,$4,$5,'{}', now())
+			INSERT INTO loom_timers (service, namespace, key, command_type, command, meta, fire_at, command_version)
+			VALUES ($1,$2,$3,$4,$5,'{}', now(), $7)
 			ON CONFLICT (service, key) DO UPDATE SET
 				namespace = EXCLUDED.namespace,
 				command_type = EXCLUDED.command_type,
 				command = EXCLUDED.command,
+				command_version = EXCLUDED.command_version,
 				fire_at = LEAST(loom_timers.fire_at, now() + make_interval(secs => $6))`,
-			c.reg.Service, ns, key, cmdType, raw, (s.Every + timerLease).Seconds())
+			c.reg.Service, ns, key, cmdType, raw, (s.Every + timerLease).Seconds(), version)
 		if err != nil {
 			return err
 		}
@@ -138,7 +140,7 @@ func (c *Client) fireSchedule(ctx context.Context, d dueTimer) error {
 		err = c.runTick(WithMeta(ctx, Metadata{Actor: "schedule:" + def.Name}), def)
 	} else {
 		meta, _ := json.Marshal(Metadata{Actor: "schedule:" + def.Name})
-		err = c.fireTimer(ctx, d.key, d.cmdType, d.cmd, meta)
+		err = c.fireTimer(ctx, d.key, d.cmdType, d.cmdVersion, d.cmd, meta)
 	}
 	if err != nil {
 		if ctx.Err() != nil {

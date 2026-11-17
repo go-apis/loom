@@ -50,6 +50,9 @@ func ParseFiles(files []File) (*schema.Schema, error) {
 	if err := p.mergeEnums(); err != nil {
 		return nil, err
 	}
+	if err := p.resolveUpcasts(); err != nil {
+		return nil, err
+	}
 	p.out.Sort()
 	if err := p.out.Validate(); err != nil {
 		return nil, err
@@ -64,6 +67,9 @@ type parser struct {
 	out        *schema.Schema
 	events     map[string]*schema.Event
 	enumBlocks []*enumBlock // every enum block, home or extension, in source order
+	// upcasts is every unqualified `upcast X` in source order: X is a
+	// command or an event, which only the whole schema can say
+	upcasts []pendingUpcast
 	// allows is the @allow rules the last directives() call read, in
 	// source order. @allow repeats and takes pairs, which the name →
 	// args map directives() returns cannot hold; a site that takes
@@ -666,11 +672,21 @@ func (p *parser) command() (*schema.Command, error) {
 		return nil, err
 	}
 	for d := range dirs {
-		if d != "role" && d != "allow" && d != "plan" {
-			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role, @allow, @plan)", name, d)
+		if d != "role" && d != "allow" && d != "plan" && d != "v" {
+			return nil, fmt.Errorf("command %s: unknown directive @%s (commands take @role, @allow, @plan, @v)", name, d)
 		}
 	}
 	cmd.Allow = p.allows
+	if args, ok := dirs["v"]; ok {
+		v := 0
+		if len(args) == 1 {
+			v, _ = strconv.Atoi(args[0])
+		}
+		if v < 1 {
+			return nil, fmt.Errorf("command %s: @v wants a positive version, got %q", name, strings.Join(args, ", "))
+		}
+		cmd.Version = v
+	}
 	if args, ok := dirs["plan"]; ok {
 		if len(args) > 0 {
 			return nil, fmt.Errorf("command %s: @plan takes no arguments", name)
@@ -767,18 +783,23 @@ func (p *parser) consume() error {
 // entity parses a read-model declaration. `@table` stores it in a typed
 // per-entity table (real columns, SQL/BI-friendly) instead of the shared
 // jsonb doc table.
-// upcast declares payload migration for stored events written under older
-// schema versions; each @from(n) names a hand-written hop n → n+1:
+// upcast declares payload migration for stored events — or stored
+// commands (timers, batch items, plans) — written under older schema
+// versions; each @from(n) names a hand-written hop n → n+1:
 //
 //	upcast OrderPlaced @from(1)
 //	upcast OrderPlaced @from(2)     // or @from(1, 2)
+//	upcast CancelOrder @from(1)     // a command: the same syntax
+//
+// An unqualified name is resolved once the whole schema is read
+// (resolveUpcasts): a declared command takes it, anything else is an event.
 func (p *parser) upcast() error {
 	t := p.next()
+	qualified := p.peekAt(1).text == "."
 	name, err := p.eventRef()
 	if err != nil {
 		return err
 	}
-	evt := p.registerEvent(name, "")
 	dirs, err := p.directives()
 	if err != nil {
 		return err
@@ -792,12 +813,56 @@ func (p *parser) upcast() error {
 	if len(args) == 0 {
 		return p.errf(t, "upcast %s needs @from(version)", name)
 	}
+	var froms []int
 	for _, a := range args {
 		v, err := strconv.Atoi(a)
 		if err != nil || v < 1 {
 			return p.errf(t, "upcast %s: @from wants a positive version, got %q", name, a)
 		}
-		evt.Upcasts = append(evt.Upcasts, v)
+		froms = append(froms, v)
+	}
+	if qualified {
+		evt := p.registerEvent(name, "")
+		evt.Upcasts = append(evt.Upcasts, froms...)
+		return nil
+	}
+	p.upcasts = append(p.upcasts, pendingUpcast{tok: t, name: name, from: froms})
+	return nil
+}
+
+type pendingUpcast struct {
+	tok  token
+	name string
+	from []int
+}
+
+// resolveUpcasts gives each unqualified upcast to the command of its name,
+// or else to the event (declaring it, as before, when nothing else does).
+// A name that is both a command and an event is refused: which hop runs
+// would be a guess.
+func (p *parser) resolveUpcasts() error {
+	commands := map[string]*schema.Command{}
+	for _, a := range p.out.Aggregates {
+		for _, c := range a.Commands {
+			commands[c.Name] = c
+		}
+	}
+	for _, r := range p.out.Records {
+		for _, c := range r.Commands {
+			commands[c.Name] = c
+		}
+	}
+	for _, u := range p.upcasts {
+		cmd := commands[u.name]
+		if cmd == nil {
+			evt := p.registerEvent(u.name, "")
+			evt.Upcasts = append(evt.Upcasts, u.from...)
+			continue
+		}
+		if _, ok := p.events[u.name]; ok {
+			return p.errf(u.tok, "upcast %s: %s is both a command and an event — rename one", u.name, u.name)
+		}
+		cmd.Upcasts = append(cmd.Upcasts, u.from...)
 	}
 	return nil
 }

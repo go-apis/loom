@@ -35,7 +35,11 @@ aggregate Order @snapshot(5) {
   // these roles in the target namespace. In-process dispatch (the
   // shipOnPayment process below) is not gated.
   command ShipOrder @role(owner, shipper) -> OrderShipped
-  command CancelOrder -> OrderCancelled
+  // v1 called the reason `why`; timers stored then still hold it, and
+  // the command upcast below renames it as they fire
+  command CancelOrder @v(2) {
+    reason: string
+  } -> OrderCancelled
 
   command RequestContract {
     contract: file!
@@ -151,6 +155,9 @@ consume billing.InvoicePaid {
 
 // stored v1 OrderCancelled rows predate `reason`
 upcast OrderCancelled @from(1)
+
+// stored v1 CancelOrder commands (timers, batch items) say `why`
+upcast CancelOrder @from(1)
 
 // series: append-only market-price observations per sku — facts about
 // the outside world, bypassing the log entirely. Identity is
