@@ -58,6 +58,37 @@ func (c *Client) broadcastLog() {
 	c.watchMu.Unlock()
 }
 
+// notifyLog tells the service's other instances that the log has moved,
+// soon after an append commits and outside its transaction. Notifies
+// coalesce: the channel holds one pending wake, so every append that
+// commits while a notify is in flight is carried by the next one — one
+// pg_notify (and one pooled connection) per burst, not per append, and no
+// added wait when appends are sparse. A notify that fails or never runs
+// is a lost wake: the other instances' runners find the events on their
+// poll.
+func (c *Client) notifyLog() {
+	c.notifyOnce.Do(func() { go c.runNotifier() })
+	select {
+	case c.notifyNudge <- struct{}{}:
+	default: // one is already pending; it carries this append too
+	}
+}
+
+func (c *Client) runNotifier() {
+	channel := "loom_" + c.reg.Service
+	for range c.notifyNudge {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := c.db.Exec(ctx, `SELECT pg_notify($1, '')`, channel)
+		cancel()
+		if err != nil && strings.Contains(err.Error(), "closed pool") {
+			return // the client's pool is closed: nothing is left to tell
+		}
+		if err != nil {
+			c.log.Warn("log notify failed: other instances wait for their poll", "error", err)
+		}
+	}
+}
+
 // listenLoop subscribes to the service's pg_notify channel so runners and
 // SSE watchers on THIS instance wake for OTHER instances' writes.
 func (c *Client) listenLoop(ctx context.Context) {
