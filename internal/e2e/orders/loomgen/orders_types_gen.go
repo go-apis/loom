@@ -75,6 +75,13 @@ type InvoicePaid struct {
 
 func (*InvoicePaid) LoomEvent() string { return "InvoicePaid" }
 
+type OrderDispatched struct {
+	ShippedAt time.Time   `json:"shipped_at"`
+	Status    OrderStatus `json:"status"`
+}
+
+func (*OrderDispatched) LoomEvent() string { return "OrderDispatched" }
+
 type CustomerSpend struct {
 	OrderCount int64 `json:"order_count"`
 	SpendCents int64 `json:"spend_cents"`
@@ -161,6 +168,7 @@ func init() {
 		}...)
 		r.Events = append(r.Events, []*loom.EventDef{
 			{Name: "InvoicePaid", SchemaVersion: 1, Publish: true, Service: "billing", Aliases: nil, New: func() any { return &InvoicePaid{} }},
+			{Name: "OrderDispatched", SchemaVersion: 1, Publish: false, Service: "", Aliases: nil, New: func() any { return &OrderDispatched{} }},
 		}...)
 		r.Joins = append(r.Joins, []*loom.JoinDef{
 			{OnEntity: "CustomerSpend", Field: "orders", Service: "", Entity: "OrderSummary", List: true, Via: "customer_id"},
