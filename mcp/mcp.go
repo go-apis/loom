@@ -2,6 +2,9 @@
 // Protocol: five tools that reach every command and every read the
 // composed GraphQL schema has, and nothing it has not.
 //
+// The gateway graphql.New returns serves this at /mcp itself (see
+// graphql.MCPOptions); New and Mount are for mounting it by hand:
+//
 //	gateway, _ := graphql.New(graphql.Config{Services: ..., Auth: ..., Policy: ...})
 //	agents, _ := mcp.New(mcp.Config{Gateway: gateway, Name: "orders"})
 //	mux.Handle("/graphql", gateway)
@@ -30,7 +33,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/go-apis/loom/graphql"
+	"github.com/go-apis/loom/internal/gateway"
 )
 
 // Config mounts the tools over one gateway.
@@ -54,7 +57,7 @@ type Config struct {
 // New is the MCP endpoint for the gateway (streamable HTTP, stateless:
 // each request is authenticated on its own and no session is kept).
 func New(cfg Config) (http.Handler, error) {
-	ex, ok := graphql.AsExecutor(cfg.Gateway)
+	ex, ok := cfg.Gateway.(gateway.Executor)
 	if !ok {
 		return nil, fmt.Errorf("mcp: Gateway is not a handler graphql.New returned")
 	}
@@ -73,7 +76,7 @@ func New(cfg Config) (http.Handler, error) {
 	if s.refuse == nil {
 		challenge := "Bearer"
 		if cfg.SignIn != nil {
-			if challenge, err = cfg.SignIn.challenge(); err != nil {
+			if challenge, err = cfg.SignIn.Challenge(); err != nil {
 				return nil, err
 			}
 		}
@@ -90,7 +93,7 @@ func New(cfg Config) (http.Handler, error) {
 }
 
 type server struct {
-	ex     graphql.Executor
+	ex     gateway.Executor
 	cat    *catalogue
 	impl   *sdk.Implementation
 	refuse func(w http.ResponseWriter, r *http.Request)
@@ -152,7 +155,7 @@ func (s *server) serverFor(ctx context.Context) *sdk.Server {
 	}, func(_ context.Context, _ *sdk.CallToolRequest, in dispatchIn) (*sdk.CallToolResult, any, error) {
 		keyed := ctx
 		if in.Key != "" {
-			keyed = graphql.WithIdempotencyKey(ctx, in.Key)
+			keyed = gateway.WithIdempotencyKey(ctx, in.Key)
 		}
 		return s.call(keyed, in.callIn, kindCommand, false), nil, nil
 	})

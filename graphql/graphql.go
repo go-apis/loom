@@ -107,6 +107,14 @@ type Config struct {
 	// make the type graph cyclic, so an unbounded public gateway would
 	// let one request multiply reads without limit.
 	MaxDepth int
+	// Issuer is the authorization server whose tokens Auth accepts:
+	// https://auth.example.com. With it, the gateway's MCP server tells
+	// a client with no usable token where to sign in (RFC 9728
+	// protected-resource metadata at /.well-known/oauth-protected-resource).
+	// It only points: Auth still reads the bearer and decides who it is.
+	Issuer string
+	// MCP is the MCP server the gateway serves at /mcp (see mcp.go).
+	MCP MCPOptions
 }
 
 // New composes the services into one executable schema and returns the
@@ -200,7 +208,11 @@ func New(cfg Config) (http.Handler, error) {
 			b.gated("mutation", gate{}, true, name)
 		}
 	}
-	return &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth, gates: b.gates, fieldRules: b.fieldRules}, nil
+	h := &handler{schema: schema, auth: cfg.Auth, policy: cfg.Policy, maxDepth: maxDepth, gates: b.gates, fieldRules: b.fieldRules}
+	if err := h.mountMCP(cfg); err != nil {
+		return nil, err
+	}
+	return h, nil
 }
 
 // --- scalars shared with the SDL contract ---
@@ -1587,9 +1599,19 @@ type handler struct {
 	auth       Auth
 	policy     Policy
 	maxDepth   int
+	// agents is the MCP server and its sign-in document (mcp.go); nil
+	// when the service opted out
+	agents *agents
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.serveMCP(w, r) {
+		return
+	}
+	h.serveGraphQL(w, r)
+}
+
+func (h *handler) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query         string         `json:"query"`
 		Variables     map[string]any `json:"variables"`

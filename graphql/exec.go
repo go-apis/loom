@@ -8,46 +8,20 @@ import (
 	gql "github.com/graphql-go/graphql"
 
 	"github.com/go-apis/loom"
+	"github.com/go-apis/loom/internal/gateway"
 )
 
 // Result is one in-process execution's answer: the data GraphQL
 // returned and its errors as messages, in the order GraphQL gave them.
-type Result struct {
-	Data   map[string]any
-	Errors []string
-}
+type Result = gateway.Result
 
 // Executor runs operations against the composed schema in-process,
 // under the same Auth, Policy and depth limit as the HTTP endpoint —
 // what another surface over the same gateway (loom/mcp) is built on, so
 // it answers to one set of rules rather than a copy of them. The
-// handler New returns is one (AsExecutor).
-type Executor interface {
-	// Authenticate resolves the request's Access exactly as the HTTP
-	// endpoint does and returns the request carrying it. An Access the
-	// deployment's own middleware already set on the context stands. An
-	// error means unauthenticated.
-	Authenticate(r *http.Request) (*http.Request, error)
-	// Exec runs one operation. ctx is an authenticated request's
-	// context: with an Auth hook mounted, a context carrying no Access
-	// is refused rather than run open.
-	Exec(ctx context.Context, query string, variables map[string]any) Result
-	// Allowed reports whether the caller on ctx could ever run the root
-	// field named — a query or mutation of the composed schema — in any
-	// namespace it has. It asks the same Policy a call would, as a probe
-	// (Decision.Probe), so what a caller is shown follows the rules
-	// that decide what it may do. It is a listing aid, not a grant: the
-	// call itself is decided again with its arguments.
-	Allowed(ctx context.Context, field string) bool
-	// Hidden names the fields of the type named that are hidden from
-	// the caller on ctx, each with what a caller must be to be shown it.
-	// It follows the schema's per-field @allow rules, which compare the
-	// caller alone, so it is the same for every record of the type.
-	Hidden(ctx context.Context, typ string) map[string]string
-	// Introspect is the schema's shape — every type, field and argument
-	// with its description. It runs no resolver and reads no data.
-	Introspect() (map[string]any, error)
-}
+// handler New returns is one (AsExecutor). Its methods are documented
+// on the shared definition the MCP server reads too.
+type Executor = gateway.Executor
 
 // AsExecutor is the gateway handler New returned, as an Executor.
 func AsExecutor(h http.Handler) (Executor, bool) {
@@ -78,21 +52,18 @@ func (h *handler) Authenticate(r *http.Request) (*http.Request, error) {
 // not run again, and answers status "duplicate" (loom.WithIdempotencyKey).
 const IdempotencyHeader = "Idempotency-Key"
 
-type idempotencyKey struct{}
-
 // WithIdempotencyKey puts a caller's idempotency key on ctx for the
 // commands an Exec under it dispatches — what the HTTP endpoint does
 // with the Idempotency-Key header, for a surface that has no header.
 func WithIdempotencyKey(ctx context.Context, key string) context.Context {
-	return context.WithValue(ctx, idempotencyKey{}, key)
+	return gateway.WithIdempotencyKey(ctx, key)
 }
 
 // keyed marks a dispatch's context with the request's idempotency key,
 // if it has one, and reports afterwards whether the dispatch was a
 // repeat that did nothing.
 func keyed(ctx context.Context) (context.Context, func() bool) {
-	key, _ := ctx.Value(idempotencyKey{}).(string)
-	return loom.WithIdempotencyKey(ctx, key)
+	return loom.WithIdempotencyKey(ctx, gateway.IdempotencyKey(ctx))
 }
 
 // dispatched is a command's answer: ok, or duplicate for a repeat of
