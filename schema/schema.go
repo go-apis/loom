@@ -119,6 +119,10 @@ type Aggregate struct {
 	// state enters one of the values, ended when it leaves, told to the
 	// look once when it expires.
 	Deadlines []*Deadline `yaml:"deadlines,omitempty" json:"deadlines,omitempty"`
+	// Agents (`agent <name> { kind: "<kind>", deadline: <d> }`, on a
+	// @loop aggregate) are agent steps its look asks of Mesh: a job of
+	// the kind, waited on until the deadline.
+	Agents []*Agent `yaml:"agents,omitempty" json:"agents,omitempty"`
 	// SupervisedBy (`@supervised_by(Parent, field)` on a @loop aggregate)
 	// names the @loop aggregate whose look supervises this one's
 	// instances, and the state field holding the parent's id: a child
@@ -513,6 +517,24 @@ func (d *Deadline) Duration() (time.Duration, error) {
 	iv, err := (&Schedule{Name: d.Name, Every: d.After}).Interval()
 	if err != nil {
 		return 0, fmt.Errorf("deadline %s: after %q is not a duration (30s, 5m, 1h, 1d)", d.Name, d.After)
+	}
+	return iv, nil
+}
+
+// Agent is an agent step a @loop aggregate declares: its look asks it,
+// Mesh runs a job of Kind for it, and the instance waits on the answer
+// until Deadline from the ask.
+type Agent struct {
+	Name     string `yaml:"name" json:"name"`
+	Kind     string `yaml:"kind" json:"kind"`
+	Deadline string `yaml:"deadline" json:"deadline"`
+}
+
+// Duration parses Deadline (30s, 5m, 1h, 1d).
+func (a *Agent) Duration() (time.Duration, error) {
+	iv, err := (&Schedule{Name: a.Name, Every: a.Deadline}).Interval()
+	if err != nil {
+		return 0, fmt.Errorf("agent %s: deadline %q is not a duration (30s, 5m, 1h, 1d)", a.Name, a.Deadline)
 	}
 	return iv, nil
 }

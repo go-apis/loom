@@ -465,6 +465,20 @@ func (p *parser) aggregate() error {
 				return err
 			}
 			agg.Deadlines = append(agg.Deadlines, dl)
+		case "agent":
+			if !agg.Loop {
+				return p.errf(t, "aggregate %s: an agent belongs to a @loop aggregate: its look asks it and is told the answer", name)
+			}
+			ag, err := p.agent(name)
+			if err != nil {
+				return err
+			}
+			for _, have := range agg.Agents {
+				if have.Name == ag.Name {
+					return p.errf(t, "aggregate %s: agent %s is declared twice", name, ag.Name)
+				}
+			}
+			agg.Agents = append(agg.Agents, ag)
 		default:
 			return p.errf(t, "unexpected %q in aggregate %s", t.text, name)
 		}
@@ -542,6 +556,56 @@ func (p *parser) deadline(agg string) (*schema.Deadline, error) {
 		return nil, p.errf(p.peek(), "aggregate %s: deadline %s: name at least one value it holds while", agg, name)
 	}
 	return dl, nil
+}
+
+// agent parses `agent <name> { kind: "<kind>", deadline: <duration> }`:
+// both are required, the comma optional.
+func (p *parser) agent(agg string) (*schema.Agent, error) {
+	at := p.next() // agent
+	name, err := p.ident()
+	if err != nil {
+		return nil, err
+	}
+	ag := &schema.Agent{Name: name}
+	if err := p.expect("{"); err != nil {
+		return nil, err
+	}
+	for !p.accept("}") {
+		t := p.peek()
+		key, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect(":"); err != nil {
+			return nil, err
+		}
+		v := p.next()
+		switch key {
+		case "kind":
+			if v.kind != tString || v.text == "" {
+				return nil, p.errf(v, "aggregate %s: agent %s: kind is the Mesh job kind, a string, got %q", agg, name, v.text)
+			}
+			ag.Kind = v.text
+		case "deadline":
+			if v.kind != tNumber {
+				return nil, p.errf(v, "aggregate %s: agent %s: deadline wants a duration (30s, 5m, 1h, 1d), got %q", agg, name, v.text)
+			}
+			ag.Deadline = v.text
+			if _, err := ag.Duration(); err != nil {
+				return nil, p.errf(v, "aggregate %s: %v", agg, err)
+			}
+		default:
+			return nil, p.errf(t, "aggregate %s: agent %s: unknown %q (an agent takes kind and deadline)", agg, name, key)
+		}
+		p.accept(",")
+	}
+	if ag.Kind == "" {
+		return nil, p.errf(at, "aggregate %s: agent %s names no kind: say which Mesh job kind runs it", agg, name)
+	}
+	if ag.Deadline == "" {
+		return nil, p.errf(at, "aggregate %s: agent %s has no deadline: say how long the loop waits for it", agg, name)
+	}
+	return ag, nil
 }
 
 // record parses state-of-record declarations: like an aggregate but with

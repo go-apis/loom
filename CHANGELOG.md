@@ -14,6 +14,23 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A loop asks an agent through Mesh.** `agent <name> { kind: "<kind>",
+  deadline: <d> }` on a `@loop` aggregate declares an agent step; the
+  generator writes `AggregateDef.Agents`, `Ask<Aggregate><Agent>` and
+  `<Aggregate><Agent>Agent`. A look's ask is recorded (`loom_agents`),
+  offers exactly one Mesh job of the kind under an idempotency key (a
+  restart or a lost answer offers no second job), and waits on `mesh`
+  until the deadline. `Client.MeshHook` / `graphql.MeshHooks` verify
+  Mesh's signed hook and record the job's end as `finished` or `failed`,
+  ending the wait and looking at once; an agent that never answers is
+  `expired`, its job cancelled, and the look told. New package
+  `loom/mesh`: Mesh's offer, hook and outcome shapes, `Sign`/`Verify`,
+  `HTTPClient` and `Fake`. `loomtest.LoopScenario` gains `For`, `Mesh`,
+  `AgentAnswered`, `Agents` and `Asked`, and honours `WaitFor` and
+  `StopWaiting`. Config: `Mesh`, `MeshTenant`, `MeshHookSecret`. Schema:
+  `loom_agents`.
+  ([ADR 0017](docs/adr/0017-a-loop-asks-an-agent-through-mesh.md))
+
 - **A loop supervises its children.** `@supervised_by(Parent, field)` on
   a `@loop` aggregate: a child that is parked, reaches its end or has a
   wait run out brings its parent's look to within a second, and the

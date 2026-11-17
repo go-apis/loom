@@ -15,4 +15,25 @@ type Look interface {
 	LookKiln(ctx context.Context) ([]loom.Command, error)
 	LookLoaf(ctx context.Context) ([]loom.Command, error)
 	LookOven(ctx context.Context) ([]loom.Command, error)
+	LookTicket(ctx context.Context) ([]loom.Command, error)
+}
+
+// TicketTriageAgent names the triage agent a Ticket declares, for LookingAt(ctx).Agent.
+const TicketTriageAgent = "triage"
+
+// AskTicketTriage asks the triage agent for the Ticket being looked at: a Mesh job of
+// kind "triage", waited on for 30m (loom.AskAgent). Asking while it is open
+// does nothing.
+func AskTicketTriage(ctx context.Context, ask loom.AgentAsk) error {
+	return loom.AskAgent(ctx, TicketTriageAgent, ask)
+}
+
+// TicketSweepAgent names the sweep agent a Ticket declares, for LookingAt(ctx).Agent.
+const TicketSweepAgent = "sweep"
+
+// AskTicketSweep asks the sweep agent for the Ticket being looked at: a Mesh job of
+// kind "sweep", waited on for 2s (loom.AskAgent). Asking while it is open
+// does nothing.
+func AskTicketSweep(ctx context.Context, ask loom.AgentAsk) error {
+	return loom.AskAgent(ctx, TicketSweepAgent, ask)
 }

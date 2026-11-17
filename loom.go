@@ -353,6 +353,9 @@ type AggregateDef struct {
 	// Deadlines are the waits a @loop aggregate declares on its own
 	// state, kept by loom (DeadlineDef).
 	Deadlines []DeadlineDef
+	// Agents are the agent steps a @loop aggregate declares, each asked
+	// of Mesh by its look (AgentDef, agent.go).
+	Agents []AgentDef
 	// Parent is the aggregate whose look supervises this one's
 	// instances (@supervised_by), nil for none.
 	Parent *ParentDef

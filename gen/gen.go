@@ -839,6 +839,15 @@ var (
 		}
 		b.WriteString("\t\t},\n")
 	}
+	if o.agg != nil && len(o.agg.Agents) > 0 {
+		// each declared agent: the Mesh job kind it is asked as, and how long it is waited on
+		b.WriteString("\t\tAgents: []loom.AgentDef{\n")
+		for _, a := range o.agg.Agents {
+			d, _ := a.Duration() // checked when the schema was read
+			fmt.Fprintf(&b, "\t\t\t{Name: %q, Kind: %q, Deadline: %d},\n", a.Name, a.Kind, int64(d))
+		}
+		b.WriteString("\t\t},\n")
+	}
 	if o.agg != nil && o.agg.SupervisedBy != nil {
 		// the instance's supervisor: its aggregate, and the id the state holds
 		fmt.Fprintf(&b, "\t\tParent: &loom.ParentDef{Aggregate: %q, ID: func(s loom.AggregateState) any { return s.(*%s).%s }},\n",
@@ -1571,6 +1580,14 @@ func (g *generator) look() string {
 		fmt.Fprintf(&b, "\t%s(ctx context.Context) ([]loom.Command, error)\n", lookMethod(a))
 	}
 	b.WriteString("}\n")
+	for _, a := range g.loopingAggregates() {
+		for _, ag := range a.Agents {
+			fn := exported(a.Name) + exported(ag.Name)
+			fmt.Fprintf(&b, "\n// %sAgent names the %s agent a %s declares, for LookingAt(ctx).Agent.\nconst %sAgent = %q\n", fn, ag.Name, a.Name, fn, ag.Name)
+			fmt.Fprintf(&b, "\n// Ask%s asks the %s agent for the %s being looked at: a Mesh job of\n// kind %q, waited on for %s (loom.AskAgent). Asking while it is open\n// does nothing.\nfunc Ask%s(ctx context.Context, ask loom.AgentAsk) error {\n\treturn loom.AskAgent(ctx, %sAgent, ask)\n}\n",
+				fn, ag.Name, a.Name, ag.Kind, ag.Deadline, fn, fn)
+		}
+	}
 	return b.String()
 }
 

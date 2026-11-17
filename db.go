@@ -202,6 +202,24 @@ CREATE TABLE IF NOT EXISTS loom_approvals (
 );
 CREATE INDEX IF NOT EXISTS loom_approvals_waiting ON loom_approvals (service, namespace, status, deadline);
 
+CREATE TABLE IF NOT EXISTS loom_agents (
+	service        text NOT NULL,
+	aggregate_type text NOT NULL,
+	namespace      text NOT NULL,
+	aggregate_id   uuid NOT NULL,
+	name           text NOT NULL,
+	kind           text NOT NULL,
+	attempt        int NOT NULL DEFAULT 1,
+	ask            jsonb NOT NULL DEFAULT '{}',
+	job_id         text NOT NULL DEFAULT '',
+	status         text NOT NULL DEFAULT 'requested',
+	deadline       timestamptz NOT NULL,
+	asked_at       timestamptz NOT NULL DEFAULT now(),
+	ended_at       timestamptz,
+	outcome        jsonb,
+	PRIMARY KEY (service, aggregate_type, namespace, aggregate_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS loom_instances (
 	service    text NOT NULL,
 	instance   uuid NOT NULL,

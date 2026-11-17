@@ -225,7 +225,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		_, _, err := c.looked(ctx, l, start, Looking{}, nil, l.fired, false, nil, nil, 0)
 		return err
 	}
-	said := &lookSaid{}
+	said := def.newSaid(c)
 	fired := l.fired
 	var parent *ChildRef // the instance's supervisor, when it declares one
 	if len(def.Deadlines) > 0 || def.Parent != nil {
@@ -273,6 +273,16 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if told.Approvals, err = c.approvalsOf(ctx, l.aggregate, l.namespace, l.id); err != nil {
 		return err
 	}
+	// an agent that did not answer in time is expired before the look
+	// that is told its wait has
+	if len(def.Agents) > 0 {
+		if err := c.expireAgents(ctx, l.aggregate, l.namespace, l.id, told.Expired); err != nil {
+			return err
+		}
+		if told.Agents, err = c.agentsOf(ctx, l.aggregate, l.namespace, l.id); err != nil {
+			return err
+		}
+	}
 	lctx := withReader(ctx, c)
 	lctx = WithLooking(lctx, told)
 	lctx = context.WithValue(lctx, lookSaidKey{}, said)
@@ -307,6 +317,13 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if lookErr != nil {
 		told, said, fired = Looking{}, &lookSaid{}, l.fired
 	}
+	if len(said.agents) > 0 {
+		begin, err := c.openAgents(ctx, l.aggregate, l.namespace, l.id, said.agents, start)
+		if err != nil {
+			return err
+		}
+		said.waits = append(said.waits, begin...)
+	}
 	if len(said.approvals) > 0 {
 		if err := c.writeApprovals(ctx, c.db, l.aggregate, l.namespace, l.id, said.approvals); err != nil {
 			return err
@@ -315,6 +332,11 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	parked, lastErr, err := c.looked(ctx, l, start, told, said, fired, true, lookErr, parent, len(told.ChildNotes))
 	if err != nil {
 		return err
+	}
+	// the open requests with no job yet, this look's among them, are
+	// offered once their waits are held
+	if len(def.Agents) > 0 {
+		c.offerAgents(ctx, l.aggregate, l.namespace, l.id)
 	}
 	// what the parent is told, outside this instance's row lock
 	if parent != nil {
@@ -339,6 +361,12 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		}
 	}
 	return lookErr
+}
+
+// newSaid is what a look at one of the aggregate's instances starts
+// out having said: nothing, and what AskAgent needs to know.
+func (def *AggregateDef) newSaid(c *Client) *lookSaid {
+	return &lookSaid{agentDefs: def.Agents, meshOn: c.mesh != nil, meshTenant: c.meshTenant}
 }
 
 // looked notes a look made at start: the lease given up, the waits as
