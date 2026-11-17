@@ -818,8 +818,14 @@ deploy skew) is a loud `UpcastError`, never a silent zero-value fold.
 Events without upcasts keep the permissive unmarshal, so purely additive
 changes don't need ceremony.
 
-Retiring an event is the other direction. Deleting the declaration leaves
-the log holding rows nothing can name, so mark it instead:
+To stop producing an event, delete or change the command that emits it
+and keep the declaration in the aggregate's block. The aggregate still
+folds every event its block declares, emitted or not, so stored rows of
+it replay as they did ([ADR 0016](docs/adr/0016-an-aggregate-folds-every-event-it-declares.md)).
+
+Retiring an event goes further: its rows must still decode, but fold
+nothing. Deleting the declaration leaves the log holding rows nothing can
+name, so mark it instead:
 
 ```
 event PromotionExpired @retired {

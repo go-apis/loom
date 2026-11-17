@@ -906,13 +906,21 @@ func (g *generator) ownerRegistration(b *strings.Builder, o owner) {
 	b.WriteString("\t}})\n}\n")
 }
 
-// aggregateEvents is the union of the aggregate's command emit contracts —
-// exactly the events its state can ever fold.
+// aggregateEvents is what the aggregate's state folds: every event its
+// commands emit, and every event declared in its block that is not
+// @retired, emitted or not. A command that stops emitting an event, or is
+// deleted, leaves the event's fold in place, so its stored rows replay as
+// before; only @retired takes a fold away (ADR 0016).
 func (g *generator) aggregateEvents(a *schema.Aggregate) []string {
 	set := map[string]bool{}
 	for _, c := range a.Commands {
 		for _, e := range c.Emits {
 			set[e] = true
+		}
+	}
+	for _, name := range a.Events {
+		if evt := g.s.FindEvent(name); evt != nil && !evt.Retired {
+			set[name] = true
 		}
 	}
 	return sortedKeys(set)

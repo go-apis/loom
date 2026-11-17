@@ -435,9 +435,12 @@ func (p *parser) aggregate() error {
 			}
 			agg.Commands = append(agg.Commands, cmd)
 		case "event":
-			if _, err := p.event(); err != nil {
+			evt, err := p.event()
+			if err != nil {
 				return err
 			}
+			// declared here, so folded here, emitted or not
+			agg.Events = append(agg.Events, evt.Name)
 		case "upload":
 			up, err := p.upload()
 			if err != nil {

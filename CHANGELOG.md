@@ -12,6 +12,27 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ## [Unreleased]
 
+### Changed
+
+- **An aggregate folds every event it declares, emitted or not.** The
+  generated `Fold` has a case for every event the aggregate's commands
+  emit and for every event declared in its block that is not
+  `@retired`. Before, a case lasted only while some command emitted the
+  event: deleting the last emitter silently dropped it, and stored rows
+  of the event replayed as if they were not there. To stop producing an
+  event, delete its emitter and keep the declaration; its rows fold as
+  before. `@retired` is still the only way to take a fold away. No new
+  annotation.
+  ([ADR 0016](docs/adr/0016-an-aggregate-folds-every-event-it-declares.md))
+
+  **Migration:** regenerate `loomgen/`. An aggregate that declares an
+  event no command emits gets that event's fold case back. runsheet
+  gets the `KindProbe*` cases on `KindBreaker` and `KindFailureRecorded`
+  on `KindFailureWindow`. If its state should no longer take the
+  event's fields, mark the event `@retired`. A snapshot taken while a
+  fold was missing does not refold the earlier rows; a replay from
+  version 0 does.
+
 ### Added
 
 - **`docs/features.md` and `loom adopt`: what a service is missing.**

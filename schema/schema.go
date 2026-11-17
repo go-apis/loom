@@ -116,7 +116,13 @@ type Aggregate struct {
 	Loop     bool       `yaml:"loop,omitempty" json:"loop,omitempty"`
 	State    *Payload   `yaml:"state" json:"state"`
 	Commands []*Command `yaml:"commands,omitempty" json:"commands,omitempty"`
-	Uploads  []*Upload  `yaml:"uploads,omitempty" json:"uploads,omitempty"`
+	// Events names the events declared inside the aggregate's block, in
+	// the order written. The state folds every one that is not @retired
+	// as well as every event a command emits, so an event keeps its fold
+	// after the last command that emitted it is gone: its stored rows
+	// still replay as they did (ADR 0016).
+	Events  []string  `yaml:"events,omitempty" json:"events,omitempty"`
+	Uploads []*Upload `yaml:"uploads,omitempty" json:"uploads,omitempty"`
 	// ReadRoles (@role) gates the aggregate's generated READS at the
 	// GraphQL gateway — the singular get and its Changed subscription:
 	// the caller must hold one of these roles in the target namespace.
