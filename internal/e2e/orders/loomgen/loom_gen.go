@@ -20,6 +20,9 @@ func loomErrNilEvent(eventType string) error {
 type Impl struct {
 	// Upcasts is the hand-written migration hops (upcasts_gen.go).
 	Upcasts EventUpcasts
+	// CommandUpcasts is the hand-written hops for stored commands
+	// (upcasts_gen.go).
+	CommandUpcasts CommandUpcasts
 
 	// handlers holds what the binding methods set, by kind and name.
 	handlers map[string]any
@@ -41,6 +44,9 @@ func NewPartialRegistry(impl Impl) *loom.Registry { return loomRegistry(impl, tr
 func loomRegistry(impl Impl, partial bool) *loom.Registry {
 	if impl.Upcasts == nil {
 		panic("loomgen: the schema declares upcasts — wire Impl.Upcasts (see the Upcasts stub; your registry.go predates it)")
+	}
+	if impl.CommandUpcasts == nil {
+		panic("loomgen: the schema declares command upcasts — wire Impl.CommandUpcasts (see the CommandUpcasts stub; your registry.go predates it)")
 	}
 	r := &loom.Registry{
 		Service:     "orders",

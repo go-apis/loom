@@ -128,6 +128,21 @@ func (l *Look) LookGoal(ctx context.Context) ([]loom.Command, error) {
 }
 ```
 
+### Commands that wait across a deploy: `@v` and `upcast` on commands
+
+**Since** the release after v0.127.0 · **adopt rule** none yet
+
+A timer, batch item or plan holding a command is stored with the
+command's `@v`, and a stored command behind the current version is lifted
+through its declared `upcast X @from(n)` hops (the `CommandUpcasts` stub)
+before the handler sees it. `Migrate` refuses, naming the command and the
+stored rows, while one holds a version no hop brings forward. Rows stored
+before the version existed read as v1.
+
+Makes unnecessary: keeping a command's fields additive forever because a
+timer might still hold the old shape; draining timers and waits before a
+deploy; a handler that accepts two shapes of its own command.
+
 ## Calling the outside world
 
 ### Effects: `loom.Once`

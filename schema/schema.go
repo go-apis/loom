@@ -198,6 +198,14 @@ type Command struct {
 	// runs it (runPlan), once, while its target is unchanged. In-process
 	// Dispatch is not held back.
 	Plan bool `yaml:"plan,omitempty" json:"plan,omitempty"`
+	// Version (@v) is the command's schema version, default 1. A command
+	// loom stores to run later — a timer, a batch item, a plan — is
+	// written with it, and read back through Upcasts when it is behind.
+	Version int `yaml:"version,omitempty" json:"version,omitempty"`
+	// Upcasts lists the versions a stored command can be lifted FROM
+	// (`upcast X @from(n)`, the event syntax): each n names a hand-written
+	// hop n → n+1, run when a stored command is read to run.
+	Upcasts []int `yaml:"upcasts,omitempty" json:"upcasts,omitempty"`
 }
 
 type Event struct {
@@ -750,10 +758,25 @@ func (s *Schema) FindRecordCommand(name string) (*Record, *Command) {
 	return nil, nil
 }
 
+// allCommands lists every aggregate's commands, then every record's.
+func (s *Schema) allCommands() []*Command {
+	var out []*Command
+	for _, a := range s.Aggregates {
+		out = append(out, a.Commands...)
+	}
+	for _, r := range s.Records {
+		out = append(out, r.Commands...)
+	}
+	return out
+}
+
 func (s *Schema) Sort() {
 	sort.Slice(s.Aggregates, func(i, j int) bool { return s.Aggregates[i].Name < s.Aggregates[j].Name })
 	for _, a := range s.Aggregates {
 		sort.Slice(a.Commands, func(i, j int) bool { return a.Commands[i].Name < a.Commands[j].Name })
+		for _, c := range a.Commands {
+			sort.Ints(c.Upcasts)
+		}
 		sort.Slice(a.Uploads, func(i, j int) bool { return a.Uploads[i].Name < a.Uploads[j].Name })
 	}
 	sort.Slice(s.Schedules, func(i, j int) bool { return s.Schedules[i].Name < s.Schedules[j].Name })
@@ -761,6 +784,9 @@ func (s *Schema) Sort() {
 	sort.Slice(s.Records, func(i, j int) bool { return s.Records[i].Name < s.Records[j].Name })
 	for _, r := range s.Records {
 		sort.Slice(r.Commands, func(i, j int) bool { return r.Commands[i].Name < r.Commands[j].Name })
+		for _, c := range r.Commands {
+			sort.Ints(c.Upcasts)
+		}
 		sort.Slice(r.Uploads, func(i, j int) bool { return r.Uploads[i].Name < r.Uploads[j].Name })
 	}
 	sort.Slice(s.Entities, func(i, j int) bool { return s.Entities[i].Name < s.Entities[j].Name })
@@ -1121,6 +1147,30 @@ func (s *Schema) Validate() error {
 	// upcast coverage: each hop must sit below the current version, and the
 	// declared hops must run contiguously up to it — a gap would strand
 	// every version below the gap with no path to current.
+	checkUpcasts := func(kind, name string, version int, upcasts []int) {
+		if version == 0 {
+			version = 1
+		}
+		seen := map[int]bool{}
+		lowest := upcasts[0]
+		for _, from := range upcasts {
+			if seen[from] {
+				fail("%s %s declares upcast @from(%d) twice", kind, name, from)
+			}
+			seen[from] = true
+			if from < 1 || from >= version {
+				fail("%s %s: upcast @from(%d) must name a version below the %s's @v(%d)", kind, name, from, kind, version)
+			}
+			if from < lowest {
+				lowest = from
+			}
+		}
+		for v := lowest; v < version; v++ {
+			if !seen[v] {
+				fail("%s %s: upcast coverage has a gap — @from(%d) is missing, so versions %d and below cannot reach @v(%d)", kind, name, v, lowest, version)
+			}
+		}
+	}
 	for _, e := range s.Events {
 		if len(e.Upcasts) == 0 {
 			continue
@@ -1129,28 +1179,11 @@ func (s *Schema) Validate() error {
 			fail("event %s is @retired and declares upcasts — a retired event is read as stored; lifting it forward has no reader to lift it for", e.Name)
 			continue
 		}
-		version := e.Version
-		if version == 0 {
-			version = 1
-		}
-		seen := map[int]bool{}
-		lowest := e.Upcasts[0]
-		for _, from := range e.Upcasts {
-			if seen[from] {
-				fail("event %s declares upcast @from(%d) twice", e.Name, from)
-			}
-			seen[from] = true
-			if from < 1 || from >= version {
-				fail("event %s: upcast @from(%d) must name a version below the event's @v(%d)", e.Name, from, version)
-			}
-			if from < lowest {
-				lowest = from
-			}
-		}
-		for v := lowest; v < version; v++ {
-			if !seen[v] {
-				fail("event %s: upcast coverage has a gap — @from(%d) is missing, so versions %d and below cannot reach @v(%d)", e.Name, v, lowest, version)
-			}
+		checkUpcasts("event", e.Name, e.Version, e.Upcasts)
+	}
+	for _, c := range s.allCommands() {
+		if len(c.Upcasts) > 0 {
+			checkUpcasts("command", c.Name, c.Version, c.Upcasts)
 		}
 	}
 

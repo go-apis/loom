@@ -251,6 +251,12 @@ CREATE TABLE IF NOT EXISTS loom_batch_items (
 );
 CREATE INDEX IF NOT EXISTS loom_batch_items_pending ON loom_batch_items (service, batch_id, seq) WHERE status IN ('pending','working');
 
+-- a command stored to run later rests with its schema version (@v);
+-- rows from before the column read as 1, the only version there was
+ALTER TABLE loom_timers ADD COLUMN IF NOT EXISTS command_version int NOT NULL DEFAULT 1;
+ALTER TABLE loom_batch_items ADD COLUMN IF NOT EXISTS command_version int NOT NULL DEFAULT 1;
+ALTER TABLE loom_plans ADD COLUMN IF NOT EXISTS command_version int NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS loom_keys (
 	service     text NOT NULL,
 	namespace   text NOT NULL,
@@ -315,6 +321,9 @@ func (c *Client) Migrate(ctx context.Context) error {
 		return err
 	}
 	if err := c.migrateSeries(ctx); err != nil {
+		return err
+	}
+	if err := c.checkStoredCommands(ctx); err != nil {
 		return err
 	}
 	return c.checkLogTypes(ctx)

@@ -14,6 +14,20 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Added
 
+- **A stored command carries its schema version and is upcast when it
+  runs.** A command takes `@v(n)`, and `upcast X @from(n)` — the event
+  syntax — declares a hop for it; `loom generate` emits a
+  `CommandUpcasts` interface (in `upcasts_gen.go`), an
+  `Impl.CommandUpcasts` field and a once-only `command_upcasts.go` stub.
+  Timers, batch items and plans are written with the command's version
+  and lifted to the current shape before the handler sees them; a timer
+  parked in the dead letters keeps its version for the redrive.
+  `Migrate` refuses, naming the command, the version and how many stored
+  rows, while any stored command holds a version no declared hop brings
+  forward. Schema: `loom_timers`, `loom_batch_items` and `loom_plans`
+  gain `command_version` (default 1, so rows already stored read as
+  version 1, the only version a command had).
+
 - **A loop supervises its children.** `@supervised_by(Parent, field)` on
   a `@loop` aggregate: a child that is parked, reaches its end or has a
   wait run out brings its parent's look to within a second, and the

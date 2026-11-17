@@ -82,10 +82,6 @@ parked in favor of ten99).
 - Domain/integration event split as a language feature (today: the
   private/published pair convention, e.g. TaxDocRecorded /
   RecipientDocumented in ten99).
-- Command-shape migration: timers/batch items store command JSON with no
-  schema_version column; long-lived timers crossing a shape change rely
-  on additive compatibility today. Needs a version column + a
-  decodeCommand() hook if it ever bites.
 - Projection Rebuild has no HTTP/console surface — the ten99 @table
   cutover needed hand-SQL (truncate + delete checkpoint row). Add
   POST /projections/{name}/rebuild + a console button.

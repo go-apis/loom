@@ -8,3 +8,10 @@ package loomgen
 type EventUpcasts interface {
 	OrderCancelledFromV1(data []byte) ([]byte, error)
 }
+
+// CommandUpcasts lifts stored commands (timers, batch items, plans)
+// written under older @v versions: raw JSON of version n in, raw JSON of
+// version n+1 out. Hops chain when the command is read to run.
+type CommandUpcasts interface {
+	CancelOrderFromV1(data []byte) ([]byte, error)
+}

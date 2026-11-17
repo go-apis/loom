@@ -262,7 +262,10 @@ through `loom.Once`.
 
 `@v(n)` on the event, `upcast X @from(n-1)` in the schema, and a
 deterministic hop in the generated `Upcasts` stub. Purely additive fields
-need no version.
+need no version. A command that may be resting in a timer, batch item or
+plan when its shape changes takes the same: `@v(n)` on the command,
+`upcast X @from(n-1)`, and a hop in the `CommandUpcasts` stub; `Migrate`
+refuses while a stored row has no hop to the current version.
 
 ## Testing
 

@@ -89,11 +89,11 @@ func (c *Client) writeTimer(ctx context.Context, tx pgx.Tx, sc *scheduledCommand
 	}
 	ns, _ := sc.CommandTarget()
 	_, err = tx.Exec(ctx, `
-		INSERT INTO loom_timers (service, namespace, key, command_type, command, meta, fire_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		INSERT INTO loom_timers (service, namespace, key, command_type, command, meta, fire_at, command_version)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (service, key)
-		DO UPDATE SET command_type = EXCLUDED.command_type, command = EXCLUDED.command, meta = EXCLUDED.meta, fire_at = EXCLUDED.fire_at`,
-		c.reg.Service, ns, timerKey(sc.Command, sc.key), sc.LoomCommand(), data, metaRaw, sc.at)
+		DO UPDATE SET command_type = EXCLUDED.command_type, command = EXCLUDED.command, meta = EXCLUDED.meta, fire_at = EXCLUDED.fire_at, command_version = EXCLUDED.command_version`,
+		c.reg.Service, ns, timerKey(sc.Command, sc.key), sc.LoomCommand(), data, metaRaw, sc.at, c.commandVersion(sc.LoomCommand()))
 	return err
 }
 
@@ -168,6 +168,7 @@ const timerLease = 5 * time.Minute
 // command's reactions re-armed under the same key survives.
 type dueTimer struct {
 	key, cmdType string
+	cmdVersion   int // the command's @v when it was stored
 	cmd, meta    []byte
 	leasedAt     time.Time
 	dueAt        time.Time
@@ -236,7 +237,7 @@ func (c *Client) claimDueTimers(ctx context.Context, limit int) ([]dueTimer, err
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE t.service = due.service AND t.key = due.key
-		RETURNING t.key, t.command_type, t.command, t.meta, t.fire_at, due.fire_at`,
+		RETURNING t.key, t.command_type, t.command_version, t.command, t.meta, t.fire_at, due.fire_at`,
 		c.reg.Service, limit, timerLease.Seconds())
 	if err != nil {
 		return nil, err
@@ -245,7 +246,7 @@ func (c *Client) claimDueTimers(ctx context.Context, limit int) ([]dueTimer, err
 	var batch []dueTimer
 	for rows.Next() {
 		var d dueTimer
-		if err := rows.Scan(&d.key, &d.cmdType, &d.cmd, &d.meta, &d.leasedAt, &d.dueAt); err != nil {
+		if err := rows.Scan(&d.key, &d.cmdType, &d.cmdVersion, &d.cmd, &d.meta, &d.leasedAt, &d.dueAt); err != nil {
 			return nil, err
 		}
 		batch = append(batch, d)
@@ -265,7 +266,7 @@ func (c *Client) fireClaimed(ctx context.Context, d dueTimer) error {
 	if strings.HasPrefix(d.key, scheduleKeyPrefix) { // a schedule's tick (schedules.go)
 		return c.fireSchedule(ctx, d)
 	}
-	fireErr := c.fireTimer(ctx, d.key, d.cmdType, d.cmd, d.meta)
+	fireErr := c.fireTimer(ctx, d.key, d.cmdType, d.cmdVersion, d.cmd, d.meta)
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -273,7 +274,7 @@ func (c *Client) fireClaimed(ctx context.Context, d dueTimer) error {
 	defer tx.Rollback(ctx)
 	if fireErr != nil {
 		c.log.ErrorContext(ctx, "timer dispatch failed; parking", "key", d.key, "error", fireErr)
-		if err := c.parkTimer(ctx, tx, d.key, d.cmdType, d.cmd, fireErr); err != nil {
+		if err := c.parkTimer(ctx, tx, d.key, d.cmdType, d.cmdVersion, d.cmd, fireErr); err != nil {
 			return err
 		}
 	}
@@ -312,7 +313,7 @@ func (c *Client) releaseTimers(batch []dueTimer) {
 	}
 }
 
-func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, metaRaw []byte) (retErr error) {
+func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdVersion int, cmdRaw, metaRaw []byte) (retErr error) {
 	ctx, end := c.tel.span(ctx, "loom.timer.fire",
 		attribute.String("loom.timer", key), attribute.String("loom.command", cmdType))
 	defer func() { end(retErr) }()
@@ -321,7 +322,7 @@ func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, met
 	if err != nil {
 		return err
 	}
-	cmd, err := c.decodeCommand(cmdType, cmdRaw)
+	cmd, err := c.decodeStoredCommand(cmdType, cmdVersion, cmdRaw)
 	if err != nil {
 		return err
 	}
@@ -343,8 +344,8 @@ func (c *Client) fireTimer(ctx context.Context, key, cmdType string, cmdRaw, met
 	return lastErr
 }
 
-func (c *Client) parkTimer(ctx context.Context, q executor, key, cmdType string, cmdRaw []byte, cause error) error {
-	envelope, _ := json.Marshal(map[string]any{"timer_key": key, "command_type": cmdType, "command": json.RawMessage(cmdRaw)})
+func (c *Client) parkTimer(ctx context.Context, q executor, key, cmdType string, cmdVersion int, cmdRaw []byte, cause error) error {
+	envelope, _ := json.Marshal(map[string]any{"timer_key": key, "command_type": cmdType, "command_version": cmdVersion, "command": json.RawMessage(cmdRaw)})
 	_, err := q.Exec(ctx, `
 		INSERT INTO loom_dead_letters (service, runner, envelope, error, attempts)
 		VALUES ($1,'timer',$2,$3,$4)`,

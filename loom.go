@@ -399,7 +399,16 @@ type CommandDef struct {
 	// Doc and FieldDocs (payload fields) — see AggregateDef.Doc.
 	Doc       string
 	FieldDocs map[string]string
-	Handle    func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
+	// SchemaVersion (@v) is the shape a stored command (timer, batch
+	// item, plan) is written with; 0 reads as 1.
+	SchemaVersion int
+	// Upcasts maps a version to the hop that lifts a stored command of
+	// that version one version forward (raw JSON in, raw JSON out). A
+	// stored command behind SchemaVersion is lifted before it is decoded;
+	// one no hop can lift is a loud UpcastError, and Migrate refuses while
+	// any such row is stored.
+	Upcasts map[int]UpcastFunc
+	Handle  func(ctx context.Context, state AggregateState, cmd Command) ([]any, error)
 }
 
 // RecordDef backs state-of-record objects that are NOT event-sourced
@@ -443,7 +452,10 @@ type RecordCommandDef struct {
 	// Doc and FieldDocs — see CommandDef.Doc.
 	Doc       string
 	FieldDocs map[string]string
-	Handle    func(ctx context.Context, state any, cmd Command) ([]any, error)
+	// SchemaVersion and Upcasts — see CommandDef.SchemaVersion.
+	SchemaVersion int
+	Upcasts       map[int]UpcastFunc
+	Handle        func(ctx context.Context, state any, cmd Command) ([]any, error)
 }
 
 type EventDef struct {

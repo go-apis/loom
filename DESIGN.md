@@ -27,7 +27,7 @@ command     := "command" IDENT fields? "->" identList
 event       := "event" IDENT directives? fields?
 upload      := "upload" IDENT "{" ("on" ("started"|"uploaded") "->" IDENT)* "}"
 consume     := "consume" IDENT "." IDENT fields?
-upcast      := "upcast" eventRef "@from" "(" NUM ("," NUM)* ")"
+upcast      := "upcast" eventRef "@from" "(" NUM ("," NUM)* ")"   // an unqualified name may be a command
 policy      := "policy" IDENT "{" on* "}"
 process     := "process" IDENT directives? "{" (on | effect)* "}"
 effect      := "effect" IDENT "@idempotent"?
@@ -106,9 +106,25 @@ Rules enforced at parse/validate time:
   unliftable stored version (below coverage, failing hop, or NEWER than
   the registry: deploy skew) is a loud `UpcastError`, never a silent
   zero-value fold; events without upcasts keep the permissive
-  unmarshal-as-is behavior so additive changes stay free. Commands at
-  rest (timers, batch items) have no stored version — command-shape
-  migration is deliberately out of scope
+  unmarshal-as-is behavior so additive changes stay free
+- a command takes `@v(n)` too, and `upcast X @from(n)` names a command
+  when X is one (resolved once the whole schema is read; a name that is
+  both a command and an event is refused). A command loom stores to run
+  later — a timer (`At`/`After`, and the row a parked timer leaves in the
+  dead letters), a batch item, a plan — rests with its version in
+  `command_version`; reading it to run lifts it through the hops first
+  (`decodeStoredCommand`, `storedcommands.go`), so a handler only ever
+  sees the current shape. Rows from before the column read as 1, the
+  only version a command had. Command decode is always strict: a stored
+  version behind with no hop, or ahead (deploy skew), is an
+  `UpcastError`. `Migrate` refuses while any timer, pending batch item or
+  unexpired plan holds a version no declared hop brings forward, naming
+  the command, the version and the count of stored rows; a schedule's
+  row is exempt (rewritten in the current shape at start), and so is a
+  stored version newer than the build (refusing would block a rollback).
+  The hops are `CommandUpcasts`, beside `EventUpcasts`: its own
+  interface in `upcasts_gen.go`, its own `Impl.CommandUpcasts` field and
+  once-only stub (`command_upcasts.go`)
 - `@loop` belongs to aggregates only (rejected on a record, naming the file
   and line); it declares one recurring look for the aggregate TYPE, not its
   instances. `loom generate` emits a service-wide `Look` interface — one
@@ -233,8 +249,9 @@ definition alone (`<snake name>_projection_gen.go`,
 in `init` — declarations that need an implementation, and those that do
 not. It names nothing the schema declares but the service. The two
 implementations no declaration's file holds stay fields on `Impl`,
-`Upcasts` and `Look`, each present once the schema has an upcast or a
-`@loop`, with its interface in `upcasts_gen.go` or `look_gen.go`. So a
+`Upcasts`, `CommandUpcasts` and `Look`, each present once the schema has
+an event upcast, a command upcast or a `@loop`, with its interface in
+`upcasts_gen.go` or `look_gen.go`. So a
 schema change edits `loom_gen.go` only when the first of either arrives. `NewRegistry` puts every list in name order,
 never init order.
 `generate` removes a generated file the schema no longer
