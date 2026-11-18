@@ -423,6 +423,13 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 		}
 
 		last := events[len(events)-1].GlobalSeq
+		if len(events) == logBatch && !contains(p.Events, events[len(events)-1].Type) {
+			// the batch ended inside a run of events this projection does
+			// not fold: pass the rest of the run in this step (skip.go)
+			if last, err = c.ignoredAhead(ctx, tx, last, p.Events); err != nil {
+				return 0, err
+			}
+		}
 		if err := saveCheckpoint(ctx, tx, c.reg.Service, runner, last); err != nil {
 			return 0, err
 		}
@@ -814,6 +821,8 @@ func (c *Client) SkipStalled(ctx context.Context, runner string) (int64, error) 
 // own unit of work), advance the checkpoint. Failures retry, then park the
 // event to dead letters (or, under @retry, re-arm it as a durable timer —
 // see retry.go) and move on — at-least-once, no head-of-line block.
+// The checkpoint is written after each event the process subscribes to,
+// and once for each run of events it does not (skip.go).
 // Steps only while this instance leads the service's processes (see
 // election.go): one instance reacts at a time, and the reaction runs on
 // no pinned connection — a process may be a long external call.
@@ -849,39 +858,39 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 			c.tel.stepDur.Record(ctx, nowUTC().Sub(start).Seconds(),
 				metric.WithAttributes(c.tel.service, attribute.String("loom.runner", runner)))
 		}()
-		for i, evt := range events {
-			if i > 0 && !c.leading() {
-				// the lease went (yielded to a newer generation, or lost):
-				// stop at the last checkpointed event; the next leader
-				// starts after it
-				return i, nil
-			}
-			if contains(local, evt.Type) {
+		return processWalk{
+			subscribed: local,
+			leading:    c.leading,
+			handle: func(ctx context.Context, evt *Event) error {
 				// same as the projection: decode this process's own types
 				// only, and into a copy of the shared event
 				decoded, err := c.decodeEvent(evt)
 				if err != nil {
-					return 0, err
+					return err
 				}
 				// a durable retry already owns this event (@retry): the
 				// redelivery converges on it rather than reacting twice
 				pending, err := c.retryPending(ctx, p, decoded)
-				if err != nil {
-					return 0, err
+				if err != nil || pending {
+					return err
 				}
-				if !pending {
-					if err := c.reactWithRetry(ctx, p, decoded); err != nil {
-						if err := c.exhausted(ctx, runner, p, decoded, err); err != nil {
-							return 0, err
-						}
-					}
+				if err := c.reactWithRetry(ctx, p, decoded); err != nil {
+					return c.exhausted(ctx, runner, p, decoded, err)
 				}
-			}
-			if err := c.writeCheckpoint(ctx, runner, evt.GlobalSeq); err != nil {
-				return 0, err
-			}
-		}
-		return len(events), nil
+				return nil
+			},
+			save: func(ctx context.Context, seq int64) error {
+				return c.writeCheckpoint(ctx, runner, seq)
+			},
+			// a run of events the process does not subscribe to is one
+			// write, however long it is (skip.go)
+			pass: func(ctx context.Context, from, to int64) (bool, error) {
+				return passCheckpoint(ctx, c.db, c.reg.Service, runner, from, to)
+			},
+			ahead: func(ctx context.Context, after int64) (int64, error) {
+				return c.ignoredAhead(ctx, c.db, after, local)
+			},
+		}.walk(ctx, seq, events, len(events) == logBatch)
 	}
 }
 
