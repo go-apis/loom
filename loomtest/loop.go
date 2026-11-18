@@ -20,8 +20,9 @@ import (
 // would be looked at next, what it is told when it is, and what it
 // decides. Each look is a loom.LookTurn, the same the runner makes, so
 // the declared deadlines, the waits a look starts and ends, LookAgain,
-// LookDone, AskApproval, the backoff and the parking all follow the
-// runtime's own rule. The commands a look answers with are run through
+// LookDone, AskApproval, the backoff, the parking and the holding back
+// of a look that keeps acting without progress all follow the runtime's
+// own rule. The commands a look answers with are run through
 // the registry's handlers and their events folded into the reader's
 // state, so a second look sees what the first one did, as it would in
 // the store; a command scheduled with loom.At or loom.After is held
@@ -168,7 +169,7 @@ func (s *LoopScenario) LookedAt(at time.Time) *LoopScenario {
 // EventAt says an event the loop cares about arrived at at.
 func (s *LoopScenario) EventAt(at time.Time) *LoopScenario {
 	s.restart()
-	s.state.Event = at
+	s.state.Event, s.state.Outside = at, at
 	return s
 }
 
@@ -364,6 +365,7 @@ func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 		}
 	}
 	s.looking = false
+	turn.Sent(len(s.cmds))
 	var next time.Time
 	s.state, next = turn.End(s.state, s.limit, s.err)
 	s.asked = time.Time{}
@@ -430,6 +432,12 @@ func (s *LoopScenario) eventAt(at time.Time) {
 	}
 	if at.After(s.state.Event) {
 		s.state.Event = at
+	}
+	// one the look's own commands did not emit is news from outside: it
+	// is never held back, and it ends a run of looks acting without
+	// progress (loom.LoopState.Acting)
+	if !s.looking && at.After(s.state.Outside) {
+		s.state.Outside = at
 	}
 }
 

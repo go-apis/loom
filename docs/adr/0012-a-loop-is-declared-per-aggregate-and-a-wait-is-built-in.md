@@ -161,3 +161,47 @@ DESIGN.md's "Not yet built").
   with `RestartChild`. Restarts are recorded on the child's row
   (`restarted_at`, `restarted_by`), not as events: loop state is loom's,
   not the schema's. Escalation is a parent failing its own looks.
+- **A loop that keeps acting without progress is backed off, and the
+  service is told** (amended 2026-11-18). The rule above brings a look
+  to within `LoopSoon` of any event on its instance, the events of its
+  own commands included. That is right once, so a look sees what it did,
+  and it was wrong without end: runsheet's item loop sent a command on
+  every look, each command's event called the look again, and a deploy
+  was polled every 1.4s on 18 items for three hours. The wait between
+  calls is the runtime's to keep, so this is the runtime's to stop.
+  - *What is counted.* `LoopState.Acting`: the looks in a row that sent
+    commands and left what loom records about the instance as it was —
+    its waits (name, owner and deadline) and its outcome (not failed,
+    not parked, not done) — with no event from outside in between. A
+    look that sends nothing or fails makes it zero; one that acts after
+    anything moved makes it one.
+  - *What is held back.* From the second such look (`LoopActingFrom`),
+    the events of the look's own commands bring the next look to
+    `LoopActingBackoff` after it: 2s, 4s, doubling, never past
+    `LoopEvery`. `LookAgain` is held to the same floor, since asking
+    again is how a polling look keeps itself going.
+  - *What is not.* An event no look of the instance caused
+    (`LoopState.Outside`: another command, an answer, a child's note)
+    brings the look within `LoopSoon` as before and ends the run. A
+    wait's deadline is kept. `LoopEvery` still bounds everything: a loop
+    never goes longer than a minute without a look.
+  - *Telling the service.* The look that begins a spell is logged at
+    WARN and told to `Config.OnLoopActing` with the service, aggregate,
+    namespace and id, once; it is told again only for a new spell.
+  - *Own and outside are told apart by the unit of work,* not by
+    causation: the dispatch of a look's commands is marked on its
+    context, and events it appends on that instance are the look's own.
+    An event that comes back through a process or a timer the look set
+    off is from outside. That is deliberate — an answer that arrives
+    that way is news — and it is the rule's limit: a loop that drives
+    itself through a timer or a process, or that restarts a wait with a
+    new deadline on every look, is not seen as acting without progress.
+  - Considered and not done: comparing the aggregate's own state between
+    looks. A command that only counts its calls changes the state every
+    time, which is exactly the loop to catch; what loom records about
+    the instance is the part a look cannot move by accident.
+  - `loom_loop_due` gains `outside_at` and `acting`. `loomtest`'s
+    scenarios follow the same rule (`LookTurn.Sent`), so a test in a
+    time bubble sees the same looks the runner would make
+    (`loomtest/bubble_test.go`; `internal/e2e`
+    `TestALoopThatKeepsActingWithoutProgressIsBackedOff`).

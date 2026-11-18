@@ -426,7 +426,7 @@ func (c *Client) settleAgent(ctx context.Context, ref agentRef, jobID string, o 
 	}
 	// an answer is news for the loop: look now
 	if _, err := tx.Exec(ctx, `
-		UPDATE loom_loop_due SET event_at = clock_timestamp(), next_look = LEAST(next_look, clock_timestamp())
+		UPDATE loom_loop_due SET event_at = clock_timestamp(), outside_at = clock_timestamp(), next_look = LEAST(next_look, clock_timestamp())
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
 		c.reg.Service, ref.Aggregate, ref.Namespace, ref.ID); err != nil {
 		return false, err

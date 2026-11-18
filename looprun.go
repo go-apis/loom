@@ -36,6 +36,12 @@ import (
 // with a wait on its operators (LoopState.ParkPast). A look that
 // succeeds clears the count and unparks it.
 //
+// A look that keeps sending commands while nothing recorded about its
+// instance changes is held back (LoopState.Acting, loop.go): the events
+// of a look's own commands are noted apart from events from outside
+// (outside_at), the run is counted on the row (acting), and the look
+// that begins a spell tells the service (Config.OnLoopActing).
+//
 // Looks run on every instance of the newest generation alive; a row is
 // claimed with a lease, so two runners never look at one instance at
 // once, and one that dies mid-look gives it up when the lease runs out.
@@ -70,28 +76,45 @@ func (c *Client) looping(aggregate string) *AggregateDef {
 	return nil
 }
 
+// loopInstance names one instance of a @loop aggregate.
+type loopInstance struct {
+	aggregate, namespace string
+	id                   uuid.UUID
+}
+
+type ownLookKey struct{}
+
+// withOwnLook marks ctx as the unit of work of a look's own commands:
+// the events it appends on that instance are the look's doing.
+func withOwnLook(ctx context.Context, in loopInstance) context.Context {
+	return context.WithValue(ctx, ownLookKey{}, in)
+}
+
 // noteLoopEvents brings forward the next look of each looping instance
 // evts belong to: created due at once, and after that within LoopSoon
-// of the event.
+// of the event. An event the instance's own look caused — appended by
+// the unit of work of the commands it answered with — is noted as an
+// event (event_at) and not as one from outside (outside_at): the look
+// that ends writes the next look itself, and holds it back when its
+// looks keep acting without progress (LoopState.NextLook).
 func (c *Client) noteLoopEvents(ctx context.Context, tx pgx.Tx, evts []*Event) error {
-	type instance struct {
-		aggregate, namespace string
-		id                   uuid.UUID
-	}
-	seen := map[instance]bool{}
+	own, _ := ctx.Value(ownLookKey{}).(loopInstance)
+	seen := map[loopInstance]bool{}
 	for _, e := range evts {
-		in := instance{e.AggregateType, e.Namespace, e.AggregateID}
+		in := loopInstance{e.AggregateType, e.Namespace, e.AggregateID}
 		if seen[in] || c.looping(e.AggregateType) == nil {
 			continue
 		}
 		seen[in] = true
+		outside := in != own
 		_, err := tx.Exec(ctx, `
-			INSERT INTO loom_loop_due (service, aggregate_type, namespace, aggregate_id, next_look, event_at)
-			VALUES ($1,$2,$3,$4, clock_timestamp(), clock_timestamp())
+			INSERT INTO loom_loop_due (service, aggregate_type, namespace, aggregate_id, next_look, event_at, outside_at)
+			VALUES ($1,$2,$3,$4, clock_timestamp(), clock_timestamp(), CASE WHEN $6 THEN clock_timestamp() END)
 			ON CONFLICT (service, aggregate_type, namespace, aggregate_id) DO UPDATE
 			SET event_at = clock_timestamp(),
+			    outside_at = CASE WHEN $6 THEN clock_timestamp() ELSE loom_loop_due.outside_at END,
 			    next_look = LEAST(loom_loop_due.next_look, clock_timestamp() + $5 * interval '1 microsecond')`,
-			c.reg.Service, e.AggregateType, e.Namespace, e.AggregateID, LoopSoon.Microseconds())
+			c.reg.Service, e.AggregateType, e.Namespace, e.AggregateID, LoopSoon.Microseconds(), outside)
 		if err != nil {
 			return err
 		}
@@ -222,7 +245,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 	if def == nil {
 		// this build's registry has no loop for it: leave the row to a
 		// build that does
-		_, _, err := c.looked(ctx, l, start, Looking{}, nil, l.fired, false, nil, nil, 0)
+		_, err := c.looked(ctx, l, start, Looking{}, nil, l.fired, false, nil, nil, 0)
 		return err
 	}
 	var (
@@ -275,6 +298,7 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		}
 	}
 	lctx := turn.Context(withReader(ctx, c))
+	var sent []string // the commands the look answered with, by type
 	lookErr := func() (err error) {
 		// a look that panics has failed; it does not take the process
 		defer func() {
@@ -285,7 +309,15 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 		}()
 		cmds, err := def.Look(lctx)
 		if err == nil && len(cmds) > 0 {
-			err = c.Dispatch(WithMeta(ctx, Metadata{CausationID: "loop:" + l.aggregate + "/" + l.id.String()}), cmds...)
+			sent = make([]string, len(cmds))
+			for i, cmd := range cmds {
+				sent[i] = cmd.LoomCommand()
+			}
+			turn.Sent(len(cmds))
+			// the events these commands emit on the instance are the
+			// look's own: they do not count as news from outside
+			dctx := withOwnLook(ctx, loopInstance{l.aggregate, l.namespace, l.id})
+			err = c.Dispatch(WithMeta(dctx, Metadata{CausationID: "loop:" + l.aggregate + "/" + l.id.String()}), cmds...)
 		}
 		return err
 	}()
@@ -316,9 +348,15 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 			return err
 		}
 	}
-	parked, lastErr, err := c.looked(ctx, l, start, turn.Told, turn.said, turn.Fired, true, lookErr, parent, len(turn.Told.ChildNotes))
+	after, err := c.looked(ctx, l, start, turn.Told, turn.said, turn.Fired, true, lookErr, parent, len(turn.Told.ChildNotes))
 	if err != nil {
 		return err
+	}
+	parked, lastErr := after.parked, after.state.LastError
+	// the look that makes it LoopActingFrom in a row begins the spell:
+	// said once, here, and not again until something has moved
+	if after.state.Acting == LoopActingFrom {
+		c.loopActing(ctx, l, sent, after)
 	}
 	// the open requests with no job yet, this look's among them, are
 	// offered once their waits are held
@@ -358,49 +396,56 @@ func (c *Client) look(ctx context.Context, l dueLook) error {
 // LoopState.NextLook — an event that arrived after start brings it to
 // within LoopSoon. A look not made (no loop in this build) leaves the
 // failures as they stand.
-// It answers whether this look parked the instance, and why its last
-// look failed. parent is recorded on the row; toldNotes is how many of
-// the row's child notes the look was told, dropped now that it was.
-func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid, fired []string, made bool, lookErr error, parent *ChildRef, toldNotes int) (parked bool, lastErr string, err error) {
+// It answers the instance as the look left it, whether this look parked
+// it, and when it is next looked at. parent is recorded on the row;
+// toldNotes is how many of the row's child notes the look was told,
+// dropped now that it was.
+func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Looking, said *lookSaid, fired []string, made bool, lookErr error, parent *ChildRef, toldNotes int) (after lookedAs, err error) {
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
-		return false, "", err
+		return after, err
 	}
 	defer tx.Rollback(ctx)
 	var (
-		event *time.Time
-		held  []byte
-		notes []byte
-		prior LoopState
+		looked, event, outside *time.Time
+		held                   []byte
+		notes                  []byte
+		prior                  LoopState
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT event_at, waits, failures, last_error, parked, child_notes FROM loom_loop_due
+		SELECT looked_at, event_at, outside_at, acting, waits, failures, last_error, parked, child_notes FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4
 		FOR UPDATE`,
-		c.reg.Service, l.aggregate, l.namespace, l.id).Scan(&event, &held, &prior.Failures, &prior.LastError, &prior.Parked, &notes)
+		c.reg.Service, l.aggregate, l.namespace, l.id).Scan(&looked, &event, &outside, &prior.Acting, &held, &prior.Failures, &prior.LastError, &prior.Parked, &notes)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, "", nil // done with, by LookDone
+		return after, nil // done with, by LookDone
 	}
 	if err != nil {
-		return false, "", err
+		return after, err
 	}
 	var holding []Wait
 	_ = json.Unmarshal(held, &holding)
 	prior.Waits = holding
+	if looked != nil {
+		prior.Looked = *looked
+	}
 	if event != nil {
 		prior.Event = *event
+	}
+	if outside != nil {
+		prior.Outside = *outside
 	}
 	state, next := lookEnded(prior, start, told, said, made, lookErr, c.loopFails)
 	raw, err := json.Marshal(state.Waits)
 	if err != nil {
-		return false, "", err
+		return after, err
 	}
 	if fired == nil {
 		fired = []string{}
 	}
 	firedRaw, err := json.Marshal(fired)
 	if err != nil {
-		return false, "", err
+		return after, err
 	}
 	// the notes the look was told are done with; any that came while it
 	// ran are kept for the next
@@ -414,7 +459,7 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 	}
 	notesRaw, err := json.Marshal(pending)
 	if err != nil {
-		return false, "", err
+		return after, err
 	}
 	var parentType *string
 	var parentID *uuid.UUID
@@ -424,15 +469,56 @@ func (c *Client) looked(ctx context.Context, l dueLook, start time.Time, told Lo
 	if _, err := tx.Exec(ctx, `
 		UPDATE loom_loop_due SET looked_at=$5, next_look=$6, waits=$7, leased_until=NULL,
 		       failures=$8, last_error=$9, parked=$10, deadlines_fired=$11, child_notes=$12,
-		       parent_type=coalesce($13, parent_type), parent_id=coalesce($14, parent_id)
+		       parent_type=coalesce($13, parent_type), parent_id=coalesce($14, parent_id), acting=$15
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw, state.Failures, state.LastError, state.Parked, firedRaw, notesRaw, parentType, parentID); err != nil {
-		return false, "", err
+		c.reg.Service, l.aggregate, l.namespace, l.id, start, next, raw, state.Failures, state.LastError, state.Parked, firedRaw, notesRaw, parentType, parentID, state.Acting); err != nil {
+		return after, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, "", err
+		return after, err
 	}
-	return state.Parked && !prior.Parked, state.LastError, nil
+	return lookedAs{state: state, next: next, parked: state.Parked && !prior.Parked}, nil
+}
+
+// lookedAs is how a look left its instance: its loop state, when it is
+// next looked at, and whether this look parked it.
+type lookedAs struct {
+	state  LoopState
+	next   time.Time
+	parked bool
+}
+
+// LoopActing is what OnLoopActing is told: the looks of one instance of
+// a @loop aggregate keep sending commands and nothing loom records
+// about the instance has changed between them.
+type LoopActing struct {
+	// Service, Aggregate, Namespace and ID name the instance.
+	Service   string    `json:"service"`
+	Aggregate string    `json:"aggregate"`
+	Namespace string    `json:"namespace"`
+	ID        uuid.UUID `json:"id"`
+	// Looks is how many looks in a row have acted without progress.
+	Looks int `json:"looks"`
+	// Commands is what the last of them sent, by type.
+	Commands []string `json:"commands"`
+	// At is when that look was made, and NextLook when the instance is
+	// looked at next unless something from outside arrives first.
+	At       time.Time `json:"at"`
+	NextLook time.Time `json:"next_look"`
+}
+
+// loopActing says a spell of acting without progress has begun: logged,
+// and told to the service (Config.OnLoopActing).
+func (c *Client) loopActing(ctx context.Context, l dueLook, sent []string, after lookedAs) {
+	acting := LoopActing{
+		Service: c.reg.Service, Aggregate: l.aggregate, Namespace: l.namespace, ID: l.id,
+		Looks: after.state.Acting, Commands: sent, At: after.state.Looked, NextLook: after.next,
+	}
+	c.log.WarnContext(ctx, "loop keeps acting without progress: its looks send commands and nothing recorded about the instance changes, so they are backed off until something does",
+		"aggregate", l.aggregate, "namespace", l.namespace, "id", l.id, "looks", acting.Looks, "commands", sent, "next_look", after.next)
+	if c.onLoopActing != nil {
+		c.callHook(ctx, "OnLoopActing", func() { c.onLoopActing(ctx, acting) })
+	}
 }
 
 // LoopDue is what the runtime holds about one looping instance.
@@ -460,13 +546,13 @@ func (c *Client) LoopDue(ctx context.Context, aggregate, namespace string, id uu
 		parentID   *uuid.UUID
 	)
 	var (
-		looked, event *time.Time
-		waits         []byte
+		looked, event, outside *time.Time
+		waits                  []byte
 	)
 	err = c.db.QueryRow(ctx, `
-		SELECT next_look, looked_at, event_at, waits, failures, last_error, parked, parent_type, parent_id, restarted_at, restarted_by FROM loom_loop_due
+		SELECT next_look, looked_at, event_at, outside_at, acting, waits, failures, last_error, parked, parent_type, parent_id, restarted_at, restarted_by FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, aggregate, namespace, id).Scan(&due.NextLook, &looked, &event, &waits, &due.Failures, &due.LastError, &due.Parked, &parentType, &parentID, &due.RestartedAt, &due.RestartedBy)
+		c.reg.Service, aggregate, namespace, id).Scan(&due.NextLook, &looked, &event, &outside, &due.Acting, &waits, &due.Failures, &due.LastError, &due.Parked, &parentType, &parentID, &due.RestartedAt, &due.RestartedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return due, false, nil
 	}
@@ -482,6 +568,9 @@ func (c *Client) LoopDue(ctx context.Context, aggregate, namespace string, id uu
 	}
 	if event != nil {
 		due.Event = *event
+	}
+	if outside != nil {
+		due.Outside = *outside
 	}
 	_ = json.Unmarshal(waits, &due.Waits)
 	return due, true, nil

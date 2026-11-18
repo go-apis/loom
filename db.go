@@ -187,6 +187,11 @@ CREATE INDEX IF NOT EXISTS loom_loop_due_parent ON loom_loop_due (service, paren
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS failures int NOT NULL DEFAULT 0;
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS last_error text NOT NULL DEFAULT '';
 ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS parked boolean NOT NULL DEFAULT false;
+-- a look that keeps acting without progress is held back (loop.go):
+-- outside_at is the newest event no look of the instance's own caused,
+-- acting the looks in a row that sent commands and changed nothing
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS outside_at timestamptz;
+ALTER TABLE loom_loop_due ADD COLUMN IF NOT EXISTS acting int NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS loom_approvals (
 	service        text NOT NULL,

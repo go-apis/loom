@@ -364,6 +364,36 @@ generated switches, folds from generated assignments.
   an event arrives for it; `LookAgain(ctx, d)` asks for the next sooner
   than the minute. A look that fails is logged and looked at again by
   the rule (ADR 0012).
+- **A loop that keeps acting without progress is backed off.** A look's
+  own events call it again within `LoopSoon`, which is right once — it
+  sees what its commands did — and wrong for ever: a look that sends a
+  command on every call ran flat out (runsheet's item loop polled a
+  deploy every 1.4s on 18 items for three hours, 2026-11-18). The row
+  now tells the two kinds of event apart: `event_at` is any event,
+  `outside_at` only one that no look of the instance's own caused (the
+  unit of work of a look's commands is marked on its context, and
+  `noteLoopEvents` leaves `outside_at` alone for it; answers and child
+  notes set both). `acting` counts the looks in a row that sent commands
+  and left what loom records as it was: the waits (name, owner,
+  deadline) and the outcome (not failed, parked or done), with no event
+  from outside in between (`actingAfter`, `loopturn.go`). From the
+  second such look (`LoopActingFrom`) the look's own events bring the
+  next only to `LoopActingBackoff` after it — 2s, doubling, never past
+  `LoopEvery` — and `LookAgain` is held to the same floor. An hour of it
+  is 65 looks, not 3,600. Nothing else is held: an event from outside
+  still brings the look within `LoopSoon` (the appending transaction
+  moves `next_look` itself) and ends the run, a wait's deadline is kept,
+  and a look that sends nothing, fails, or changes what is recorded ends
+  it too. The look that begins a spell is logged at WARN and told to
+  `Config.OnLoopActing(ctx, LoopActing)` — service, aggregate, namespace,
+  id, the commands it sent, the next look — once per spell: the count
+  passes two once, under the row's lock. It is the rule's, not a
+  watchdog's: it runs on the instance that made the look, at most once
+  (an instance that dies between the row's commit and the call does not
+  repeat it). What the rule cannot see: a look that restarts a wait with
+  a new deadline each time has changed what is recorded and is not held
+  back, and neither is one driven by a timer or a process it set off,
+  whose events are from outside.
 - **A wait belongs to a loop, and has an owner and a deadline.** A
   `Wait` is a name, who is to answer (`Owner`) and when to stop waiting
   (`Deadline`); one with any of the three missing is refused, so nothing
@@ -600,6 +630,9 @@ generated switches, folds from generated assignments.
   Schema: `loom_dead_letters` gains `redrives`, `redrive_at`,
   `notified_at`; `loom_checkpoints` gains `lag_notified_at`;
   `loom_effects` gains `in_doubt_at`, `doubt_notified_at`. All additive.
+  A fourth hook, `OnLoopActing`, is not the watchdog's: the loop runner
+  calls it from the look that begins a spell of acting without progress
+  (see "A loop that keeps acting without progress is backed off").
 - **Metadata**: correlation ids propagate across dispatches and the bus;
   causation records the triggering event. Both are columns, not folklore.
 - **Observability**: OTel API only (no SDK dependency, no exporters, no

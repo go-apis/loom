@@ -238,6 +238,9 @@ once per occurrence, by the process lease holder, when a letter parks for
 good, a runner falls more than `RunnerLagThreshold` behind, or an effect
 is left in doubt. `Config.RedriveLadder` redrives a dead letter on a list
 of delays first; `loom.Persistent(err)` dead-letters a reaction at once.
+`Config.OnLoopActing` is called once when a `@loop` instance's looks keep
+sending commands and nothing recorded about it changes; those looks are
+backed off (2s, doubling to the minute) until something does.
 
 Makes unnecessary: a job that polls `/dead_letters` and redrives them by
 hand; a settle sweep over unsettled effects; an alert on runner lag

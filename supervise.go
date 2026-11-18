@@ -142,11 +142,11 @@ func (c *Client) noteParent(ctx context.Context, parent ChildRef, notes []ChildN
 		return err
 	}
 	_, err = c.db.Exec(ctx, `
-		INSERT INTO loom_loop_due (service, aggregate_type, namespace, aggregate_id, next_look, event_at, child_notes)
-		VALUES ($1,$2,$3,$4, clock_timestamp(), clock_timestamp(), $5)
+		INSERT INTO loom_loop_due (service, aggregate_type, namespace, aggregate_id, next_look, event_at, outside_at, child_notes)
+		VALUES ($1,$2,$3,$4, clock_timestamp(), clock_timestamp(), clock_timestamp(), $5)
 		ON CONFLICT (service, aggregate_type, namespace, aggregate_id) DO UPDATE
 		SET child_notes = loom_loop_due.child_notes || EXCLUDED.child_notes,
-		    event_at = clock_timestamp(),
+		    event_at = clock_timestamp(), outside_at = clock_timestamp(),
 		    next_look = LEAST(loom_loop_due.next_look, clock_timestamp() + $6 * interval '1 microsecond')`,
 		c.reg.Service, parent.Aggregate, parent.Namespace, parent.ID, raw, LoopSoon.Microseconds())
 	return err

@@ -151,12 +151,13 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 	var (
 		raw    []byte
 		parked bool
+		acting int
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT waits, parked FROM loom_loop_due
+		SELECT waits, parked, acting FROM loom_loop_due
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4
 		FOR UPDATE`,
-		c.reg.Service, aggregate, namespace, id).Scan(&raw, &parked)
+		c.reg.Service, aggregate, namespace, id).Scan(&raw, &parked, &acting)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -166,6 +167,7 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 	var held LoopState
 	_ = json.Unmarshal(raw, &held.Waits)
 	held.Parked = parked
+	held.Acting = acting
 	changed, lookNow := change(held)
 	waits := changed.Waits
 	out, err := json.Marshal(waits)
@@ -179,9 +181,9 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE loom_loop_due SET waits=$5, next_look = LEAST(next_look, $6::timestamptz)
+		UPDATE loom_loop_due SET waits=$5, next_look = LEAST(next_look, $6::timestamptz), acting=$7
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
-		c.reg.Service, aggregate, namespace, id, out, first); err != nil {
+		c.reg.Service, aggregate, namespace, id, out, first, changed.Acting); err != nil {
 		return err
 	}
 	if lookNow {
