@@ -93,11 +93,12 @@ type Config struct {
 
 	// OnLoopActing is called once when the looks of an instance of a
 	// @loop aggregate keep acting without progress: the second look in a
-	// row has sent commands and nothing loom records about the instance
-	// (its waits and their owners and deadlines, its outcome) changed
-	// between them. From then its looks are backed off (2s, doubling to
-	// LoopEvery) until one changes what is recorded, sends nothing, or an
-	// event arrives that its own looks did not cause; it is called again
+	// row has sent the same commands (types and payloads) and nothing
+	// loom records about the instance (its waits and their owners and
+	// deadlines, its outcome) changed between them. From then its looks
+	// are backed off (2s, doubling to LoopEvery) until one sends something
+	// else or nothing, changes what is recorded, or an event arrives that
+	// its own looks did not cause; it is called again
 	// only for a new spell after that. It runs on the instance that made
 	// the look. Optional; the spell is logged at WARN either way.
 	OnLoopActing func(ctx context.Context, acting LoopActing)

@@ -373,10 +373,14 @@ generated switches, folds from generated assignments.
   `outside_at` only one that no look of the instance's own caused (the
   unit of work of a look's commands is marked on its context, and
   `noteLoopEvents` leaves `outside_at` alone for it; answers and child
-  notes set both). `acting` counts the looks in a row that sent commands
-  and left what loom records as it was: the waits (name, owner,
+  notes set both). `acting` counts the looks in a row that sent the same
+  commands and left what loom records as it was: the waits (name, owner,
   deadline) and the outcome (not failed, parked or done), with no event
-  from outside in between (`actingAfter`, `loopturn.go`). From the
+  from outside in between (`actingAfter`, `loopturn.go`). "The same
+  commands" is their types and payloads in order (`CommandsDigest`, kept
+  in `acting_sent`): a look that sends something else than the one
+  before is a loop taking its steps and is never held back, and one that
+  sends the same again is polling. From the
   second such look (`LoopActingFrom`) the look's own events bring the
   next only to `LoopActingBackoff` after it — 2s, doubling, never past
   `LoopEvery` — and `LookAgain` is held to the same floor. An hour of it
@@ -390,10 +394,15 @@ generated switches, folds from generated assignments.
   passes two once, under the row's lock. It is the rule's, not a
   watchdog's: it runs on the instance that made the look, at most once
   (an instance that dies between the row's commit and the call does not
-  repeat it). What the rule cannot see: a look that restarts a wait with
-  a new deadline each time has changed what is recorded and is not held
-  back, and neither is one driven by a timer or a process it set off,
-  whose events are from outside.
+  repeat it). The incident's own look is caught: past its wait's
+  deadline runsheet's item loop sent one `PollWorkItemDeploy`, the same
+  each time, straight from the look, and ended a wait that was no longer
+  there; before the deadline it restarted the wait with the deadline it
+  already had, which changes nothing either. What the rule cannot see:
+  a look that restarts a wait with a new deadline each time has changed
+  what is recorded, one that alternates two commands sends something
+  else each time, and one driven by a timer or a process it set off
+  gets its events from outside.
 - **A wait belongs to a loop, and has an owner and a deadline.** A
   `Wait` is a name, who is to answer (`Owner`) and when to stop waiting
   (`Deadline`); one with any of the three missing is refused, so nothing
@@ -630,7 +639,7 @@ generated switches, folds from generated assignments.
   Schema: `loom_dead_letters` gains `redrives`, `redrive_at`,
   `notified_at`; `loom_checkpoints` gains `lag_notified_at`;
   `loom_effects` gains `in_doubt_at`, `doubt_notified_at`. All additive.
-  A fourth hook, `OnLoopActing`, is not the watchdog's: the loop runner
+  A fourth hook, `OnLoopActing`, is not the watchdog's. The loop runner
   calls it from the look that begins a spell of acting without progress
   (see "A loop that keeps acting without progress is backed off").
 - **Metadata**: correlation ids propagate across dispatches and the bus;

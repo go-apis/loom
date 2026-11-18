@@ -2,6 +2,9 @@ package loom
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -94,11 +97,33 @@ func (t *LookTurn) End(held LoopState, limit int, err error) (LoopState, time.Ti
 	return lookEnded(held, t.At, t.Told, t.said, true, err, limit)
 }
 
-// Sent notes how many commands the look answered with. The runner says
-// so before it ends the turn: a look that sends commands time after
-// time and changes nothing recorded about its instance is held back
-// (LoopState.Acting).
-func (t *LookTurn) Sent(commands int) { t.said.sent = commands }
+// Sent notes the commands the look answered with. The runner says so
+// before it ends the turn: a look that sends the same commands time
+// after time and changes nothing recorded about its instance is held
+// back (LoopState.Acting).
+func (t *LookTurn) Sent(cmds ...Command) {
+	t.said.sent, t.said.sentAs = len(cmds), CommandsDigest(cmds)
+}
+
+// CommandsDigest stands for a list of commands when two lists are
+// compared: equal for the same types and payloads in the same order,
+// empty for none. A command scheduled with At or After counts as the
+// command it holds, whenever it is for.
+func CommandsDigest(cmds []Command) string {
+	if len(cmds) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, cmd := range cmds {
+		payload, err := json.Marshal(cmd)
+		if err != nil {
+			payload = nil // its type still tells it from another command
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", cmd.LoomCommand(), len(payload))
+		h.Write(payload)
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
 
 // Done reports whether a look that ended without failing said LookDone.
 func (t *LookTurn) Done() bool { return t.ended && t.said.done }
@@ -139,6 +164,7 @@ func lookEnded(held LoopState, start time.Time, told Looking, said *lookSaid, ma
 		Event:     held.Event,
 		Outside:   held.Outside,
 		Acting:    held.Acting,
+		Sent:      held.Sent,
 		Waits:     settleWaits(held.Waits, told, said),
 		Failures:  held.Failures,
 		LastError: held.LastError,
@@ -147,6 +173,10 @@ func lookEnded(held LoopState, start time.Time, told Looking, said *lookSaid, ma
 	if made {
 		state = state.AfterLook(start, lookErr).ParkPast(limit)
 		state.Acting = actingAfter(held, state, said, lookErr)
+		state.Sent = ""
+		if state.Acting > 0 {
+			state.Sent = said.sentAs
+		}
 	}
 	next := state.NextLook()
 	if said != nil && said.again > 0 {
@@ -168,16 +198,17 @@ func lookEnded(held LoopState, start time.Time, told Looking, said *lookSaid, ma
 // actingAfter is LoopState.Acting once a look has ended: held is the
 // instance as the look before left it, with whatever has been noted
 // since, and state as this one leaves it. A look that sent nothing, or
-// failed, ends the run. One that sent commands starts a run when
-// anything recorded moved since the look before — an event from
-// outside, a wait started, ended, expired or given another owner or
-// deadline, the instance parked, unparked or done — and carries it on
-// when nothing did.
+// failed, ends the run. One that sent commands starts a run when it
+// sent something else than the look before, or anything recorded moved
+// since that look — an event from outside, a wait started, ended,
+// expired or given another owner or deadline, the instance parked,
+// unparked or done — and carries it on when it sent the same again and
+// nothing did.
 func actingAfter(held, state LoopState, said *lookSaid, lookErr error) int {
 	if lookErr != nil || said == nil || said.sent == 0 {
 		return 0
 	}
-	if held.Acting == 0 || said.done || held.Parked != state.Parked ||
+	if held.Acting == 0 || said.sentAs != held.Sent || said.done || held.Parked != state.Parked ||
 		held.Outside.After(held.Looked) || !sameWaits(held.Waits, state.Waits) {
 		return 1
 	}

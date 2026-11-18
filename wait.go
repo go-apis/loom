@@ -181,7 +181,7 @@ func (c *Client) changeWaits(ctx context.Context, aggregate, namespace string, i
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE loom_loop_due SET waits=$5, next_look = LEAST(next_look, $6::timestamptz), acting=$7
+		UPDATE loom_loop_due SET waits=$5, next_look = LEAST(next_look, $6::timestamptz), acting=$7, acting_sent = CASE WHEN $7 = 0 THEN '' ELSE acting_sent END
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
 		c.reg.Service, aggregate, namespace, id, out, first, changed.Acting); err != nil {
 		return err

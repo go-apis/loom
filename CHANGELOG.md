@@ -175,19 +175,21 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   brought the next look to within a second, so a look that sent a
   command on every call ran flat out: on 2026-11-18 runsheet's item loop
   polled a deploy every 1.4s on 18 items for three hours. Once two looks
-  in a row have sent commands and nothing loom records about the
-  instance has changed between them (its waits, their owners and
-  deadlines, its outcome), the next look is 2s after, then 4s, doubling
-  to `LoopEvery`; `LookAgain` is held to the same floor. An event the
-  loop's own look did not cause is looked at within the second as
-  before and ends the run, as does a look that changes what is recorded,
-  sends nothing or fails. `Config.OnLoopActing` is called once per
+  in a row have sent the same commands (types and payloads) and nothing
+  loom records about the instance has changed between them (its waits,
+  their owners and deadlines, its outcome), the next look is 2s after,
+  then 4s, doubling to `LoopEvery`; `LookAgain` is held to the same
+  floor. A look that sends something else than the one before is a loop
+  taking its steps and is not held back. An event the loop's own look
+  did not cause is looked at within the second as before and ends the
+  run, as does a look that changes what is recorded, sends nothing or
+  fails. `Config.OnLoopActing` is called once per
   spell with a `LoopActing` naming the service, aggregate, namespace
-  and id, and the spell is logged at WARN. `LoopState` gains `Acting`
-  and `Outside` (read with `Client.LoopDue`), and `LookTurn.Sent` tells
-  a turn how many commands its look answered with, so `loomtest`
+  and id, and the spell is logged at WARN. `LoopState` gains `Acting`,
+  `Sent` and `Outside` (read with `Client.LoopDue`), and `LookTurn.Sent`
+  tells a turn the commands its look answered with, so `loomtest`
   scenarios back off as the runner does. Schema: `loom_loop_due` gains
-  `outside_at` and `acting`.
+  `outside_at`, `acting` and `acting_sent`.
 
 ### Added
 

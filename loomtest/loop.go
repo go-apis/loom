@@ -365,7 +365,7 @@ func (s *LoopScenario) Look(now time.Time) *LoopScenario {
 		}
 	}
 	s.looking = false
-	turn.Sent(len(s.cmds))
+	turn.Sent(s.cmds...)
 	var next time.Time
 	s.state, next = turn.End(s.state, s.limit, s.err)
 	s.asked = time.Time{}

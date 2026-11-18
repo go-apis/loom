@@ -26,14 +26,17 @@ import (
 //
 // One thing holds a look back. A look's own commands emit events on its
 // instance, and those bring the next look to within LoopSoon like any
-// other: a look that acts every time it is called, and changes nothing
-// loom records about the instance, would be called flat out for as long
-// as it kept acting (runsheet's item loop polled a deploy every 1.4s on
-// 18 items for three hours, 2026-11-18). So once looks in a row have
-// acted and left the instance's waits and outcome as they were, the
-// events of the look's own commands bring the next look forward only to
-// LoopActingBackoff: 2s, 4s, doubling to LoopEvery. An event the look
-// did not cause is never held back, and it ends the run.
+// other: a look that sends the same command every time it is called,
+// and changes nothing loom records about the instance, would be called
+// flat out for as long as it kept sending it (runsheet's item loop
+// polled a deploy every 1.4s on 18 items for three hours, 2026-11-18).
+// So once looks in a row have sent the same commands and left the
+// instance's waits and outcome as they were, the events of the look's
+// own commands bring the next look forward only to LoopActingBackoff:
+// 2s, 4s, doubling to LoopEvery. An event the look did not cause is
+// never held back, and it ends the run. So does a look that sends
+// something else than the one before it — another command, or the same
+// with another payload: that is a loop taking its steps, not polling.
 
 const (
 	// LoopEvery is the longest a declared loop goes without a look.
@@ -123,14 +126,21 @@ type LoopState struct {
 	// answer, a child's note. Zero for none. The events a look's own
 	// commands emit move Event and not Outside.
 	Outside time.Time
-	// Acting is how many looks in a row, up to the last one, sent
-	// commands and left what loom records about the instance as it was:
-	// its waits (name, owner and deadline) and its outcome (not failed,
-	// not parked, not done), with no event from outside in between. Zero
-	// once a look sends nothing or fails; one for a look that acts after
-	// anything changed. From LoopActingFrom the next look is held back
+	// Acting is how many looks in a row, up to the last one, sent the
+	// same commands (Sent) and left what loom records about the instance
+	// as it was: its waits (name, owner and deadline) and its outcome
+	// (not failed, not parked, not done), with no event from outside in
+	// between. Zero once a look sends nothing or fails; one for a look
+	// that acts after anything changed, or sends something else than the
+	// look before it did. From LoopActingFrom the next look is held back
 	// (LoopActingBackoff).
 	Acting int
+	// Sent stands for the commands the last look sent, their types and
+	// payloads in order (CommandsDigest): empty when it sent none. A
+	// look that sends something else than the one before is moving, a
+	// step at a time, and is not held back; one that sends the same
+	// again is polling.
+	Sent string
 	// Waits is what the loop is waiting on.
 	Waits []Wait
 	// Failures is how many looks in a row have failed, up to the last
@@ -189,8 +199,8 @@ func withoutWait(waits []Wait, name string) []Wait {
 }
 
 // ActingWithoutProgress reports whether the loop's looks keep acting to
-// no effect: LoopActingFrom or more in a row have sent commands and
-// changed nothing loom records about the instance.
+// no effect: LoopActingFrom or more in a row have sent the same commands
+// and changed nothing loom records about the instance.
 func (s LoopState) ActingWithoutProgress() bool { return s.Acting >= LoopActingFrom }
 
 // NextLook is when the loop is to be looked at next: the earliest of
@@ -308,8 +318,10 @@ func LookingAt(ctx context.Context) Looking {
 type lookSaid struct {
 	done  bool
 	again time.Duration
-	// sent is how many commands the look answered with (LookTurn.Sent)
-	sent int
+	// sent is how many commands the look answered with, and sentAs what
+	// stands for them (LookTurn.Sent)
+	sent   int
+	sentAs string
 	// waits the look started, and the names of those it ended (wait.go)
 	waits   []Wait
 	stopped []string

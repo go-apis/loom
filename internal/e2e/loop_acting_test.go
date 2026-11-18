@@ -15,8 +15,8 @@ import (
 )
 
 // TestALoopThatKeepsActingWithoutProgressIsBackedOff is runsheet's item
-// loop of 18 November as a test: a look that sends a command every time
-// it is called, where the command's own event calls the look again, ran
+// loop of 18 November as a test: a look that sends the same command every
+// time it is called, where the command's own event calls the look again, ran
 // flat out — a deploy polled every 1.4s on 18 items for three hours.
 // Here a kiln's look stokes it on every look and nothing loom records
 // about the kiln changes. Through a simulated hour (the store's row is
@@ -108,8 +108,8 @@ func TestALoopThatKeepsActingWithoutProgressIsBackedOff(t *testing.T) {
 	}
 	t.Logf("%d looks in a simulated hour; the first apart %v", looks, gaps[:min(8, len(gaps))])
 
-	if looks >= 70 {
-		t.Fatalf("%d looks in a simulated hour, want 65: backed off to one a minute", looks)
+	if looks > 66 {
+		t.Fatalf("%d looks in a simulated hour, want about 65: backed off to one a minute", looks)
 	}
 	soon := 0
 	for _, g := range gaps {
@@ -117,8 +117,8 @@ func TestALoopThatKeepsActingWithoutProgressIsBackedOff(t *testing.T) {
 			soon++
 		}
 	}
-	if soon >= 20 {
-		t.Fatalf("%d looks in the hour came sooner than the minute after the one before, want fewer than 20", soon)
+	if soon >= 10 {
+		t.Fatalf("%d looks in the hour came sooner than the minute after the one before, want fewer than 10", soon)
 	}
 	// the first follows its own event within the second, as ever; from
 	// the second acting look they double, to the minute
@@ -166,5 +166,56 @@ func TestALoopThatKeepsActingWithoutProgressIsBackedOff(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if n := len(hooked()); n != 2 {
 		t.Fatalf("OnLoopActing was called %d times over two spells, want twice", n)
+	}
+}
+
+// TestALoopThatTakesADifferentStepEachLookIsNotBackedOff: a loop that
+// moves a step at a time sends something else on each look, and loom
+// records nothing for it between them. It is not a poller: each look
+// follows the one before within the second, and nobody is told.
+func TestALoopThatTakesADifferentStepEachLookIsNotBackedOff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var mu sync.Mutex
+	told, step := 0, 0
+	cli, _ := loopClockWith(t, ctx, true, loom.Config{
+		OnLoopActing: func(context.Context, loom.LoopActing) {
+			mu.Lock()
+			defer mu.Unlock()
+			told++
+		},
+	})
+	kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+	clock.SetKilnLook(func(ctx context.Context) ([]loom.Command, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		step++
+		if step%2 == 0 {
+			return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}, &clockgen.StokeKiln{CommandBase: kiln}}, nil
+		}
+		return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}}, nil
+	})
+	if err := cli.Dispatch(ctx, &clockgen.LightKiln{CommandBase: kiln}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[time.Time]bool{}
+	waitFor(t, ctx, "five steps", func() bool {
+		due, ok, err := cli.LoopDue(ctx, "Kiln", kiln.Namespace, kiln.AggregateID)
+		if err != nil || !ok || due.Looked.IsZero() || seen[due.Looked] {
+			return len(seen) >= 5
+		}
+		seen[due.Looked] = true
+		if due.Acting > 1 {
+			t.Fatalf("a stepping loop counts %d looks without progress, want at most 1", due.Acting)
+		}
+		if wait := due.NextLook.Sub(due.Looked); due.Acting == 1 && wait >= 2*time.Second {
+			t.Fatalf("a stepping loop's next look is %s after the last, want about %s", wait, loom.LoopSoon)
+		}
+		return len(seen) >= 5
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if told != 0 {
+		t.Fatalf("OnLoopActing was called %d times for a loop taking its steps, want never", told)
 	}
 }

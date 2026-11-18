@@ -3,6 +3,8 @@ package loom
 import (
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestLoopActingBackoff(t *testing.T) {
@@ -44,9 +46,9 @@ func TestNextLookHoldsBackOnlyTheLoopsOwnEvents(t *testing.T) {
 func TestActingAfter(t *testing.T) {
 	looked := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
 	wait := Wait{Name: "deploy", Owner: "deployer", Deadline: looked.Add(time.Hour)}
-	held := LoopState{Looked: looked, Event: looked.Add(time.Millisecond), Acting: 3, Waits: []Wait{wait}}
+	held := LoopState{Looked: looked, Event: looked.Add(time.Millisecond), Acting: 3, Sent: "poll", Waits: []Wait{wait}}
 	same := LoopState{Waits: []Wait{wait}}
-	sent := &lookSaid{sent: 1}
+	sent := &lookSaid{sent: 1, sentAs: "poll"}
 	later, owner := wait, wait
 	later.Deadline = wait.Deadline.Add(time.Minute)
 	owner.Owner = "operators"
@@ -61,7 +63,8 @@ func TestActingAfter(t *testing.T) {
 		err         error
 		want        int
 	}{
-		{"acted, nothing moved", held, same, sent, nil, 4},
+		{"sent the same again, nothing moved", held, same, sent, nil, 4},
+		{"sent something else: a step, not a poll", held, same, &lookSaid{sent: 1, sentAs: "next step"}, nil, 1},
 		{"sent nothing", held, same, &lookSaid{}, nil, 0},
 		{"failed", held, same, sent, errTestLook, 0},
 		{"first acting look", LoopState{Looked: looked}, LoopState{}, sent, nil, 1},
@@ -71,7 +74,7 @@ func TestActingAfter(t *testing.T) {
 		{"a wait's owner changed", held, LoopState{Waits: []Wait{owner}}, sent, nil, 1},
 		{"a wait started", held, LoopState{Waits: []Wait{wait, {Name: "other", Owner: "o", Deadline: looked}}}, sent, nil, 1},
 		{"parked", held, parked, sent, nil, 1},
-		{"done", held, same, &lookSaid{sent: 1, done: true}, nil, 1},
+		{"done", held, same, &lookSaid{sent: 1, sentAs: "poll", done: true}, nil, 1},
 	} {
 		if got := actingAfter(tc.held, tc.state, tc.said, tc.err); got != tc.want {
 			t.Errorf("%s: acting %d, want %d", tc.name, got, tc.want)
@@ -84,3 +87,44 @@ type testLookError struct{}
 func (testLookError) Error() string { return "the look failed" }
 
 var errTestLook = testLookError{}
+
+type testPoll struct {
+	CommandBase
+	Attempt int `json:"attempt"`
+}
+
+func (testPoll) LoomCommand() string { return "Poll" }
+
+type testStep struct{ CommandBase }
+
+func (testStep) LoomCommand() string { return "Step" }
+
+// Two lists of commands stand for the same thing only when they hold
+// the same types and payloads in the same order.
+func TestCommandsDigest(t *testing.T) {
+	b := CommandBase{Namespace: "ns", AggregateID: uuid.MustParse("11111111-2222-4333-8444-555555555555")}
+	poll := func(n int) Command { return &testPoll{CommandBase: b, Attempt: n} }
+	step := &testStep{CommandBase: b}
+	if CommandsDigest(nil) != "" {
+		t.Fatal("no commands stand for something")
+	}
+	same := CommandsDigest([]Command{poll(1), step})
+	for name, other := range map[string][]Command{
+		"another payload": {poll(2), step},
+		"another type":    {step, step},
+		"another order":   {step, poll(1)},
+		"one fewer":       {poll(1)},
+		"another target":  {poll(1), &testStep{CommandBase: CommandBase{Namespace: "ns", AggregateID: uuid.New()}}},
+	} {
+		if CommandsDigest(other) == same {
+			t.Errorf("%s stands for the same commands", name)
+		}
+	}
+	if CommandsDigest([]Command{poll(1), step}) != same {
+		t.Error("the same commands stand for something else the second time")
+	}
+	// scheduled for another time, it is the same command
+	if CommandsDigest([]Command{After(poll(1), time.Second)}) != CommandsDigest([]Command{After(poll(1), time.Hour)}) {
+		t.Error("a command scheduled for another time stands for another command")
+	}
+}
