@@ -410,3 +410,230 @@ func TestLookDoneAndLookAgainInABubble(t *testing.T) {
 		}
 	})
 }
+
+// gaps is how long after the look before it each look was made.
+func gaps(looks []loomtest.LookMade) []time.Duration {
+	out := make([]time.Duration, 0, len(looks))
+	for i := 1; i < len(looks); i++ {
+		out = append(out, looks[i].At.Sub(looks[i-1].At).Round(time.Millisecond))
+	}
+	return out
+}
+
+// TestALoopThatKeepsActingWithoutProgressIsBackedOffInABubble: a kiln
+// whose look stokes it every time it is called, and changes nothing
+// loom records about it, is not called flat out. Its own command's
+// event brings the second look within a second, as ever; from there the
+// looks are 2s, 4s, doubling to the minute apart, and an hour holds 65
+// of them where it held 3,600. An event from outside is looked at
+// within a second all the same and ends the run, and so does a look
+// that changes what is recorded.
+func TestALoopThatKeepsActingWithoutProgressIsBackedOffInABubble(t *testing.T) {
+	bubble(t, 500*time.Millisecond, func(t *testing.T) {
+		kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+		waiting := false
+		look := func(ctx context.Context) ([]loom.Command, error) {
+			if waiting {
+				waiting = false
+				if err := loom.WaitFor(ctx, loom.Wait{Name: "glaze", Owner: "potter", Deadline: time.Now().Add(time.Hour)}); err != nil {
+					return nil, err
+				}
+			}
+			return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}}, nil
+		}
+		loop := loomtest.Loop(t, clock.NewRegistry(), look).Instance("Kiln", kiln.Namespace, kiln.AggregateID)
+
+		loop.RunFor(time.Hour)
+		looks := loop.Looks()
+		s := time.Second
+		if got, want := gaps(looks)[:8], []time.Duration{s, 2 * s, 4 * s, 8 * s, 16 * s, 32 * s, 60 * s, 60 * s}; !sameDurations(got, want) {
+			t.Fatalf("the looks are %v apart, want %v", got, want)
+		}
+		if n := len(looks); n > 65 {
+			t.Fatalf("%d looks in an hour, want 65: seven on the way to the minute and one a minute after", n)
+		}
+		soon := 0
+		for _, g := range gaps(looks) {
+			if g < loom.LoopEvery {
+				soon++
+			}
+		}
+		if soon >= 10 {
+			t.Fatalf("%d looks in the hour came sooner than the minute, want fewer than 10", soon)
+		}
+		for i, l := range looks {
+			if l.State.Acting != i+1 {
+				t.Fatalf("after look %d the loop has acted without progress %d times in a row, want %d", i+1, l.State.Acting, i+1)
+			}
+		}
+
+		// an event from outside: looked at within the second, held back
+		// by nothing, and the run starts over
+		before := len(loop.Looks())
+		evented := time.Now()
+		loop.Dispatch(&clockgen.StokeKiln{CommandBase: kiln}).RunFor(5 * time.Second)
+		after := loop.Looks()[before:]
+		if len(after) != 3 {
+			t.Fatalf("after an outside event the looks came %v after it, want three in five seconds", offsets(evented, after))
+		}
+		if at := after[0].At.Sub(evented).Round(time.Millisecond); at != loom.LoopSoon || !after[0].Told.Event {
+			t.Fatalf("the look for an outside event came %s after it, want %s", at, loom.LoopSoon)
+		}
+		if after[0].State.Acting != 1 || after[1].State.Acting != 2 || after[2].State.Acting != 3 {
+			t.Fatalf("after an outside event the run went %d, %d, %d; want 1, 2, 3", after[0].State.Acting, after[1].State.Acting, after[2].State.Acting)
+		}
+		if got, want := gaps(after), []time.Duration{s, 2 * s}; !sameDurations(got, want) {
+			t.Fatalf("after an outside event the looks are %v apart, want %v", got, want)
+		}
+
+		// a look that changes what is recorded (it starts a wait) is
+		// progress: the run starts over from it
+		waiting = true
+		before = len(loop.Looks())
+		loop.RunFor(8 * time.Second)
+		after = loop.Looks()[before:]
+		if len(after) < 3 || after[0].State.Acting != 1 || after[1].State.Acting != 2 {
+			t.Fatalf("after a look that started a wait: %d looks, the run at %d then %d; want it to start over", len(after), after[0].State.Acting, after[1].State.Acting)
+		}
+		if got := gaps(after)[0]; got != s {
+			t.Fatalf("the look after one that made progress came %s later, want %s", got, s)
+		}
+	})
+}
+
+// TestALookThatAsksAgainWhileActingWithoutProgressIsHeldToTheBackoff:
+// LookAgain is how a polling look keeps itself going, so it is held to
+// the same backoff; a look that sends nothing asks as it always could.
+func TestALookThatAsksAgainWhileActingWithoutProgressIsHeldToTheBackoff(t *testing.T) {
+	bubble(t, 200*time.Millisecond, func(t *testing.T) {
+		kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+		acting := true
+		look := func(ctx context.Context) ([]loom.Command, error) {
+			loom.LookAgain(ctx, 500*time.Millisecond)
+			if !acting {
+				return nil, nil
+			}
+			return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}}, nil
+		}
+		loop := loomtest.Loop(t, clock.NewRegistry(), look).Instance("Kiln", kiln.Namespace, kiln.AggregateID)
+		loop.RunFor(10 * time.Second)
+		half, s := 500*time.Millisecond, time.Second
+		if got, want := gaps(loop.Looks()), []time.Duration{half, 2 * s, 4 * s}; !sameDurations(got, want) {
+			t.Fatalf("a look that acts and asks again every half second is looked at %v apart, want %v", got, want)
+		}
+		acting = false
+		before := len(loop.Looks())
+		loop.RunFor(10 * time.Second)
+		after := gaps(loop.Looks()[before:])
+		if len(after) < 3 || after[1] != half || after[2] != half {
+			t.Fatalf("a look that sends nothing and asks again every half second is looked at %v apart, want %s", after, half)
+		}
+	})
+}
+
+// TestALoopThatTakesADifferentStepEachLookIsNotBackedOff: a loop that
+// moves a step at a time sends something else on each look — another
+// command, or the same with another payload — and that is progress,
+// whatever loom records: every look follows the one before within the
+// second. The same look turned poller, sending one command over and
+// over, is backed off from its second repeat.
+func TestALoopThatTakesADifferentStepEachLookIsNotBackedOff(t *testing.T) {
+	bubble(t, 500*time.Millisecond, func(t *testing.T) {
+		s := time.Second
+		// another command each look
+		kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+		step := 0
+		byType := loomtest.Loop(t, clock.NewRegistry(), func(ctx context.Context) ([]loom.Command, error) {
+			step++
+			if step%2 == 0 {
+				return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}, &clockgen.StokeKiln{CommandBase: kiln}}, nil
+			}
+			return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}}, nil
+		}).Instance("Kiln", kiln.Namespace, kiln.AggregateID)
+		byType.RunFor(10*time.Second + 500*time.Millisecond)
+		if n := len(byType.Looks()); n != 11 {
+			t.Fatalf("a stepping loop was looked at %d times in ten seconds, %v apart; want 11, a second apart", n, gaps(byType.Looks()))
+		}
+		for i, l := range byType.Looks() {
+			if l.State.Acting != 1 {
+				t.Fatalf("after step %d the loop counts %d looks without progress, want 1: each sent something else", i+1, l.State.Acting)
+			}
+		}
+
+		// the same command with another payload each look, then the same
+		// payload over and over
+		loaf := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+		oven, polling := uuid.New(), false
+		byPayload := loomtest.Loop(t, clock.NewRegistry(), func(ctx context.Context) ([]loom.Command, error) {
+			if !polling {
+				oven = uuid.New()
+			}
+			return []loom.Command{&clockgen.BakeLoaf{CommandBase: loaf, OvenId: oven}}, nil
+		}).Instance("Loaf", loaf.Namespace, loaf.AggregateID)
+		byPayload.RunFor(5*time.Second + 500*time.Millisecond)
+		if got, want := gaps(byPayload.Looks()), []time.Duration{s, s, s, s, s}; !sameDurations(got, want) {
+			t.Fatalf("a loop sending another payload each look is looked at %v apart, want %v", got, want)
+		}
+		polling = true
+		before := len(byPayload.Looks())
+		byPayload.RunFor(16 * time.Second)
+		after := byPayload.Looks()[before-1:]
+		if got, want := gaps(after), []time.Duration{s, 2 * s, 4 * s, 8 * s}; !sameDurations(got, want) {
+			t.Fatalf("turned poller, it is looked at %v apart, want %v", got, want)
+		}
+	})
+}
+
+// TestAPollThatKeepsItsWaitAsItWasIsBackedOff is the shape of
+// runsheet's item loop on 18 November (platform/itemloop at 1d140d96e):
+// every look says the same about its one wait and sends the same poll.
+// While the wait runs it is started again with the owner and deadline
+// it has (WaitFor with the recorded deadline), and once the deadline
+// has passed the look ends a wait that is no longer there
+// (StopWaiting). Neither changes what loom records, so both are backed
+// off; the deadline itself still calls the look on time.
+func TestAPollThatKeepsItsWaitAsItWasIsBackedOff(t *testing.T) {
+	bubble(t, 500*time.Millisecond, func(t *testing.T) {
+		s := time.Second
+		kiln := loom.CommandBase{Namespace: "pottery", AggregateID: uuid.New()}
+		start := time.Now()
+		deadline := start.Add(20 * time.Second) // the state's own: the same on every look
+		look := func(ctx context.Context) ([]loom.Command, error) {
+			if deadline.After(time.Now()) {
+				if err := loom.WaitFor(ctx, loom.Wait{Name: "state", Owner: "deploy", Deadline: deadline}); err != nil {
+					return nil, err
+				}
+			} else {
+				loom.StopWaiting(ctx, "state")
+			}
+			return []loom.Command{&clockgen.StokeKiln{CommandBase: kiln}}, nil
+		}
+		loop := loomtest.Loop(t, clock.NewRegistry(), look).Instance("Kiln", kiln.Namespace, kiln.AggregateID)
+
+		// waiting: 0s, 1s, 3s, 7s, 15s, then the deadline at 20s, not 31s
+		loop.RunFor(20 * time.Second)
+		if got, want := offsets(start, loop.Looks()), []time.Duration{0, s, 3 * s, 7 * s, 15 * s, 20 * s}; len(got) != len(want) {
+			t.Fatalf("waiting, the looks came at %v, want %v", got, want)
+		} else {
+			for i := range want {
+				if got[i].Round(time.Millisecond) != want[i] {
+					t.Fatalf("waiting, the looks came at %v, want %v", got, want)
+				}
+			}
+		}
+		last := loop.Looks()[5]
+		if _, expired := last.Told.ExpiredWait("state"); !expired {
+			t.Fatal("the look at the deadline was not told its wait had expired")
+		}
+		// past the deadline: the expiry was news (the run starts over),
+		// and the poll that follows it is backed off again
+		loop.RunFor(time.Hour)
+		after := loop.Looks()[5:]
+		if got, want := gaps(after)[:7], []time.Duration{s, 2 * s, 4 * s, 8 * s, 16 * s, 32 * s, 60 * s}; !sameDurations(got, want) {
+			t.Fatalf("past its deadline the poll is looked at %v apart, want %v", got, want)
+		}
+		if n := len(after); n > 66 {
+			t.Fatalf("%d looks in the hour past the deadline, want about 65", n)
+		}
+	})
+}

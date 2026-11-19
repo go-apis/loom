@@ -23,6 +23,20 @@ import (
 //     within LoopSoon of it;
 //   - a wait: a look that is waiting on someone is called when the
 //     wait's deadline passes, and is told the wait has expired.
+//
+// One thing holds a look back. A look's own commands emit events on its
+// instance, and those bring the next look to within LoopSoon like any
+// other: a look that sends the same command every time it is called,
+// and changes nothing loom records about the instance, would be called
+// flat out for as long as it kept sending it (runsheet's item loop
+// polled a deploy every 1.4s on 18 items for three hours, 2026-11-18).
+// So once looks in a row have sent the same commands and left the
+// instance's waits and outcome as they were, the events of the look's
+// own commands bring the next look forward only to LoopActingBackoff:
+// 2s, 4s, doubling to LoopEvery. An event the look did not cause is
+// never held back, and it ends the run. So does a look that sends
+// something else than the one before it — another command, or the same
+// with another payload: that is a loop taking its steps, not polling.
 
 const (
 	// LoopEvery is the longest a declared loop goes without a look.
@@ -44,6 +58,28 @@ const (
 	LoopParkedWait  = "loom.looks-failing"
 	LoopParkedOwner = "operators"
 )
+
+// LoopActingFrom is how many looks in a row must act without progress
+// before the next is held back: the second, since a look that acts once
+// and is called again to see what came of it is how a loop is meant to
+// move.
+const LoopActingFrom = 2
+
+// LoopActingBackoff is how soon after a look its own commands' events
+// bring the next, once acting looks in a row have sent commands and
+// changed nothing recorded about the instance: LoopSoon below
+// LoopActingFrom, then 2s, doubling with each look after, never past
+// LoopEvery.
+func LoopActingBackoff(acting int) time.Duration {
+	if acting < LoopActingFrom {
+		return LoopSoon
+	}
+	d := 2 * time.Second
+	for i := LoopActingFrom; i < acting && d < LoopEvery; i++ {
+		d *= 2
+	}
+	return min(d, LoopEvery)
+}
 
 // LoopBackoff is the longest a loop goes without a look after failures
 // failed looks in a row: LoopEvery for none, LoopBackoffFirst after the
@@ -85,6 +121,26 @@ type LoopState struct {
 	// Event is when the newest event the loop cares about arrived; zero
 	// for none. One at or before Looked has been seen already.
 	Event time.Time
+	// Outside is when the newest event arrived that no look of the
+	// loop's own caused: one from a command somebody else sent, an
+	// answer, a child's note. Zero for none. The events a look's own
+	// commands emit move Event and not Outside.
+	Outside time.Time
+	// Acting is how many looks in a row, up to the last one, sent the
+	// same commands (Sent) and left what loom records about the instance
+	// as it was: its waits (name, owner and deadline) and its outcome
+	// (not failed, not parked, not done), with no event from outside in
+	// between. Zero once a look sends nothing or fails; one for a look
+	// that acts after anything changed, or sends something else than the
+	// look before it did. From LoopActingFrom the next look is held back
+	// (LoopActingBackoff).
+	Acting int
+	// Sent stands for the commands the last look sent, their types and
+	// payloads in order (CommandsDigest): empty when it sent none. A
+	// look that sends something else than the one before is moving, a
+	// step at a time, and is not held back; one that sends the same
+	// again is polling.
+	Sent string
 	// Waits is what the loop is waiting on.
 	Waits []Wait
 	// Failures is how many looks in a row have failed, up to the last
@@ -142,10 +198,17 @@ func withoutWait(waits []Wait, name string) []Wait {
 	return out
 }
 
+// ActingWithoutProgress reports whether the loop's looks keep acting to
+// no effect: LoopActingFrom or more in a row have sent the same commands
+// and changed nothing loom records about the instance.
+func (s LoopState) ActingWithoutProgress() bool { return s.Acting >= LoopActingFrom }
+
 // NextLook is when the loop is to be looked at next: the earliest of
 // LoopEvery after the last look (LoopBackoff of its failures, when the
-// last looks failed), LoopSoon after an event that has arrived since,
-// and the first deadline among its waits. A parked loop has no minute:
+// last looks failed), LoopSoon after an event that has arrived since
+// (LoopActingBackoff after the look instead, while its looks keep acting
+// without progress and only their own events have arrived), and the
+// first deadline among its waits. A parked loop has no minute:
 // only the event and the deadlines, LoopParkedWait's among them. A loop
 // never looked at is due at once: the zero time.
 func (s LoopState) NextLook() time.Time {
@@ -157,7 +220,14 @@ func (s LoopState) NextLook() time.Time {
 		next = s.Looked.Add(LoopParkFor)
 	}
 	if s.Event.After(s.Looked) {
-		if soon := s.Event.Add(LoopSoon); soon.Before(next) {
+		soon := s.Event.Add(LoopSoon)
+		if s.ActingWithoutProgress() && !s.Outside.After(s.Looked) {
+			// nothing has arrived but what the look's own commands
+			// emitted, and its looks keep acting to no effect: later
+			// each time, never later than the minute
+			soon = s.Looked.Add(LoopActingBackoff(s.Acting))
+		}
+		if soon.Before(next) {
 			next = soon
 		}
 	}
@@ -248,6 +318,10 @@ func LookingAt(ctx context.Context) Looking {
 type lookSaid struct {
 	done  bool
 	again time.Duration
+	// sent is how many commands the look answered with, and sentAs what
+	// stands for them (LookTurn.Sent)
+	sent   int
+	sentAs string
 	// waits the look started, and the names of those it ended (wait.go)
 	waits   []Wait
 	stopped []string

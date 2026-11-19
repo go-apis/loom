@@ -2,6 +2,9 @@ package loom
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -94,6 +97,34 @@ func (t *LookTurn) End(held LoopState, limit int, err error) (LoopState, time.Ti
 	return lookEnded(held, t.At, t.Told, t.said, true, err, limit)
 }
 
+// Sent notes the commands the look answered with. The runner says so
+// before it ends the turn: a look that sends the same commands time
+// after time and changes nothing recorded about its instance is held
+// back (LoopState.Acting).
+func (t *LookTurn) Sent(cmds ...Command) {
+	t.said.sent, t.said.sentAs = len(cmds), CommandsDigest(cmds)
+}
+
+// CommandsDigest stands for a list of commands when two lists are
+// compared: equal for the same types and payloads in the same order,
+// empty for none. A command scheduled with At or After counts as the
+// command it holds, whenever it is for.
+func CommandsDigest(cmds []Command) string {
+	if len(cmds) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, cmd := range cmds {
+		payload, err := json.Marshal(cmd)
+		if err != nil {
+			payload = nil // its type still tells it from another command
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", cmd.LoomCommand(), len(payload))
+		h.Write(payload)
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
 // Done reports whether a look that ended without failing said LookDone.
 func (t *LookTurn) Done() bool { return t.ended && t.said.done }
 
@@ -131,6 +162,9 @@ func lookEnded(held LoopState, start time.Time, told Looking, said *lookSaid, ma
 	state := LoopState{
 		Looked:    start,
 		Event:     held.Event,
+		Outside:   held.Outside,
+		Acting:    held.Acting,
+		Sent:      held.Sent,
 		Waits:     settleWaits(held.Waits, told, said),
 		Failures:  held.Failures,
 		LastError: held.LastError,
@@ -138,20 +172,75 @@ func lookEnded(held LoopState, start time.Time, told Looking, said *lookSaid, ma
 	}
 	if made {
 		state = state.AfterLook(start, lookErr).ParkPast(limit)
+		state.Acting = actingAfter(held, state, said, lookErr)
+		state.Sent = ""
+		if state.Acting > 0 {
+			state.Sent = said.sentAs
+		}
 	}
 	next := state.NextLook()
 	if said != nil && said.again > 0 {
-		if asked := start.Add(said.again); asked.Before(next) {
+		asked := start.Add(said.again)
+		if state.ActingWithoutProgress() {
+			// asking to be called again soon is how such a look keeps
+			// itself going: it is held to the same backoff
+			if floor := start.Add(LoopActingBackoff(state.Acting)); asked.Before(floor) {
+				asked = floor
+			}
+		}
+		if asked.Before(next) {
 			next = asked
 		}
 	}
 	return state, next
 }
 
+// actingAfter is LoopState.Acting once a look has ended: held is the
+// instance as the look before left it, with whatever has been noted
+// since, and state as this one leaves it. A look that sent nothing, or
+// failed, ends the run. One that sent commands starts a run when it
+// sent something else than the look before, or anything recorded moved
+// since that look — an event from outside, a wait started, ended,
+// expired or given another owner or deadline, the instance parked,
+// unparked or done — and carries it on when it sent the same again and
+// nothing did.
+func actingAfter(held, state LoopState, said *lookSaid, lookErr error) int {
+	if lookErr != nil || said == nil || said.sent == 0 {
+		return 0
+	}
+	if held.Acting == 0 || said.sentAs != held.Sent || said.done || held.Parked != state.Parked ||
+		held.Outside.After(held.Looked) || !sameWaits(held.Waits, state.Waits) {
+		return 1
+	}
+	return held.Acting + 1
+}
+
+// sameWaits reports whether two sets of waits hold the same names, each
+// with the same owner and deadline.
+func sameWaits(a, b []Wait) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, w := range a {
+		found := false
+		for _, v := range b {
+			if v.Name == w.Name {
+				found = v.Owner == w.Owner && v.Deadline.Equal(w.Deadline)
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // Waited is the state once a wait is started from outside a look
 // (Client.Wait): it is added, or replaces its namesake.
 func (s LoopState) Waited(w Wait) LoopState {
 	w.Deadline = w.Deadline.UTC()
+	s.Acting = 0 // what is recorded has moved
 	s.Waits = settleWaits(s.Waits, Looking{}, &lookSaid{waits: []Wait{w}})
 	return s
 }
@@ -161,6 +250,9 @@ func (s LoopState) Waited(w Wait) LoopState {
 // instance left without its LoopParkedWait is unparked, its failures
 // cleared, and is to be looked at at once: now reports that.
 func (s LoopState) WaitEnded(name string) (out LoopState, now bool) {
+	if holdsWait(s.Waits, name) {
+		s.Acting = 0 // what is recorded has moved
+	}
 	s.Waits = settleWaits(s.Waits, Looking{}, &lookSaid{stopped: []string{name}})
 	if s.Parked && !holdsWait(s.Waits, LoopParkedWait) {
 		s.Parked, s.Failures = false, 0

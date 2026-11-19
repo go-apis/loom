@@ -216,7 +216,7 @@ func (c *Client) AnswerApproval(ctx context.Context, aggregate, namespace string
 	}
 	// an answer is news for the loop: look now
 	if _, err := tx.Exec(ctx, `
-		UPDATE loom_loop_due SET event_at = clock_timestamp(), next_look = LEAST(next_look, clock_timestamp())
+		UPDATE loom_loop_due SET event_at = clock_timestamp(), outside_at = clock_timestamp(), next_look = LEAST(next_look, clock_timestamp())
 		WHERE service=$1 AND aggregate_type=$2 AND namespace=$3 AND aggregate_id=$4`,
 		c.reg.Service, aggregate, namespace, id); err != nil {
 		return nil, err
