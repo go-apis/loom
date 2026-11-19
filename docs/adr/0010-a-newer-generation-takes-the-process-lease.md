@@ -2,7 +2,7 @@
 title: "ADR 0010 — a newer generation takes the process lease"
 status: accepted
 date: 2026-11-01
-summary: An instance with a generation (Config.Generation, else LOOM_GENERATION set by the deploy, else the Cloud Run revision's createTime; amended 2026-11-01, no longer the sequence in K_REVISION) names it on its process-lease session; a follower of a strictly newer generation asks the leader to yield (NOTIFY), the leader drains its in-flight reaction and releases, and a leader that does not answer within two polls has its session ended; equal, older or unnamed never preempts; no generation is the election as before.
+summary: An instance with a generation (Config.Generation, else LOOM_GENERATION set by the deploy, else the Cloud Run revision's createTime; amended 2026-11-01, no longer the sequence in K_REVISION) names it on its process-lease session; a follower of a strictly newer generation asks the leader to yield (NOTIFY), the leader drains its in-flight reaction and releases, and a leader that does not answer within two polls has its session ended; equal, older or unnamed never preempts; no generation is the election as before. Amended 2026-11-18: a run of events a process ignores is passed in one guarded checkpoint write.
 ---
 
 # ADR 0010 — a newer generation takes the process lease
@@ -236,3 +236,28 @@ lease mid-reaction; the earlier one, an equal one on another revision,
 and a revision name alone never do; a v0.85.0 follower's request does
 not move it; a v0.85.0 leader hands over cooperatively to the first
 deploy with a generation, or is ended when it does not answer.
+
+## Amendment 2026-11-18 — a run of ignored events is passed in one write
+
+The consequence above reads "process checkpoints are still written per
+event, unguarded". Per event was the cost of runsheet's 18 November: one
+loop wrote 84,000 events of one type, and each of 205 processes wrote
+its checkpoint 84,000 times to get past events it does not subscribe to.
+
+A process step now writes its checkpoint after each event it subscribes
+to, and once for each run of events it does not (`skip.go`). What that
+changes for the lease:
+
+- The leader still checks the lease between events, and a leader that
+  has lost it writes nothing more: the ignored events it had read are
+  left for the next leader, which passes them in one write of its own.
+- The write after a handled event is as it was: unguarded, so a leader
+  overlapping after a forced hand-over can still move the checkpoint
+  back, and the events in between are delivered again.
+- The write that passes ignored events is guarded: it moves the
+  checkpoint only from where the step left it. An overlapping old
+  leader's pass therefore never moves a checkpoint the new leader has
+  advanced, forward or back, and it cannot carry the checkpoint over an
+  event the old leader did not handle: a pass ends at the last ignored
+  event before the next subscribed one.
+

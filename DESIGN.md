@@ -325,6 +325,30 @@ generated switches, folds from generated assignments.
   revision name's number, which Cloud Run does not assign in deploy order)
   takes the lease: the leader yields between events, or has its
   session ended if it does not answer (ADR 0010).
+- **A runner passes a run of events it ignores in one write.** A process
+  reads the whole log and reacts to a few types. It wrote its checkpoint
+  after every event it read, its own or not, so 84,000 events of one type
+  cost each of a service's 205 processes 84,000 writes through six step
+  slots: hours, during which nothing reacted to anything (runsheet,
+  2026-11-18). A process step now writes after each event it subscribes
+  to, as before, and once for each run of events it does not: to the
+  last ignored event before the next subscribed one, so a reaction that
+  fails leaves the checkpoint just short of its event. When a batch read
+  ends inside such a run, one statement finds where the run ends, up to
+  10,000 events on (`ignoredAhead`, `skip.go`), and the step passes all
+  of it; a projection step does the same inside its transaction. The
+  rule for what a checkpoint may hold is the old one: sequence S only
+  when every subscribed event at or before S was handled, parked or
+  handed to a durable retry. The look ahead is one statement, so one
+  snapshot, and a service's appends commit in sequence order under its
+  log lock, so nothing subscribed can appear behind what it answered
+  (the same argument `readLog` rests on). A crash redelivers at most the
+  one event whose reaction finished without its write, as it always
+  did. The write that passes a run moves the checkpoint only from where
+  the step left it (`passCheckpoint`): a step that has lost its place —
+  an operator's reset, a second leader after a forced hand-over — passes
+  nothing and reads again. The write after a handled event is
+  unguarded, as before (ADR 0010).
 - **A loop is looked at per instance.** Each instance of a `@loop`
   aggregate has a row in `loom_loop_due`: when it is next looked at, when
   it last was, when its newest event arrived, and its waits. The first

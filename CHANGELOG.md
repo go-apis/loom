@@ -113,6 +113,22 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
   looks at it at once. Schema: `loom_loop_due` gains `parent_type`,
   `parent_id`, `child_notes`, `restarted_at` and `restarted_by`.
 
+### Fixed
+
+- **A process passes a run of ignored events in one checkpoint write.**
+  A process wrote its checkpoint after every event it read, including
+  the types it does not subscribe to: on 2026-11-18 a loop in runsheet
+  wrote 84,000 events of one type and each of its 205 processes spent
+  hours writing 84,000 checkpoints to get past them. A step now writes
+  after each subscribed event, as before, and once for each run of
+  ignored ones, and where a batch read ends inside a run it looks up to
+  10,000 events ahead for the run's end (a projection step does the
+  same). Delivery is unchanged: subscribed events in order, at least
+  once, a failed reaction's checkpoint just short of its event. The
+  write that passes a run moves the checkpoint only from where the step
+  left it, so it never overwrites a reset or another leader's progress
+  ([ADR 0010](docs/adr/0010-a-newer-generation-takes-the-process-lease.md)).
+
 ### Changed
 
 - **An aggregate folds every event it declares, emitted or not.** The
