@@ -144,7 +144,7 @@ holds.
   - an aggregate named like an existing reactor renames that reactor's
     `Impl` field (ADR 0006).
 - Regenerating an existing service moves code out of `models_gen.go` and
-  `registry_gen.go` into new files. It renames no type, and Handlers
+  `loom_gen.go` into new files. It renames no type, and Handlers
   interfaces keep their names. The aggregate and record fields are gone
   from `Impl`, though, so a `registry.go` that sets them
   (`Impl{Order: &Order{}}`) no longer compiles. Move each such field to a
