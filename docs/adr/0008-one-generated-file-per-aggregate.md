@@ -2,7 +2,7 @@
 title: "ADR 0008 — loom generate writes one file per aggregate and record, deterministically"
 status: accepted
 date: 2026-10-19
-summary: loomgen holds one <snake name>_gen.go per aggregate and per record (its state, commands, events, fold, Handlers interface, def function, binding method on Impl and its registration) beside shared models_gen.go and registry_gen.go that name no aggregate or record, so adding one adds only its own file; NewRegistry adds the registered owners in name order; render output depends only on the schema's ordered slices, so identical schemas give identical bytes.
+summary: loomgen holds one <snake name>_gen.go per aggregate and per record beside shared models_gen.go (types and entities) and loom_gen.go (registry scaffolding), so adding one adds only its own file; NewRegistry adds registered owners in name order; render output is deterministic from the schema's ordered slices, so identical schemas give identical bytes (as of 2026-11-19: registry_gen.go was split into loom_gen.go, upcasts_gen.go, look_gen.go, and type files).
 ---
 
 # ADR 0008 — loom generate writes one file per aggregate and record, deterministically
