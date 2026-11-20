@@ -61,7 +61,7 @@ holds.
   projections; everything an aggregate or record contributes comes from
   its own file.
 - **Each owner registers itself; `NewRegistry` reads the table.**
-  - `registry_gen.go` declares an unexported table, `loomOwners`, of
+  - `loom_gen.go` declares an unexported table, `loomOwners`, of
     `loomOwner{kind, name, register}`, and `loomRegister` to append to it.
   - Each `<name>_gen.go` has an `init` that calls `loomRegister` with
     its kind (`"aggregate"` or `"record"`), its name, and a `register`
