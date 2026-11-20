@@ -46,10 +46,12 @@ holds.
   aggregate, or they wire everything together:
   - `models_gen.go`: enums, named types, shared events, entities (and
     their folds), series.
-  - `registry_gen.go`: the `loomErrNilEvent`, `asAny` and
+  - `loom_gen.go` (formerly `registry_gen.go`): the `loomErrNilEvent`, `asAny` and
     `checkDispatches` helpers, the reactors' `Reactions` and the `@fold`
-    projections' `Folds` interfaces, `EventUpcasts`, the `Impl` struct,
-    `NewRegistry`, and the registration table below.
+    projections' `Folds` interfaces, the `Impl` struct, `NewRegistry`, and the
+    registration table below. As of 2026-11-19, `EventUpcasts` and `Look` are
+    in separate files (`upcasts_gen.go` and `look_gen.go`) and schema types are
+    registered by their schema file's `_types_gen.go`.
   - `tables_gen.sql`: the DDL.
 
   None of these names an aggregate or a record. `Impl` has a field per
