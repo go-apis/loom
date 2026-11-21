@@ -26,12 +26,13 @@ run.
 - **The skill ships in the loom module** (`skill/files/SKILL.md`,
   embedded) and is rendered with the version of loom that writes it, in
   its frontmatter (`metadata.loom-version`) and its text.
-- **`loom skill` writes it at the repository root**, found by walking up
-  from the current directory to `.git` (or `--root`), at
-  `.claude/skills/loom/SKILL.md` — the project skills directory every
-  Claude Code session in that repository reads. It overwrites: the file is
-  loom's, as loomgen is.
-- **`loom init` writes it too**, unless the repository already carries one.
+- **`loom skill` writes it in consumer repositories** at the repository root,
+  found by walking up from the current directory to `.git` (or `--root`), at
+  `.claude/skills/loom/SKILL.md` — the project skills directory every Claude
+  Code session in that repository reads. It overwrites: the file is loom's, as
+  loomgen is.
+- **`loom init` writes it too** in consumers, unless the repository already
+  carries one.
 - **`loom skill --check`** exits non-zero, naming `go tool loom skill`,
   when the file is missing or differs from what this version writes — a
   hand edit or a loom bump. Run with the pinned generator (ADR 0005),

@@ -73,12 +73,11 @@ which are the same shape for a person (a record plus a wait).
   that is told the wait expired. `graphql.MeshHooks` routes hooks among
   several services by `refs.loom.service`, so services stay private.
 - **Mesh is an interface.** `loom.Mesh` (`OfferJob`, `CancelJob`) is
-  `mesh.HTTPClient` against Mesh, following its API as mesh-api declares
-  it (`server/jobs.go`, `server/cancel.go`, `conformance/client.go`,
-  `conformance/hooks.go`) and runsheet's client uses it
-  (`external/meshv1`), or `mesh.Fake` in tests, which converges on the
-  key as Mesh does and posts signed hooks. `loomtest.LoopScenario.Mesh`
-  and `AgentAnswered` test a look's agent decisions with no database.
+  `mesh.HTTPClient` against Mesh, following its API as the mesh-api project
+  declares it, and runsheet's client implements it (`external/meshv1`), or
+  `mesh.Fake` in tests, which converges on the key as Mesh does and posts
+  signed hooks. `loomtest.LoopScenario.Mesh` and `AgentAnswered` test a
+  look's agent decisions with no database.
 
 ## Consequences
 
