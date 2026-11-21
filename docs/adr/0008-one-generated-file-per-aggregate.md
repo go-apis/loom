@@ -46,12 +46,13 @@ holds.
   aggregate, or they wire everything together:
   - `models_gen.go`: enums, named types, shared events, entities (and
     their folds), series.
-  - `loom_gen.go` (formerly `registry_gen.go`): the `loomErrNilEvent`, `asAny` and
-    `checkDispatches` helpers, the reactors' `Reactions` and the `@fold`
-    projections' `Folds` interfaces, the `Impl` struct, `NewRegistry`, and the
-    registration table below. As of 2026-11-19, `EventUpcasts` and `Look` are
-    in separate files (`upcasts_gen.go` and `look_gen.go`) and schema types are
-    registered by their schema file's `_types_gen.go`.
+  - `loom_gen.go`: the `loomErrNilEvent`, `asAny` and `checkDispatches`
+    helpers, the reactors' `Reactions` and the `@fold` projections' `Folds`
+    interfaces, the `Impl` struct, `NewRegistry`, and the registration table
+    below.
+  - `upcasts_gen.go`: the `EventUpcasts` interface.
+  - `look_gen.go`: the `Look` interface.
+  - `<service>_types_gen.go`: schema types registration (one per schema file).
   - `tables_gen.sql`: the DDL.
 
   None of these names an aggregate or a record. `Impl` has a field per
@@ -104,12 +105,11 @@ holds.
   package-level variable, which a test building two registries would
   share.
 - **File names never collide.** An owner whose snake name is already taken
-  gets its kind appended: `models` and `registry` are taken by the shared
-  files, and two declared names can snake alike (`ABc`, `Abc`). So
-  an `aggregate Registry` would be written to `registry_aggregate_gen.go`.
-  If that
-  name is taken too, a number is appended. Names are assigned in schema
-  order, aggregates first, then records.
+  gets its kind appended: `models`, `loom`, `upcasts`, `look`, and `tables`
+  are taken by the shared files, and two declared names can snake alike
+  (`ABc`, `Abc`). So an `aggregate Registry` would be written to
+  `registry_aggregate_gen.go`. If that name is taken too, a number is appended.
+  Names are assigned in schema order, aggregates first, then records.
 - **Determinism.** Rendering must return identical bytes for identical
   schemas:
   - Every file's content, and the set of files, comes only from the
