@@ -59,13 +59,13 @@ type Config struct {
 	// runner on Start's poll, as before.
 	RunnerIdlePoll time.Duration
 
-	// CheckpointEvery is how often, at most, a projection or process
-	// runner writes the position it has reached by passing events it
-	// does not subscribe to (checkpoint.go). A runner keeps that position
-	// in memory: its checkpoint row moves with every event it applies,
-	// and otherwise within CheckpointEvery of the runner passing an
-	// event, idle or not. A crash in between re-passes, never re-applies.
-	// Zero (the default) is one second.
+	// CheckpointEvery is how often the client writes the positions its
+	// projection and process runners have reached by passing events they
+	// do not subscribe to, all in one statement (checkpoint.go). A runner
+	// keeps that position in memory: its checkpoint row moves with every
+	// event it applies, and otherwise within CheckpointEvery of the
+	// runner passing an event, idle or not. A crash in between re-passes,
+	// never re-applies. Zero (the default) is one second.
 	CheckpointEvery time.Duration
 
 	// Reconcile maps a declared effect name (the part of a Once key before
@@ -192,6 +192,8 @@ type Client struct {
 	stepSem         chan struct{}  // bounds concurrent runner steps (see Config.StepConcurrency)
 	runnerIdlePoll  time.Duration  // Config.RunnerIdlePoll
 	checkpointEvery time.Duration  // Config.CheckpointEvery
+	posMu           sync.Mutex     // guards positions
+	positions       []*runnerPos   // every runner's position, for the checkpoint flusher
 	notifyNudge     chan struct{}  // an append committed: tell other instances (notifyLog)
 	notifyOnce      sync.Once      // starts the notifier on the first append
 	loopFails       int            // Config.LoopFailureLimit

@@ -76,8 +76,8 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	for _, p := range c.reg.Projections {
 		runner := "projection:" + p.Name
 		rw := c.fan.register(runner, p.Events)
-		pos := newRunnerPos(runner, rw, c.checkpointEvery)
-		go c.runLogLoop(ctx, runner, poll, rw, pos, c.projectionStep(p, pos))
+		pos := c.track(newRunnerPos(runner, rw))
+		go c.runLogLoop(ctx, runner, poll, rw, c.projectionStep(p, pos))
 	}
 	var localProcesses bool
 	for _, p := range c.reg.Processes {
@@ -89,8 +89,8 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 			}
 			runner := "process:" + p.Name
 			rw := c.fan.register(runner, local)
-			pos := newRunnerPos(runner, rw, c.checkpointEvery)
-			go c.runLogLoop(ctx, runner, poll, rw, pos, c.processStep(p, local, pos))
+			pos := c.track(newRunnerPos(runner, rw))
+			go c.runLogLoop(ctx, runner, poll, rw, c.processStep(p, local, pos))
 		}
 		if len(foreign) > 0 {
 			if err := c.subscribeForeign(ctx, p, foreign); err != nil {
@@ -98,6 +98,9 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 			}
 		}
 	}
+	// the positions runners reach by passing events they do not
+	// subscribe to are written for all of them at once (checkpoint.go)
+	go c.runCheckpointFlusher(ctx)
 	// the watchdog runs on the lease holder: a service watched for its
 	// dead letters or lag stands for the lease even with no local process
 	if localProcesses || c.watching() {
@@ -157,11 +160,7 @@ func (c *Client) splitSubscriptions(p *ReactorDef) (local, foreign []string) {
 // operator's skip or rebuild (kick) cuts that short. A runner whose
 // checkpoint row still doesn't exist one poll after it started is
 // logged as `runner never checkpointed`, under the same ceiling.
-//
-// A runner holding a position it has not written yet (checkpoint.go)
-// sleeps no longer than until that write falls due, so its row reaches
-// where it got to within Config.CheckpointEvery of it going idle.
-func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, rw *runnerWake, pos *runnerPos, step func(ctx context.Context) (int, error)) {
+func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, rw *runnerWake, step func(ctx context.Context) (int, error)) {
 	// wait is how long the runner sleeps before it steps unwoken
 	// (idleWait); a wake steps it at once whatever wait is
 	wait := poll
@@ -226,19 +225,13 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 			}
 			continue
 		}
-		sleep := wait
-		if pos != nil && pos.dirty() {
-			if due := time.Until(pos.writeAt()); due < sleep {
-				sleep = max(due, time.Millisecond)
-			}
-		}
 		if !t.Stop() {
 			select {
 			case <-t.C:
 			default:
 			}
 		}
-		t.Reset(sleep)
+		t.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return
@@ -396,18 +389,19 @@ func (c *Client) projectionStep(p *ProjectionDef, pos *runnerPos) func(ctx conte
 		// a superseded build leaves the fold to the newest: it would
 		// step over events only the newer build's projection folds, and
 		// move the checkpoint past them for good
+		pos.mu.Lock()
+		defer pos.mu.Unlock()
 		if !c.newest() {
 			pos.forget()
 			return 0, nil
 		}
 		pos.begin()
-		now := time.Now()
-		if ok, err := c.lookCheckpoint(ctx, pos, true, now); !ok || err != nil {
+		if ok, err := c.lookCheckpoint(ctx, pos, true); !ok || err != nil {
 			return 0, err
 		}
 		events, covered := c.fan.tail(pos.seq, logBatch)
 		if covered && len(events) == 0 {
-			return 0, c.idle(ctx, pos, now)
+			return 0, c.idle(ctx, pos)
 		}
 		if covered && !anySubscribed(events, p.Events) {
 			// nothing here to fold: pass it in memory (checkpoint.go)
@@ -487,7 +481,7 @@ func (c *Client) projectionStep(p *ProjectionDef, pos *runnerPos) func(ctx conte
 			pos.forget()
 			return 0, err
 		}
-		pos.wrote(last, time.Now())
+		pos.wrote(last)
 		return len(events), nil
 	}
 }
@@ -895,13 +889,14 @@ func (c *Client) processStep(p *ReactorDef, local []string, pos *runnerPos) func
 		// clears it, then waits for what was counted (election.go)
 		c.procSteps.Add(1)
 		defer c.procSteps.Add(-1)
+		pos.mu.Lock()
+		defer pos.mu.Unlock()
 		if !c.leading() {
 			pos.forget()
 			return 0, nil // a follower: the leader advances the checkpoint
 		}
 		pos.begin()
-		now := time.Now()
-		if ok, err := c.lookCheckpoint(ctx, pos, false, now); !ok || err != nil {
+		if ok, err := c.lookCheckpoint(ctx, pos, false); !ok || err != nil {
 			return 0, err
 		}
 		events, err := c.readEvents(ctx, c.db, pos.seq, logBatch)
@@ -910,7 +905,7 @@ func (c *Client) processStep(p *ReactorDef, local []string, pos *runnerPos) func
 			return 0, err
 		}
 		if len(events) == 0 {
-			return 0, c.idle(ctx, pos, now)
+			return 0, c.idle(ctx, pos)
 		}
 		ctx, end := c.tel.span(ctx, "loom.process.step",
 			attribute.String("loom.runner", runner), attribute.Int("loom.events", len(events)))
@@ -944,7 +939,7 @@ func (c *Client) processStep(p *ReactorDef, local []string, pos *runnerPos) func
 			// an applied event is written at once, from where the runner
 			// last left the row
 			save: func(ctx context.Context, seq int64) (bool, error) {
-				return c.persist(ctx, c.db, pos, seq, time.Now())
+				return c.persist(ctx, c.db, pos, seq)
 			},
 			// a run of events the process does not subscribe to moves
 			// the position in memory, however long it is

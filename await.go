@@ -82,3 +82,60 @@ func (c *Client) foldedThrough(ctx context.Context, runner string, folds []strin
 		c.reg.Service, runner, seq, folds).Scan(&reached)
 	return reached, err
 }
+
+// RunnersBehind names the runners whose checkpoint row is short of seq
+// by an event they apply: the projections and local-event processes of
+// this client's registry with an event of a type they subscribe to past
+// their row and at or before seq. A runner's row trails what it has got
+// through by up to Config.CheckpointEvery over events it does not
+// subscribe to (checkpoint.go), so "every row at the head" is not how
+// to tell that every runner has caught up; an empty answer is. A row of
+// a runner this registry does not declare is named whenever it is short
+// of seq, since what it subscribes to is not known here; a runner with
+// no row is not named.
+func (c *Client) RunnersBehind(ctx context.Context, seq int64) ([]string, error) {
+	var runners, types []string
+	add := func(runner string, events []string) {
+		// an empty type marks the runner as one this registry declares,
+		// however few events it subscribes to
+		runners, types = append(runners, runner), append(types, "")
+		for _, e := range events {
+			runners, types = append(runners, runner), append(types, e)
+		}
+	}
+	for _, p := range c.reg.Projections {
+		add("projection:"+p.Name, p.Events)
+	}
+	for _, p := range c.reg.Processes {
+		if local, _ := c.splitSubscriptions(p); len(local) > 0 {
+			add("process:"+p.Name, local)
+		}
+	}
+	if runners == nil {
+		runners, types = []string{}, []string{}
+	}
+	rows, err := c.db.Query(ctx, `
+		WITH s AS (SELECT * FROM unnest($2::text[], $3::text[]) AS s(runner, type))
+		SELECT c.runner FROM loom_checkpoints c
+		WHERE c.service = $1 AND c.global_seq < $4
+			AND (NOT EXISTS (SELECT 1 FROM s WHERE s.runner = c.runner)
+				OR EXISTS (
+					SELECT 1 FROM loom_events e
+					WHERE e.service = $1 AND e.global_seq > c.global_seq AND e.global_seq <= $4
+						AND e.type IN (SELECT s.type FROM s WHERE s.runner = c.runner AND s.type <> '')))
+		ORDER BY c.runner`,
+		c.reg.Service, runners, types, seq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var behind []string
+	for rows.Next() {
+		var runner string
+		if err := rows.Scan(&runner); err != nil {
+			return nil, err
+		}
+		behind = append(behind, runner)
+	}
+	return behind, rows.Err()
+}

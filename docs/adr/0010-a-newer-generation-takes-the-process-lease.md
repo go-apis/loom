@@ -265,9 +265,9 @@ changes for the lease:
 ## Amendment 2026-11-23 — every checkpoint write is guarded
 
 ADR 0019 keeps a runner's position in memory between writes. A process
-now writes its checkpoint after each event it handles, as before. It
-writes the position it reached over ignored events at most once a
-second, and within a second of going idle.
+writes its checkpoint after each event it handles, as before. The
+client's flusher writes the position the process reached over ignored
+events, at most once a second.
 
 All of these writes, the one after a handled event included, now move
 the row only from where this runner last left it (`passCheckpoint`). An

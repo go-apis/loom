@@ -2,7 +2,7 @@
 title: "ADR 0019 — a runner writes its checkpoint only when it matters"
 status: accepted
 date: 2026-11-23
-summary: A projection or process runner keeps the position it reaches by passing events it does not subscribe to in memory, and writes it with the next event it applies, at most every Config.CheckpointEvery (1s) while passing, and within that bound of going idle; every write is conditional on the row the runner last knew; an idle step is free, or one statement with no transaction when the row is due a look; AwaitProjection counts only the events a projection folds.
+summary: A projection or process runner keeps the position it reaches by passing events it does not subscribe to in memory; it writes its row with every event it applies, and the client's flusher writes every runner's passed position in one statement every Config.CheckpointEvery (1s), reading every row back; every write is conditional on the row the runner last knew; an idle step is free, or one statement with no transaction when the runner does not know where it is; AwaitProjection and the new RunnersBehind count only the events a runner subscribes to.
 ---
 
 # ADR 0019 — a runner writes its checkpoint only when it matters
@@ -34,36 +34,56 @@ loom services run the same loop against the shared database.
 ## Decision
 
 1. **The position lives in memory** (`runnerPos`, `checkpoint.go`). Each
-   runner's loop owns its position and steps from it. It writes the row
-   in three cases:
-   - with every event it applies (a projection's fold commits with the
-     write, and a process writes after its reaction), as before;
-   - while passing events it does not subscribe to, at most once every
-     `Config.CheckpointEvery` (default one second);
-   - when it goes idle holding a position it has not written. The write
-     happens once that interval has passed since the last write.
-     `runLogLoop` sleeps no longer than until then.
-2. **Every write is guarded.** `passCheckpoint` moves the row only from
-   the value this runner last wrote or read. If anything else moved the
-   row, the write misses and the runner reads the row again: a rebuild,
-   an operator's skip, a reset, a rewind, or another instance's step. A
-   projection's folds commit only with that write, so folds from a stale
-   position roll back. On the same instance, those movers also set the
-   runner's `resync` flag (`wakeAll`, `kickRunner`). An idle runner looks
-   at its row at most every `CheckpointEvery` to catch movers on other
-   instances.
-3. **An idle step costs one statement, or none.** When the fan-out shows
-   nothing past the position and no look is due, the step sends nothing.
-   When a look is due, `probeCheckpoint` is one statement, with no
-   transaction around it. It returns the projection's advisory try-lock,
-   taken and released inside the statement, the checkpoint row, and
-   whether any event lies past the position. A batch the projection
-   folds nothing of is passed without a transaction.
-4. **`AwaitProjection` counts only what the projection folds.** A
-   checkpoint short of the awaited sequence counts as reached when none
-   of the events in between are of a type the projection folds, and the
-   sequence is in the log. Read-your-writes therefore never waits out
-   the bound in decision 1.
+   runner's loop owns its position and steps from it. The runner writes
+   its own row with every event it applies, as before: a projection's
+   fold commits with the write, and a process writes after its reaction.
+   It also writes once when it has no row yet.
+2. **One flusher writes what runners passed.** Every
+   `Config.CheckpointEvery` (default one second), the client writes the
+   position of every runner that has passed events its row does not
+   hold yet. All of these go in one statement (`flushCheckpoints`),
+   which also reads every runner's row back.
+   - A runner's row therefore moves at most once a `CheckpointEvery`
+     while it passes events. It reaches where the runner stopped within
+     one interval of the runner going idle.
+   - A runner holds its position's lock for the whole of a step. The
+     flusher only tries the lock, so it never writes beside a step; a
+     runner mid-step waits for the next flush.
+   - With about 200 runners on a service, a write per runner per second
+     was still 200 statements a second while events trickled in. The
+     flush makes that one.
+3. **Every write is guarded.** `passCheckpoint` and the flush move a row
+   only from the value the runner last wrote or read. If anything else
+   moved the row, the write misses and the runner reads the row again: a
+   rebuild, an operator's skip, a reset, a rewind, or another instance's
+   step. A projection's folds commit only with their write, so folds
+   from a stale position roll back.
+   - On the same instance, those movers also set the runner's `resync`
+     flag (`wakeAll`, `kickRunner`).
+   - The flush's read catches movers on other instances within an
+     interval.
+4. **An idle step costs one statement, or none.** A runner that knows
+   where it is, with nothing past it in the fan-out, sends nothing. A
+   runner that does not know where it is (it has just started, been
+   resynced, or had a write miss) sends `probeCheckpoint`: one
+   statement, with no transaction around it. The statement returns:
+   - the projection's advisory try-lock, taken and released within the
+     statement;
+   - the checkpoint row;
+   - whether any event lies past the position.
+
+   A batch the projection folds nothing of is passed without a
+   transaction.
+5. **Readers that wait count only what a runner applies.**
+   - `AwaitProjection` treats a checkpoint short of the awaited sequence
+     as reached when none of the events in between are of a type the
+     projection folds, and the sequence is in the log.
+   - `RunnersBehind(seq)` names the runners whose row is short of `seq`
+     by an event they subscribe to. A row of a runner the registry does
+     not declare is named whenever it is short.
+   - A test harness that used to wait for "every row at the head" asks
+     `RunnersBehind` instead. Every row at the head is now true only
+     within an interval of the log going quiet.
 
 ## Parity
 
@@ -84,8 +104,8 @@ that the write after a handled event is now guarded too (see that ADR's
 Some readers of `loom_checkpoints` tell a moving runner from a stopped
 one: runsheet's platform watchdog and `/ops/runners`, loom's lag gauge
 (`otel.go`), and `status.go`. For them, a running runner's row is at
-most `CheckpointEvery` behind the position it has reached, plus one
-step and any wait for a step slot. The lag covers only events the
+most `CheckpointEvery` behind the position it has reached, plus the
+step it is in. The lag covers only events the
 runner ignores.
 
 A row that has not reached the head a few seconds after the log stopped
@@ -95,15 +115,16 @@ it at all.
 
 ## Consequences
 
-- runsheet's e2e shard: see the PR for the before and after.
-  A test (`TestTwentyRunnersWriteTheirCheckpointsOnlyWhenItMatters`)
-  runs 20 runners over 1,000 trickling events, each runner subscribed
-  to 5% of them. It holds the writes to at most two an event, and
-  checks a crash and a restart.
-- A reader that waits for a checkpoint to reach the head waits up to
-  `CheckpointEvery` longer when the head is an event the runner ignores.
-  Such readers include a test harness's "settled" check. Waits for a
-  projection should use `AwaitProjection`. A harness can lower
-  `CheckpointEvery`.
+- On runsheet's e2e shard 1/6, the PR gives the before and after.
+- A test (`TestTwentyRunnersWriteTheirCheckpointsOnlyWhenItMatters`)
+  runs 20 runners over 1,000 events arriving a few at a time, each
+  runner subscribed to 5% of them. It holds the writes to at most two
+  an event, and covers a crash and a restart.
+- `TestAnIdleRunnerStepIsOneStatement` shows the one-statement look,
+  the free idle step and the one-statement flush.
+- A reader that waits for a checkpoint to reach the head now waits up
+  to `CheckpointEvery` longer when the head is an event the runner
+  ignores. While events keep arriving faster than that, such a reader
+  may wait forever. Wait with `AwaitProjection` or `RunnersBehind`.
 - A crash re-passes up to `CheckpointEvery` of ignored events. That
   costs reads, not reactions.

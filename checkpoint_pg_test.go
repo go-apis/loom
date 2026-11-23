@@ -328,6 +328,20 @@ func TestTwentyRunnersWriteTheirCheckpointsOnlyWhenItMatters(t *testing.T) {
 		}
 	}
 	checkApplied("before the crash")
+	if behind, err := first.RunnersBehind(ctx, head); err != nil || len(behind) != 0 {
+		t.Fatalf("runners behind the head: %v, %v; want none", behind, err)
+	}
+	// a row of a runner this registry does not declare counts behind
+	// whenever it is short: what it subscribes to is not known here
+	if _, err := pool.Exec(ctx, `INSERT INTO loom_checkpoints (service, runner, global_seq) VALUES ('spread', 'projection:elsewhere', $1)`, head-1); err != nil {
+		t.Fatal(err)
+	}
+	if behind, err := first.RunnersBehind(ctx, head); err != nil || !slices.Equal(behind, []string{"projection:elsewhere"}) {
+		t.Fatalf("runners behind the head: %v, %v; want the undeclared one", behind, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM loom_checkpoints WHERE runner = 'projection:elsewhere'`); err != nil {
+		t.Fatal(err)
+	}
 
 	// a crash mid-trickle: no runner gets to write what it has passed
 	appendSpread(t, ctx, pool, events, events+40, 0)
@@ -387,7 +401,9 @@ func TestTwentyRunnersWriteTheirCheckpointsOnlyWhenItMatters(t *testing.T) {
 // check: a projection or process with nothing new costs Postgres one
 // statement when it looks at its row — lock, checkpoint and any new
 // event at once — with no transaction around it, and nothing at all
-// when the fan-out already says there is nothing new.
+// once it knows where it is and the fan-out says there is nothing new.
+// What it passes is written by the client's flusher, one statement for
+// every runner.
 func TestAnIdleRunnerStepIsOneStatement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -423,9 +439,7 @@ func TestAnIdleRunnerStepIsOneStatement(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.runner, func(t *testing.T) {
-			// written at every chance while it catches up, so its row is
-			// at the head when it goes idle
-			pos := newRunnerPos(tc.runner, nil, time.Nanosecond)
+			pos := cli.track(newRunnerPos(tc.runner, nil))
 			step := tc.step(pos)
 			for i := 0; ; i++ {
 				n, err := step(ctx)
@@ -439,12 +453,15 @@ func TestAnIdleRunnerStepIsOneStatement(t *testing.T) {
 					t.Fatal("never went idle")
 				}
 			}
+			// what it passed is written by the flusher
+			if err := cli.flushCheckpoints(ctx); err != nil {
+				t.Fatal(err)
+			}
 			if cps := spreadCheckpoints(t, ctx, pool); cps[tc.runner] != head {
 				t.Fatalf("caught up at %d, want the head %d", cps[tc.runner], head)
 			}
 
-			pos.every = time.Hour
-			pos.forget() // a look at the row is due, as after a resync
+			pos.forget() // the runner does not know where it is, as after a resync
 			counter.take()
 			if n, err := step(ctx); err != nil || n != 0 {
 				t.Fatalf("idle step: %d, %v", n, err)
@@ -460,12 +477,12 @@ func TestAnIdleRunnerStepIsOneStatement(t *testing.T) {
 			}
 			t.Logf("idle look: %s", sqls[0])
 
-			// and nothing at all when no look is due
+			// and nothing at all once it knows where it is
 			if n, err := step(ctx); err != nil || n != 0 {
 				t.Fatalf("idle step: %d, %v", n, err)
 			}
 			if sqls := counter.take(); len(sqls) != 0 {
-				t.Fatalf("an idle step with no look due sent %q, want nothing", sqls)
+				t.Fatalf("an idle step that knows where it is sent %q, want nothing", sqls)
 			}
 
 			// a new event of somebody else's is passed in memory, and the
@@ -481,22 +498,47 @@ func TestAnIdleRunnerStepIsOneStatement(t *testing.T) {
 				t.Fatalf("idle step: %d, %v", n, err)
 			}
 			if sqls := counter.take(); len(sqls) != 0 {
-				t.Fatalf("passing one ignored event sent %q, want nothing until the write falls due", sqls)
+				t.Fatalf("passing one ignored event sent %q, want nothing", sqls)
 			}
 			if pos.seq != newHead || !pos.dirty() {
 				t.Fatalf("position %d (dirty %v), want %d held in memory", pos.seq, pos.dirty(), newHead)
 			}
-			// once due, the idle step writes it: one statement
-			pos.every = time.Nanosecond
-			if n, err := step(ctx); err != nil || n != 0 {
-				t.Fatalf("idle step: %d, %v", n, err)
+			// the flush writes it, and reads every row back: one statement
+			if err := cli.flushCheckpoints(ctx); err != nil {
+				t.Fatal(err)
 			}
-			sqls = counter.take()
+			if sqls := counter.take(); len(sqls) != 1 {
+				t.Fatalf("the flush sent %q, want one statement", sqls)
+			}
+			if cps := spreadCheckpoints(t, ctx, pool); cps[tc.runner] != newHead || pos.dirty() {
+				t.Fatalf("the flush left the row at %d (dirty %v), want %d", cps[tc.runner], pos.dirty(), newHead)
+			}
+
+			// a row moved under the runner (a rewind, another instance)
+			// is noticed by the next flush, and the runner reads it again
+			if _, err := pool.Exec(ctx, `UPDATE loom_checkpoints SET global_seq = $2 WHERE service='spread' AND runner=$1`, tc.runner, head); err != nil {
+				t.Fatal(err)
+			}
+			if err := cli.flushCheckpoints(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if pos.known {
+				t.Fatal("the flush did not notice the row move under the runner")
+			}
+			counter.take()
+			if n, err := step(ctx); err != nil || n == 0 {
+				t.Fatalf("the step after the move: %d, %v; want it to read from the moved row", n, err)
+			}
+			for i := 0; i < 10; i++ {
+				if n, err := step(ctx); err != nil || n == 0 {
+					break
+				}
+			}
+			if err := cli.flushCheckpoints(ctx); err != nil {
+				t.Fatal(err)
+			}
 			if cps := spreadCheckpoints(t, ctx, pool); cps[tc.runner] != newHead {
-				t.Fatalf("the due write left the row at %d, want %d", cps[tc.runner], newHead)
-			}
-			if len(sqls) > 2 {
-				t.Fatalf("the due write sent %q, want a look and a write at most", sqls)
+				t.Fatalf("after the move the runner's row is at %d, want %d", cps[tc.runner], newHead)
 			}
 			head = newHead
 		})

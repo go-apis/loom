@@ -17,18 +17,25 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 - **A runner writes its checkpoint only when it matters**
   ([ADR 0019](docs/adr/0019-a-runner-writes-its-checkpoint-only-when-it-matters.md)).
   Projection and process runners keep the position they reach over
-  events they do not subscribe to in memory. They write it with the
-  next event they apply, at most every `Config.CheckpointEvery` (new,
-  default 1s) while passing, and within that interval of going idle.
-  Every checkpoint write is conditional on the row the runner last knew,
-  so a rebuild, skip, reset, rewind or another instance's step is never
-  overwritten. An idle step sends nothing, or one statement with no
-  transaction when its row is due a look. `AwaitProjection` now counts
-  only the events the projection folds. On runsheet's e2e this was
-  about 46 checkpoint writes an event, 89% of all statements. Readers
-  of `loom_checkpoints` see a running runner's row at most
-  `CheckpointEvery` (plus a step) behind it, lagging only over events
-  it ignores.
+  events they do not subscribe to in memory, and write their row with
+  every event they apply.
+  - Every `Config.CheckpointEvery` (new, default 1s), the client writes
+    every runner's passed position in one statement, and reads every
+    row back in the same statement.
+  - Every checkpoint write is conditional on the row the runner last
+    knew. A rebuild, skip, reset, rewind or another instance's step is
+    never overwritten.
+  - An idle step sends nothing, or one statement with no transaction
+    when the runner does not know where it is.
+  - `AwaitProjection` now counts only the events the projection folds.
+    The new `Client.RunnersBehind(seq)` names the runners with an event
+    they subscribe to between their row and `seq`.
+  - On runsheet's e2e, checkpoints were about 46 writes an event and 89%
+    of all statements.
+  - Readers of `loom_checkpoints` see a running runner's row at most
+    `CheckpointEvery` (plus a step) behind it, lagging only over events
+    it ignores. A harness that waited for every row to reach the head
+    should ask `RunnersBehind` instead.
 
 ### Added
 
