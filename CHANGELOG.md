@@ -14,6 +14,17 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Changed
 
+- **Two unused indexes on loom's own tables are gone.** `Migrate` no
+  longer makes them, and drops them where an older release did, with
+  `DROP INDEX CONCURRENTLY IF EXISTS` (no lock on writes).
+  - `loom_entities_data`, the GIN `jsonb_path_ops` index on
+    `loom_entities.data`. No loom query filters by containment, and
+    keeping it made bulk upserts about 20% slower.
+  - `loom_events_correlation`, the btree on `(service, correlation_id)`.
+    Every event has a correlation id, so it grew with the log (172 MB on
+    runsheet, 260 MB on Latchkey), and production never scanned it there.
+    `QueryLog`'s correlation filter now walks `loom_events_by_service_seq`:
+    bound it with `AfterSeq` or `Since` on a large log.
 - **A runner writes its checkpoint only when it matters**
   ([ADR 0019](docs/adr/0019-a-runner-writes-its-checkpoint-only-when-it-matters.md)).
   Projection and process runners keep the position they reach over

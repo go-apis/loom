@@ -40,7 +40,10 @@ CREATE INDEX IF NOT EXISTS loom_events_by_service_seq ON loom_events (service, g
 -- the log is append-only and time-ordered: BRIN makes time-range scans
 -- cheap at negligible write/storage cost
 CREATE INDEX IF NOT EXISTS loom_events_at_brin ON loom_events USING brin (at);
-CREATE INDEX IF NOT EXISTS loom_events_correlation ON loom_events (service, correlation_id);
+-- no index on correlation_id: only the log browser's correlation filter
+-- reads it, which walks loom_events_by_service_seq instead; every event
+-- carries one, so the index grew with the log (172 MB on runsheet, 260 MB
+-- on Latchkey) and was never scanned. Migrate drops it (retiredIndexes)
 -- the command whose handling wrote the event: what a fork's comparison
 -- (CompareFork) reads as the commands a run issued
 ALTER TABLE loom_events ADD COLUMN IF NOT EXISTS command text NOT NULL DEFAULT '';
@@ -75,7 +78,9 @@ CREATE TABLE IF NOT EXISTS loom_entities (
 	PRIMARY KEY (service, namespace, entity_type, id)
 );
 
-CREATE INDEX IF NOT EXISTS loom_entities_data ON loom_entities USING gin (data jsonb_path_ops);
+-- no GIN index on data: no query filters by containment (query.go reads
+-- data->>'f' = …), and keeping one made bulk upserts about 20% slower;
+-- Migrate drops the one older releases made (retiredIndexes)
 
 CREATE TABLE IF NOT EXISTS loom_checkpoints (
 	service    text NOT NULL,
@@ -368,6 +373,9 @@ func (c *Client) Migrate(ctx context.Context) error {
 	// CREATE INDEX CONCURRENTLY refuses a transaction: declared @table
 	// indexes go after the table DDL, each on its own connection
 	if err := c.migrateIndexes(ctx); err != nil {
+		return err
+	}
+	if err := c.dropRetiredIndexes(ctx); err != nil {
 		return err
 	}
 	if err := c.migrateSeries(ctx); err != nil {
