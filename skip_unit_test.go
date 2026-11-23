@@ -73,15 +73,15 @@ func (r *walkRig) step(ctx context.Context) (int, error) {
 			r.handled = append(r.handled, evt.GlobalSeq)
 			return nil
 		},
-		save: func(_ context.Context, seq int64) error {
+		save: func(_ context.Context, seq int64) (bool, error) {
 			if r.saveErr != nil {
 				if err := r.saveErr(seq); err != nil {
-					return err
+					return false, err
 				}
 			}
 			r.writes++
 			r.checkpoint = seq
-			return nil
+			return true, nil
 		},
 		pass: func(_ context.Context, from, to int64) (bool, error) {
 			if r.moved != 0 {

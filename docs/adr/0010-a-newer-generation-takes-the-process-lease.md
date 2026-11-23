@@ -261,3 +261,17 @@ changes for the lease:
   event the old leader did not handle: a pass ends at the last ignored
   event before the next subscribed one.
 
+
+## Amendment 2026-11-23 — every checkpoint write is guarded
+
+ADR 0019 keeps a runner's position in memory between writes. A process
+writes its checkpoint after each event it handles, as before. The
+client's flusher writes the position the process reached over ignored
+events, at most once a second.
+
+All of these writes, the one after a handled event included, now move
+the row only from where this runner last left it (`passCheckpoint`). An
+old leader overlapping after a forced hand-over can therefore no longer
+move a checkpoint back: its write misses, and it reads the row again.
+A leader that loses the lease forgets its position. The next leader
+starts from the row and passes again whatever was not written.

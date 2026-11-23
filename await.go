@@ -2,6 +2,7 @@ package loom
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -22,15 +23,36 @@ func (c *Client) Head(ctx context.Context) (int64, error) {
 // reached seq — its rows reflect every event up to there — or when ctx
 // ends. The runner may be on another instance; the checkpoint is polled
 // with a short back-off, since checkpoint advances are not notified.
+//
+// Reached counts only the events the projection folds: a checkpoint
+// short of seq with none of them between it and seq has folded all
+// there is. A runner writes the position it reached by passing events
+// it does not fold at most every Config.CheckpointEvery (checkpoint.go),
+// so a wait on the checkpoint alone would pay up to that bound whenever
+// the head was somebody else's event.
 func (c *Client) AwaitProjection(ctx context.Context, projection string, seq int64) error {
 	runner := "projection:" + projection
+	var folds []string
+	for _, p := range c.reg.Projections {
+		if p.Name == projection {
+			folds = p.Events
+		}
+	}
 	wait := 5 * time.Millisecond
 	for {
-		cur, err := c.readCheckpoint(ctx, runner)
+		var reached bool
+		var err error
+		if folds == nil {
+			var cur int64
+			cur, err = c.readCheckpoint(ctx, runner)
+			reached = cur >= seq
+		} else {
+			reached, err = c.foldedThrough(ctx, runner, folds, seq)
+		}
 		if err != nil {
 			return err
 		}
-		if cur >= seq {
+		if reached {
 			return nil
 		}
 		select {
@@ -42,4 +64,74 @@ func (c *Client) AwaitProjection(ctx context.Context, projection string, seq int
 			wait *= 2
 		}
 	}
+}
+
+// foldedThrough reports whether a runner's checkpoint is at seq or past
+// it, or short of it by events none of which are of the types it folds
+// with seq already in the log (a sequence past the head is reached only
+// by the checkpoint). A runner with no row has folded nothing.
+func (c *Client) foldedThrough(ctx context.Context, runner string, folds []string, seq int64) (bool, error) {
+	var reached bool
+	err := c.db.QueryRow(ctx, `
+		SELECT coalesce(bool_or(c.global_seq >= $3 OR (
+			$3 <= (SELECT coalesce(max(e.global_seq), 0) FROM loom_events e WHERE e.service=$1)
+			AND NOT EXISTS (
+				SELECT 1 FROM loom_events e
+				WHERE e.service=$1 AND e.global_seq > c.global_seq AND e.global_seq <= $3
+					AND e.type = ANY($4::text[])))), false)
+		FROM loom_checkpoints c WHERE c.service=$1 AND c.runner=$2`,
+		c.reg.Service, runner, seq, folds).Scan(&reached)
+	return reached, err
+}
+
+// RunnersBehind names the runners whose checkpoint row is short of seq
+// by an event they apply: the projections and local-event processes of
+// this client's registry with an event of a type they subscribe to past
+// their row and at or before seq. A runner's row trails what it has got
+// through by up to Config.CheckpointEvery over events it does not
+// subscribe to (checkpoint.go), so "every row at the head" is not how
+// to tell that every runner has caught up; an empty answer is. A row of
+// a runner this registry does not declare is named whenever it is short
+// of seq, since what it subscribes to is not known here; a runner with
+// no row is not named.
+func (c *Client) RunnersBehind(ctx context.Context, seq int64) ([]string, error) {
+	var runners, types []string
+	add := func(runner string, events []string) {
+		// event types are identifiers: a comma never appears in one
+		runners, types = append(runners, runner), append(types, strings.Join(events, ","))
+	}
+	for _, p := range c.reg.Projections {
+		add("projection:"+p.Name, p.Events)
+	}
+	for _, p := range c.reg.Processes {
+		if local, _ := c.splitSubscriptions(p); len(local) > 0 {
+			add("process:"+p.Name, local)
+		}
+	}
+	if runners == nil {
+		runners, types = []string{}, []string{}
+	}
+	rows, err := c.db.Query(ctx, `
+		WITH s AS (SELECT * FROM unnest($2::text[], $3::text[]) AS s(runner, types))
+		SELECT c.runner FROM loom_checkpoints c LEFT JOIN s ON s.runner = c.runner
+		WHERE c.service = $1 AND c.global_seq < $4
+			AND (s.runner IS NULL OR EXISTS (
+				SELECT 1 FROM loom_events e
+				WHERE e.service = $1 AND e.global_seq > c.global_seq AND e.global_seq <= $4
+					AND e.type = ANY(string_to_array(s.types, ','))))
+		ORDER BY c.runner`,
+		c.reg.Service, runners, types, seq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var behind []string
+	for rows.Next() {
+		var runner string
+		if err := rows.Scan(&runner); err != nil {
+			return nil, err
+		}
+		behind = append(behind, runner)
+	}
+	return behind, rows.Err()
 }

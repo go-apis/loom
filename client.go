@@ -59,6 +59,15 @@ type Config struct {
 	// runner on Start's poll, as before.
 	RunnerIdlePoll time.Duration
 
+	// CheckpointEvery is how often the client writes the positions its
+	// projection and process runners have reached by passing events they
+	// do not subscribe to, all in one statement (checkpoint.go). A runner
+	// keeps that position in memory: its checkpoint row moves with every
+	// event it applies, and otherwise within CheckpointEvery of the
+	// runner passing an event, idle or not. A crash in between re-passes,
+	// never re-applies. Zero (the default) is one second.
+	CheckpointEvery time.Duration
+
 	// Reconcile maps a declared effect name (the part of a Once key before
 	// any "/suffix") to a hook Once consults before declaring that effect
 	// in doubt. Optional; an effect with no hook (and not @idempotent)
@@ -182,6 +191,9 @@ type Client struct {
 	batchNudge      chan struct{}  // batch enqueued: wake the batch runner
 	stepSem         chan struct{}  // bounds concurrent runner steps (see Config.StepConcurrency)
 	runnerIdlePoll  time.Duration  // Config.RunnerIdlePoll
+	checkpointEvery time.Duration  // Config.CheckpointEvery
+	posMu           sync.Mutex     // guards positions
+	positions       []*runnerPos   // every runner's position, for the checkpoint flusher
 	notifyNudge     chan struct{}  // an append committed: tell other instances (notifyLog)
 	notifyOnce      sync.Once      // starts the notifier on the first append
 	loopFails       int            // Config.LoopFailureLimit
@@ -248,6 +260,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ConflictRetries == 0 {
 		cfg.ConflictRetries = 3
 	}
+	if cfg.CheckpointEvery <= 0 {
+		cfg.CheckpointEvery = checkpointEvery
+	}
 	if cfg.StepConcurrency <= 0 {
 		cfg.StepConcurrency = int(cfg.DB.Config().MaxConns) / 2
 		if cfg.StepConcurrency < 2 {
@@ -279,6 +294,7 @@ func New(cfg Config) (*Client, error) {
 		meshTenant:      cfg.MeshTenant,
 		meshSecret:      cfg.MeshHookSecret,
 		runnerIdlePoll:  cfg.RunnerIdlePoll,
+		checkpointEvery: cfg.CheckpointEvery,
 		notifyNudge:     make(chan struct{}, 1),
 		watchers:        map[chan struct{}]bool{},
 		keys:            cfg.Keys,

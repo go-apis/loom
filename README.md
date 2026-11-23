@@ -587,7 +587,11 @@ rows, _ := cli.QueryEntities(ctx, "GrantIndex", ...)
 ```
 
 The projection may be running on another instance; the checkpoint is
-polled with a short back-off.
+polled with a short back-off. It counts as reached once no event the
+projection folds lies between it and `head`. A runner writes the
+position it reaches over events it ignores at most every
+`Config.CheckpointEvery` (ADR 0019), so the raw checkpoint can trail
+the head by up to that interval.
 
 ## Timers
 

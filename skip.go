@@ -43,10 +43,12 @@ type processWalk struct {
 	// handle delivers one subscribed event: nil once the process may
 	// move past it (reacted, parked, or owned by a durable retry).
 	handle func(ctx context.Context, evt *Event) error
-	// save writes the checkpoint after a handled event.
-	save func(ctx context.Context, seq int64) error
-	// pass moves the checkpoint over ignored events, from where the walk
-	// left it; false when the checkpoint was no longer there.
+	// save writes the checkpoint after a handled event; false when the
+	// checkpoint was no longer where the runner left it.
+	save func(ctx context.Context, seq int64) (bool, error)
+	// pass moves the runner's position over ignored events, from where
+	// the walk left it (in memory, written when due: checkpoint.go);
+	// false when a write found the checkpoint no longer there.
 	pass func(ctx context.Context, from, to int64) (bool, error)
 	// ahead answers the last event of the ignored run that carries on
 	// past after (after itself when the next event is subscribed, or
@@ -93,8 +95,14 @@ func (w processWalk) walk(ctx context.Context, seq int64, events []*Event, full 
 		if err := w.handle(ctx, evt); err != nil {
 			return 0, err
 		}
-		if err := w.save(ctx, evt.GlobalSeq); err != nil {
+		saved, err := w.save(ctx, evt.GlobalSeq)
+		if err != nil {
 			return 0, err
+		}
+		if !saved {
+			// handled, but the checkpoint moved under the walk (a
+			// rewind, another leader): read again from wherever it is
+			return i + 1, nil
 		}
 		seq = evt.GlobalSeq
 		i++
@@ -133,11 +141,13 @@ func (c *Client) ignoredAhead(ctx context.Context, q querier, after int64, subsc
 	return to, err
 }
 
-// passCheckpoint moves a runner's checkpoint from one sequence to a
-// later one over events it does not subscribe to, and reports whether it
-// did. It writes only while the checkpoint is still at from (or, from
-// zero, has no row yet): passing handles nothing, so it has no claim on a checkpoint
-// somebody else has moved.
+// passCheckpoint moves a runner's checkpoint from one sequence to
+// another and reports whether it did: every write a runner makes of its
+// own position (checkpoint.go). It writes only while the checkpoint is
+// still at from (or, from zero, has no row yet): a runner has no claim
+// on a checkpoint somebody else has moved, and reads it again instead.
+// Any write through here means the runner got past where it was, so it
+// clears a projection's stall.
 func passCheckpoint(ctx context.Context, q executor, service, runner string, from, to int64) (bool, error) {
 	const cleared = `global_seq = $3, updated_at = now(),
 			failing_seq = 0, attempts = 0, last_error = '', stalled_since = NULL`
