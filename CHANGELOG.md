@@ -140,6 +140,22 @@ file starts at v0.54.0. For earlier releases, see the git history and tags.
 
 ### Fixed
 
+- **A runner's checkpoint probe reads the index, not the whole log**
+  (v0.132.1). v0.132.0's one-statement probe asked `EXISTS` for an
+  event past a position read from the runner's own row. The planner
+  cannot see that position, guesses a third of the log lies past it,
+  and with real parameters chose a sequential scan of `loom_events`
+  expecting an early match. For a caught-up runner nothing matches, so
+  every look read the whole log: in runsheet's production database
+  (3.6 GB heap) the probe went from 118 to 9,819 seconds of query time
+  an hour. The probe now asks for the first event past the position in
+  `global_seq` order with `LIMIT 1`, which only the
+  `(service, global_seq)` index serves cheaply; it reads three pages.
+  (Postgres strips `ORDER BY` and `LIMIT` from inside an `EXISTS`, so
+  that form does not help.) Still one statement with no transaction.
+  `TestCheckpointProbeUsesTheIndex` fails if the probe plans a
+  sequential scan of a seeded 200,000-event log, custom or generic.
+
 - **A process passes a run of ignored events in one checkpoint write.**
   A process wrote its checkpoint after every event it read, including
   the types it does not subscribe to: on 2026-11-18 a loop in runsheet
