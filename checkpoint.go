@@ -275,10 +275,14 @@ func (c *Client) flushCheckpoints(ctx context.Context) error {
 	if runners == nil {
 		runners, froms, tos = []string{}, []int64{}, []int64{}
 	}
-	// the rows are locked in runner order before they are written, so
-	// two instances' flushes of the same runners queue, never deadlock;
-	// the outer select reads the rows as they stood before the update,
-	// so a written row reads its new value from the update's own answer
+	// the rows are locked in runner order before they are written, and
+	// a row somebody else holds (a step's transaction on another
+	// instance, an operator's hand) is skipped, not waited for: a flush
+	// holds every idle runner's position while it runs, so one held row
+	// must not stall them all. A skipped row is written at the next
+	// flush. The outer select reads the rows as they stood before the
+	// update, so a written row reads its new value from the update's own
+	// answer
 	rows, err := c.db.Query(ctx, `
 		WITH v AS (
 			SELECT * FROM unnest($2::text[], $3::bigint[], $4::bigint[]) AS v(runner, from_seq, to_seq)
@@ -286,7 +290,7 @@ func (c *Client) flushCheckpoints(ctx context.Context) error {
 			SELECT c.runner FROM loom_checkpoints c JOIN v ON v.runner = c.runner AND c.global_seq = v.from_seq
 			WHERE c.service = $1
 			ORDER BY c.runner
-			FOR UPDATE OF c
+			FOR UPDATE OF c SKIP LOCKED
 		), u AS (
 			UPDATE loom_checkpoints c SET global_seq = v.to_seq, updated_at = now(),
 				failing_seq = 0, attempts = 0, last_error = '', stalled_since = NULL
