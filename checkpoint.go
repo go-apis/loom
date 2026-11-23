@@ -125,6 +125,33 @@ func (c *Client) track(pos *runnerPos) *runnerPos {
 	return pos
 }
 
+// probeCheckpointSQL is probeCheckpoint's statement: $1 service, $2
+// runner, $3 the position held in memory, $4 the row as the runner last
+// knew it (-1: none), $5 whether to try the step lock.
+//
+// Whether an event lies past the position is the first such event's
+// sequence, read in global_seq order with LIMIT 1, not an EXISTS. The
+// position comes from the row, so it is an InitPlan the planner cannot
+// see: it guesses a third of the service's events lie past it, and for
+// an EXISTS (which Postgres plans to stop at the first row, and from
+// which it strips any ORDER BY or LIMIT) a sequential scan that expects
+// a match within a few pages costs less than an index descent. For a
+// runner that is caught up nothing matches, and that scan reads the
+// whole of loom_events: v0.132.0 did that on every look, 3.6 GB a time
+// in runsheet's log. Asking for the first event in order makes the
+// (service, global_seq) index the only cheap plan whatever the guess,
+// and it answers from one index page. TestCheckpointProbeUsesTheIndex
+// holds it there on a seeded log.
+const probeCheckpointSQL = `
+		WITH c AS (SELECT global_seq FROM loom_checkpoints WHERE service=$1 AND runner=$2)
+		SELECT
+			CASE WHEN $5::bool THEN pg_try_advisory_xact_lock(hashtext('loom_' || $1 || '_' || $2)) ELSE true END,
+			(SELECT global_seq FROM c),
+			(SELECT e.global_seq FROM loom_events e WHERE e.service=$1 AND e.global_seq > (
+				CASE WHEN coalesce((SELECT global_seq FROM c), 0) = $4::bigint THEN $3::bigint
+				ELSE coalesce((SELECT global_seq FROM c), 0) END)
+			ORDER BY e.global_seq LIMIT 1) IS NOT NULL`
+
 // probeCheckpoint is a runner's look at the store, in one statement and
 // so with no transaction: whether its step lock is free (lock: a
 // projection's; a process is elected by the lease instead), its row, and
@@ -141,14 +168,7 @@ func (c *Client) probeCheckpoint(ctx context.Context, q querier, pos *runnerPos,
 		knew = pos.persisted
 	}
 	var row *int64
-	err = q.QueryRow(ctx, `
-		WITH c AS (SELECT global_seq FROM loom_checkpoints WHERE service=$1 AND runner=$2)
-		SELECT
-			CASE WHEN $5::bool THEN pg_try_advisory_xact_lock(hashtext('loom_' || $1 || '_' || $2)) ELSE true END,
-			(SELECT global_seq FROM c),
-			EXISTS (SELECT 1 FROM loom_events WHERE service=$1 AND global_seq > (
-				CASE WHEN coalesce((SELECT global_seq FROM c), 0) = $4::bigint THEN $3::bigint
-				ELSE coalesce((SELECT global_seq FROM c), 0) END))`,
+	err = q.QueryRow(ctx, probeCheckpointSQL,
 		c.reg.Service, pos.runner, pos.seq, knew, lock).Scan(&locked, &row, &more)
 	if err != nil {
 		return false, 0, false, false, err
