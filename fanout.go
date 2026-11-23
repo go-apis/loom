@@ -1,6 +1,9 @@
 package loom
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // fanoutBufCap bounds the in-memory tail of the event log shared by all
 // runners. Runners further behind than the buffer (catch-up after a skip
@@ -10,12 +13,16 @@ const fanoutBufCap = 1024
 // runnerWake is one runner's registration with the fan-out reader: a
 // cap-1 wake channel plus the event types it subscribes to (nil = all).
 // kick is the operator's channel: a skip or rebuild cuts short a stalled
-// runner's backoff, which ordinary wakes deliberately do not.
+// runner's backoff, which ordinary wakes deliberately do not. resync
+// tells the runner its checkpoint may have moved under it (a rebuild, a
+// skip, a reset, a lease or generation handed over): it reads the row
+// again before it trusts the position it holds in memory (checkpoint.go).
 type runnerWake struct {
 	name     string
 	ch       chan struct{}
 	kick     chan struct{}
 	interest map[string]bool
+	resync   atomic.Bool
 }
 
 // wants reports whether any of the just-ingested types concern this
@@ -104,7 +111,19 @@ func (f *logFanout) wake(types map[string]bool) {
 	}
 }
 
-func (f *logFanout) wakeAll() { f.wake(nil) }
+// wakeAll wakes every runner and has each read its checkpoint row
+// again: every caller is something that may have moved checkpoints
+// (a rebuild, a reset, a lease or generation changing hands), not new
+// events, which wake by type.
+func (f *logFanout) wakeAll() {
+	f.mu.Lock()
+	runners := f.runners
+	f.mu.Unlock()
+	for _, rw := range runners {
+		rw.resync.Store(true)
+	}
+	f.wake(nil)
+}
 
 // kickRunner ends one runner's stall backoff on this instance (other
 // instances wait theirs out) and wakes it.
@@ -114,6 +133,7 @@ func (f *logFanout) kickRunner(name string) {
 	f.mu.Unlock()
 	for _, rw := range runners {
 		if rw.name == name {
+			rw.resync.Store(true)
 			select {
 			case rw.kick <- struct{}{}:
 			default:

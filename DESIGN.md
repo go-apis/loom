@@ -347,8 +347,24 @@ generated switches, folds from generated assignments.
   did. The write that passes a run moves the checkpoint only from where
   the step left it (`passCheckpoint`): a step that has lost its place —
   an operator's reset, a second leader after a forced hand-over — passes
-  nothing and reads again. The write after a handled event is
-  unguarded, as before (ADR 0010).
+  nothing and reads again. Since ADR 0019 the write after a handled
+  event is guarded too.
+- **A runner writes its checkpoint only when it matters** (ADR 0019,
+  `checkpoint.go`). Within a step, a run of ignored events was one
+  write. With events arriving a few at a time, each runner still wrote
+  about once an event: ~46 writes an event and 89% of the statements on
+  a runsheet e2e shard (2026-11-21). A runner now holds its position in
+  memory. It writes the row with every event it applies, at most every
+  `Config.CheckpointEvery` (1s) while passing ignored events, and within
+  that interval of going idle. Every write is conditional on the row it
+  last knew: a write that misses means the row was moved (a rebuild, a
+  skip, a reset, another instance), and the runner reads the row again.
+  An idle step sends nothing when the fan-out shows nothing new. When
+  the row is due a look, the step sends one statement with no
+  transaction (`probeCheckpoint`: try-lock, row, any event past the
+  position). The liveness bound for readers of `loom_checkpoints` is
+  `CheckpointEvery` plus a step, over ignored events only.
+  `AwaitProjection` counts only the events the projection folds.
 - **A loop is looked at per instance.** Each instance of a `@loop`
   aggregate has a row in `loom_loop_due`: when it is next looked at, when
   it last was, when its newest event arrived, and its waits. The first

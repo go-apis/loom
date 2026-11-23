@@ -193,7 +193,7 @@ type dueTimer struct {
 //     item's dispatch runs after the claim committed.
 //   - process runners (runner.go processStep, subscribeForeign): no
 //     transaction at all around a reaction. The checkpoint read, the
-//     dedup check, markProcessed and writeCheckpoint are single
+//     dedup check, markProcessed and the checkpoint write are single
 //     statements before or after react; react and its Dispatch run with
 //     nothing open.
 //   - relay (relay.go drainBatch): the exception. It holds its claim

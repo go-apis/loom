@@ -74,8 +74,10 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 	}
 
 	for _, p := range c.reg.Projections {
-		rw := c.fan.register("projection:"+p.Name, p.Events)
-		go c.runLogLoop(ctx, "projection:"+p.Name, poll, rw, c.projectionStep(p))
+		runner := "projection:" + p.Name
+		rw := c.fan.register(runner, p.Events)
+		pos := newRunnerPos(runner, rw, c.checkpointEvery)
+		go c.runLogLoop(ctx, runner, poll, rw, pos, c.projectionStep(p, pos))
 	}
 	var localProcesses bool
 	for _, p := range c.reg.Processes {
@@ -85,8 +87,10 @@ func (c *Client) Start(ctx context.Context, poll time.Duration) error {
 			if err := c.seedProcessCheckpoint(ctx, p, head); err != nil {
 				return err
 			}
-			rw := c.fan.register("process:"+p.Name, local)
-			go c.runLogLoop(ctx, "process:"+p.Name, poll, rw, c.processStep(p, local))
+			runner := "process:" + p.Name
+			rw := c.fan.register(runner, local)
+			pos := newRunnerPos(runner, rw, c.checkpointEvery)
+			go c.runLogLoop(ctx, runner, poll, rw, pos, c.processStep(p, local, pos))
 		}
 		if len(foreign) > 0 {
 			if err := c.subscribeForeign(ctx, p, foreign); err != nil {
@@ -153,7 +157,11 @@ func (c *Client) splitSubscriptions(p *ReactorDef) (local, foreign []string) {
 // operator's skip or rebuild (kick) cuts that short. A runner whose
 // checkpoint row still doesn't exist one poll after it started is
 // logged as `runner never checkpointed`, under the same ceiling.
-func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, rw *runnerWake, step func(ctx context.Context) (int, error)) {
+//
+// A runner holding a position it has not written yet (checkpoint.go)
+// sleeps no longer than until that write falls due, so its row reaches
+// where it got to within Config.CheckpointEvery of it going idle.
+func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Duration, rw *runnerWake, pos *runnerPos, step func(ctx context.Context) (int, error)) {
 	// wait is how long the runner sleeps before it steps unwoken
 	// (idleWait); a wake steps it at once whatever wait is
 	wait := poll
@@ -218,13 +226,19 @@ func (c *Client) runLogLoop(ctx context.Context, runner string, poll time.Durati
 			}
 			continue
 		}
+		sleep := wait
+		if pos != nil && pos.dirty() {
+			if due := time.Until(pos.writeAt()); due < sleep {
+				sleep = max(due, time.Millisecond)
+			}
+		}
 		if !t.Stop() {
 			select {
 			case <-t.C:
 			default:
 			}
 		}
-		t.Reset(wait)
+		t.Reset(sleep)
 		select {
 		case <-ctx.Done():
 			return
@@ -361,48 +375,74 @@ func (c *Client) readEvents(ctx context.Context, q querier, afterSeq int64, limi
 // lock — exactly-once effects on read models, and rebuild is just a
 // checkpoint reset.
 //
+// The step works from the position it holds in memory (checkpoint.go):
+// a batch the projection folds nothing of is passed without a
+// transaction, and written at most every Config.CheckpointEvery; a batch
+// it folds commits only with a checkpoint write conditional on the row
+// still holding what the runner last wrote or read, so a fold from a
+// position somebody else moved rolls back and the runner reads the row
+// again. An idle step is free, or one statement when the row is due a
+// look (probeCheckpoint).
+//
 // An event the projection cannot decode, fold, or write halts it rather
 // than being skipped (folding past it would leave the read model wrong
 // in ways no later event repairs): the events before it commit, the
 // checkpoint stops just short of it, and the row records the stall —
 // see haltProjection. The step's stallError backs the runner off, and
 // the next step that gets past the event clears the stall.
-func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int, error) {
+func (c *Client) projectionStep(p *ProjectionDef, pos *runnerPos) func(ctx context.Context) (int, error) {
 	runner := "projection:" + p.Name
 	return func(ctx context.Context) (n int, retErr error) {
+		// a superseded build leaves the fold to the newest: it would
+		// step over events only the newer build's projection folds, and
+		// move the checkpoint past them for good
+		if !c.newest() {
+			pos.forget()
+			return 0, nil
+		}
+		pos.begin()
+		now := time.Now()
+		if ok, err := c.lookCheckpoint(ctx, pos, true, now); !ok || err != nil {
+			return 0, err
+		}
+		events, covered := c.fan.tail(pos.seq, logBatch)
+		if covered && len(events) == 0 {
+			return 0, c.idle(ctx, pos, now)
+		}
+		if covered && !anySubscribed(events, p.Events) {
+			// nothing here to fold: pass it in memory (checkpoint.go)
+			last := events[len(events)-1].GlobalSeq
+			if len(events) == logBatch {
+				// the batch ended inside a run of events this projection
+				// does not fold: pass the rest of the run too (skip.go)
+				var err error
+				if last, err = c.ignoredAhead(ctx, c.db, last, p.Events); err != nil {
+					pos.forget()
+					return 0, err
+				}
+			}
+			if _, err := c.passed(ctx, pos, last); err != nil {
+				return 0, err
+			}
+			return len(events), nil
+		}
+
 		tx, err := c.db.Begin(ctx)
 		if err != nil {
 			return 0, err
 		}
 		defer tx.Rollback(ctx)
-
-		// a superseded build leaves the fold to the newest: it would
-		// step over events only the newer build's projection folds, and
-		// move the checkpoint past them for good
-		if !c.newest() {
-			return 0, nil
-		}
 		locked, err := c.tryRunnerLock(ctx, tx, runner)
 		if err != nil || !locked {
 			return 0, err
 		}
-		seq, exists, err := checkpointRow(ctx, tx, c.reg.Service, runner)
+		from := pos.seq
+		events, err = c.readEvents(ctx, tx, from, logBatch)
 		if err != nil {
-			return 0, err
-		}
-		events, err := c.readEvents(ctx, tx, seq, logBatch)
-		if err != nil {
+			pos.forget()
 			return 0, err
 		}
 		if len(events) == 0 {
-			if !exists {
-				// idle, but alive: the row is how runLogLoop tells a
-				// runner with nothing to do from one that never ran
-				if err := seedCheckpoint(ctx, tx, c.reg.Service, runner, seq); err != nil {
-					return 0, err
-				}
-				return 0, tx.Commit(ctx)
-			}
 			return 0, nil
 		}
 		// span only when there is work: an idle poll is not a trace
@@ -419,7 +459,8 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			// the failed statement may have aborted the transaction:
 			// start clean and commit only the events before the failure
 			tx.Rollback(ctx)
-			return 0, c.haltProjection(ctx, p, seq, events[:i], events[i], err)
+			pos.forget()
+			return 0, c.haltProjection(ctx, p, from, pos.persisted, events[:i], events[i], err)
 		}
 
 		last := events[len(events)-1].GlobalSeq
@@ -427,17 +468,33 @@ func (c *Client) projectionStep(p *ProjectionDef) func(ctx context.Context) (int
 			// the batch ended inside a run of events this projection does
 			// not fold: pass the rest of the run in this step (skip.go)
 			if last, err = c.ignoredAhead(ctx, tx, last, p.Events); err != nil {
+				pos.forget()
 				return 0, err
 			}
 		}
-		if err := saveCheckpoint(ctx, tx, c.reg.Service, runner, last); err != nil {
-			return 0, err
+		moved, err := passCheckpoint(ctx, tx, c.reg.Service, runner, pos.persisted, last)
+		if err != nil || !moved {
+			// the row moved under this step (a rebuild, a skip, another
+			// instance): the folds roll back, and the next step reads
+			// the row and goes on from there
+			pos.forget()
+			if err != nil {
+				return 0, err
+			}
+			return 1, nil
 		}
 		if err := tx.Commit(ctx); err != nil {
+			pos.forget()
 			return 0, err
 		}
+		pos.wrote(last, time.Now())
 		return len(events), nil
 	}
+}
+
+// anySubscribed reports whether any of events is of a subscribed type.
+func anySubscribed(events []*Event, subscribed []string) bool {
+	return ignoredRun(events, subscribed) < len(events)
 }
 
 func (c *Client) tryRunnerLock(ctx context.Context, tx pgx.Tx, runner string) (bool, error) {
@@ -652,7 +709,11 @@ func (c *Client) foldEvent(ctx context.Context, tx pgx.Tx, p *ProjectionDef, tab
 // when a different event fails), last_error, and stalled_since, set on
 // the first failure only. The refold is the cost of a failure, not of
 // every step: the happy path pays no savepoint per event.
-func (c *Client) haltProjection(ctx context.Context, p *ProjectionDef, from int64, before []*Event, failing *Event, cause error) error {
+//
+// from is where the step read from, persisted what the runner last knew
+// the row to hold: the stall is recorded only while the row still holds
+// it.
+func (c *Client) haltProjection(ctx context.Context, p *ProjectionDef, from, persisted int64, before []*Event, failing *Event, cause error) error {
 	runner := "projection:" + p.Name
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
@@ -668,7 +729,7 @@ func (c *Client) haltProjection(ctx context.Context, p *ProjectionDef, from int6
 	}
 	if seq, _, err := checkpointRow(ctx, tx, c.reg.Service, runner); err != nil {
 		return errors.Join(cause, err)
-	} else if seq != from {
+	} else if seq != persisted {
 		return cause // moved under us (rebuild, skip): the next step decides
 	}
 	seq := from
@@ -821,12 +882,13 @@ func (c *Client) SkipStalled(ctx context.Context, runner string) (int64, error) 
 // own unit of work), advance the checkpoint. Failures retry, then park the
 // event to dead letters (or, under @retry, re-arm it as a durable timer —
 // see retry.go) and move on — at-least-once, no head-of-line block.
-// The checkpoint is written after each event the process subscribes to,
-// and once for each run of events it does not (skip.go).
+// The checkpoint is written after each event the process subscribes to;
+// the events it does not are passed in memory and written at most every
+// Config.CheckpointEvery (checkpoint.go, skip.go).
 // Steps only while this instance leads the service's processes (see
 // election.go): one instance reacts at a time, and the reaction runs on
 // no pinned connection — a process may be a long external call.
-func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Context) (int, error) {
+func (c *Client) processStep(p *ReactorDef, local []string, pos *runnerPos) func(ctx context.Context) (int, error) {
 	runner := "process:" + p.Name
 	return func(ctx context.Context) (n int, retErr error) {
 		// counted before the lease is read: a leader yielding the lease
@@ -834,21 +896,21 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 		c.procSteps.Add(1)
 		defer c.procSteps.Add(-1)
 		if !c.leading() {
+			pos.forget()
 			return 0, nil // a follower: the leader advances the checkpoint
 		}
-		seq, exists, err := checkpointRow(ctx, c.db, c.reg.Service, runner)
-		if err != nil {
+		pos.begin()
+		now := time.Now()
+		if ok, err := c.lookCheckpoint(ctx, pos, false, now); !ok || err != nil {
 			return 0, err
 		}
-		events, err := c.readEvents(ctx, c.db, seq, logBatch)
+		events, err := c.readEvents(ctx, c.db, pos.seq, logBatch)
 		if err != nil {
+			pos.forget()
 			return 0, err
 		}
 		if len(events) == 0 {
-			if !exists { // idle, but alive (see projectionStep)
-				return 0, seedCheckpoint(ctx, c.db, c.reg.Service, runner, seq)
-			}
-			return 0, nil
+			return 0, c.idle(ctx, pos, now)
 		}
 		ctx, end := c.tel.span(ctx, "loom.process.step",
 			attribute.String("loom.runner", runner), attribute.Int("loom.events", len(events)))
@@ -858,7 +920,7 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 			c.tel.stepDur.Record(ctx, nowUTC().Sub(start).Seconds(),
 				metric.WithAttributes(c.tel.service, attribute.String("loom.runner", runner)))
 		}()
-		return processWalk{
+		n, err = processWalk{
 			subscribed: local,
 			leading:    c.leading,
 			handle: func(ctx context.Context, evt *Event) error {
@@ -879,18 +941,24 @@ func (c *Client) processStep(p *ReactorDef, local []string) func(ctx context.Con
 				}
 				return nil
 			},
-			save: func(ctx context.Context, seq int64) error {
-				return c.writeCheckpoint(ctx, runner, seq)
+			// an applied event is written at once, from where the runner
+			// last left the row
+			save: func(ctx context.Context, seq int64) (bool, error) {
+				return c.persist(ctx, c.db, pos, seq, time.Now())
 			},
-			// a run of events the process does not subscribe to is one
-			// write, however long it is (skip.go)
-			pass: func(ctx context.Context, from, to int64) (bool, error) {
-				return passCheckpoint(ctx, c.db, c.reg.Service, runner, from, to)
+			// a run of events the process does not subscribe to moves
+			// the position in memory, however long it is
+			pass: func(ctx context.Context, _, to int64) (bool, error) {
+				return c.passed(ctx, pos, to)
 			},
 			ahead: func(ctx context.Context, after int64) (int64, error) {
 				return c.ignoredAhead(ctx, c.db, after, local)
 			},
-		}.walk(ctx, seq, events, len(events) == logBatch)
+		}.walk(ctx, pos.seq, events, len(events) == logBatch)
+		if err != nil {
+			pos.forget()
+		}
+		return n, err
 	}
 }
 
@@ -1215,10 +1283,6 @@ func (c *Client) readCheckpoint(ctx context.Context, runner string) (int64, erro
 	return checkpoint(ctx, c.db, c.reg.Service, runner)
 }
 
-func (c *Client) writeCheckpoint(ctx context.Context, runner string, seq int64) error {
-	return saveCheckpoint(ctx, c.db, c.reg.Service, runner, seq)
-}
-
 func checkpoint(ctx context.Context, q querier, service, runner string) (int64, error) {
 	seq, _, err := checkpointRow(ctx, q, service, runner)
 	return seq, err
@@ -1248,17 +1312,6 @@ func saveCheckpoint(ctx context.Context, q executor, service, runner string, seq
 		VALUES ($1,$2,$3, now())
 		ON CONFLICT (service, runner) DO UPDATE SET global_seq = EXCLUDED.global_seq, updated_at = now(),
 			failing_seq = 0, attempts = 0, last_error = '', stalled_since = NULL`,
-		service, runner, seq)
-	return err
-}
-
-// seedCheckpoint writes a runner's first row without moving an existing
-// one.
-func seedCheckpoint(ctx context.Context, q executor, service, runner string, seq int64) error {
-	_, err := q.Exec(ctx, `
-		INSERT INTO loom_checkpoints (service, runner, global_seq, updated_at)
-		VALUES ($1,$2,$3, now())
-		ON CONFLICT (service, runner) DO NOTHING`,
 		service, runner, seq)
 	return err
 }

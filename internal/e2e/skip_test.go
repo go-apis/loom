@@ -283,10 +283,12 @@ func TestAProcessPassesIgnoredEventsInOneWrite(t *testing.T) {
 		if !slices.Equal(handled, paid[:1]) || !slices.Equal(started, paid[:2]) {
 			t.Fatalf("before the crash: started %v, handled %v; want started %v, handled %v", started, handled, paid[:2], paid[:1])
 		}
-		// the checkpoint sits on the last ignored event before the one
-		// the crash interrupted: past everything handled, short of it
-		if seq := runnerCheckpoint(t, ctx, pool, "process:watchPaid"); seq != paid[1]-1 {
-			t.Fatalf("checkpoint at %d after the crash, want %d: just short of the interrupted event at %d", seq, paid[1]-1, paid[1])
+		// the checkpoint sits at or past everything handled and short of
+		// the event the crash interrupted: the ignored events between
+		// are passed in memory and written when due (checkpoint.go), so
+		// the row may hold the handled event or any of them
+		if seq := runnerCheckpoint(t, ctx, pool, "process:watchPaid"); seq < paid[0] || seq >= paid[1] {
+			t.Fatalf("checkpoint at %d after the crash, want from %d (the handled event) to %d (just short of the interrupted event at %d)", seq, paid[0], paid[1]-1, paid[1])
 		}
 		var parked int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM loom_dead_letters`).Scan(&parked); err != nil {
