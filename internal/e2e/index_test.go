@@ -158,3 +158,81 @@ func TestRebuildKeepsIndexes(t *testing.T) {
 	})
 	requireSummaryIndex(t, ctx, pool, "Rebuild")
 }
+
+// TestMigrateDropsRetiredIndexes: a database an older loom migrated
+// carries the GIN index on loom_entities.data and the btree on
+// loom_events.correlation_id; Migrate drops both, does not make them
+// again, and a second Migrate over the dropped indexes is a no-op. The
+// log browser's correlation filter still answers without its index.
+func TestMigrateDropsRetiredIndexes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool := testDB(t, ctx)
+	cli, err := loom.New(loom.Config{DB: pool, Registry: orders.NewRegistry(), Blobs: loom.NewDirBlobStore(t.TempDir(), "http://blobs.local")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entitiesIndexes := func(when string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM pg_indexes
+			WHERE schemaname = current_schema()
+			  AND indexname IN ('loom_entities_data', 'loom_events_correlation')`).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+		return n
+	}
+	if n := entitiesIndexes("first Migrate"); n != 0 {
+		t.Fatalf("first Migrate: %d retired indexes exist, want none", n)
+	}
+
+	// what every release before this one made
+	if _, err := pool.Exec(ctx, `CREATE INDEX loom_entities_data ON loom_entities USING gin (data jsonb_path_ops)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE INDEX loom_events_correlation ON loom_events (service, correlation_id)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate over the old indexes: %v", err)
+	}
+	if n := entitiesIndexes("Migrate over the old indexes"); n != 0 {
+		t.Fatalf("Migrate over the old indexes: %d still exist", n)
+	}
+	if err := cli.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate after the drop: %v", err)
+	}
+
+	corr := "corr-" + uuid.NewString()
+	for i := 0; i < 2; i++ {
+		meta := loom.Metadata{CorrelationID: corr}
+		if i == 1 {
+			meta = loom.Metadata{CorrelationID: "corr-other"}
+		}
+		if err := cli.Dispatch(loom.WithMeta(ctx, meta), &ordersgen.PlaceOrder{
+			CommandBase: loom.CommandBase{AggregateID: uuid.New(), Namespace: "default"},
+			CustomerId:  uuid.New(),
+			Currency:    "USD",
+			Items:       []ordersgen.OrderItem{{Sku: "widget", Quantity: 1, PriceCents: 500}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := cli.QueryLog(ctx, loom.LogQuery{CorrelationID: corr})
+	if err != nil {
+		t.Fatalf("QueryLog by correlation: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("QueryLog by correlation: no entries")
+	}
+	for _, e := range entries {
+		if e.CorrelationID != corr {
+			t.Fatalf("QueryLog by correlation answered %q, want only %q", e.CorrelationID, corr)
+		}
+	}
+}

@@ -142,6 +142,37 @@ func (c *Client) migrateIndexes(ctx context.Context) error {
 	return nil
 }
 
+// retiredIndexes are indexes an older loom created on its own tables and
+// this one no longer wants. Migrate drops each, so a database migrated by
+// an older release loses it at the next deploy.
+var retiredIndexes = []string{
+	// GIN (data jsonb_path_ops) on loom_entities: no loom query uses
+	// containment, and maintaining it cost bulk upserts about 20%
+	"loom_entities_data",
+	// btree (service, correlation_id) on loom_events: one entry per event,
+	// read only by QueryLog's correlation filter and never scanned on the
+	// largest logs
+	"loom_events_correlation",
+}
+
+// dropRetiredIndexes drops every retiredIndexes entry. DROP INDEX
+// CONCURRENTLY takes no lock that blocks writes but refuses a transaction
+// block, so each runs autocommitted on its own acquired connection, like
+// createIndex. A missing index is a no-op.
+func (c *Client) dropRetiredIndexes(ctx context.Context) error {
+	conn, err := c.db.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	for _, name := range retiredIndexes {
+		if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+quoteIdent(name)); err != nil {
+			return fmt.Errorf("loom: drop retired index %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // createIndex makes one declared index exist and be valid. A failed or
 // interrupted CREATE INDEX CONCURRENTLY leaves an invalid index behind
 // (pg_index.indisvalid false) that IF NOT EXISTS would then skip forever
