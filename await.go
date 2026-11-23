@@ -2,6 +2,7 @@ package loom
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -96,12 +97,8 @@ func (c *Client) foldedThrough(ctx context.Context, runner string, folds []strin
 func (c *Client) RunnersBehind(ctx context.Context, seq int64) ([]string, error) {
 	var runners, types []string
 	add := func(runner string, events []string) {
-		// an empty type marks the runner as one this registry declares,
-		// however few events it subscribes to
-		runners, types = append(runners, runner), append(types, "")
-		for _, e := range events {
-			runners, types = append(runners, runner), append(types, e)
-		}
+		// event types are identifiers: a comma never appears in one
+		runners, types = append(runners, runner), append(types, strings.Join(events, ","))
 	}
 	for _, p := range c.reg.Projections {
 		add("projection:"+p.Name, p.Events)
@@ -115,14 +112,13 @@ func (c *Client) RunnersBehind(ctx context.Context, seq int64) ([]string, error)
 		runners, types = []string{}, []string{}
 	}
 	rows, err := c.db.Query(ctx, `
-		WITH s AS (SELECT * FROM unnest($2::text[], $3::text[]) AS s(runner, type))
-		SELECT c.runner FROM loom_checkpoints c
+		WITH s AS (SELECT * FROM unnest($2::text[], $3::text[]) AS s(runner, types))
+		SELECT c.runner FROM loom_checkpoints c LEFT JOIN s ON s.runner = c.runner
 		WHERE c.service = $1 AND c.global_seq < $4
-			AND (NOT EXISTS (SELECT 1 FROM s WHERE s.runner = c.runner)
-				OR EXISTS (
-					SELECT 1 FROM loom_events e
-					WHERE e.service = $1 AND e.global_seq > c.global_seq AND e.global_seq <= $4
-						AND e.type IN (SELECT s.type FROM s WHERE s.runner = c.runner AND s.type <> '')))
+			AND (s.runner IS NULL OR EXISTS (
+				SELECT 1 FROM loom_events e
+				WHERE e.service = $1 AND e.global_seq > c.global_seq AND e.global_seq <= $4
+					AND e.type = ANY(string_to_array(s.types, ','))))
 		ORDER BY c.runner`,
 		c.reg.Service, runners, types, seq)
 	if err != nil {
