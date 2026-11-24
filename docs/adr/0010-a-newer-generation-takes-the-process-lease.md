@@ -275,3 +275,12 @@ old leader overlapping after a forced hand-over can therefore no longer
 move a checkpoint back: its write misses, and it reads the row again.
 A leader that loses the lease forgets its position. The next leader
 starts from the row and passes again whatever was not written.
+
+## Amendment 2026-11-24 — RevisionSequence has been removed
+
+The amendment of 2026-11-01 notes that "`RevisionSequence` stays exported,
+deprecated." `RevisionSequence` has since been removed from the codebase.
+The generation mechanism fully replaced the revision sequence approach,
+so the deprecated export is no longer available. Services using loom
+should rely on the generation mechanism described in the 2026-11-01
+amendment and do not need `RevisionSequence`.

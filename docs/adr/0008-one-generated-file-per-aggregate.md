@@ -158,6 +158,16 @@ holds.
   longer produces (a renamed or deleted aggregate's, recognised by loom's
   header) and prints `removed <path>`. `--check` names such a file stale.
   A file without the header, or a stub, is never touched.
+  
+## Amendment 2026-11-19 — registry_gen.go is split
+
+The Decision describes `loomgen/registry_gen.go` as the shared file holding
+scaffolding and the registry. As of v0.95.0, this file is no longer written.
+The scaffolding (`Impl`, `NewRegistry`, `loomOwners`) moved to `loom_gen.go`;
+the `EventUpcasts` interface moved to `upcasts_gen.go`; the `Look` interface
+moved to `look_gen.go`. Schema types and entities register through their
+schema file's `_types_gen.go`. Reactors and projections each bind and register
+from their own `<name>_<kind>_gen.go` file.
 
 ## Since
 
