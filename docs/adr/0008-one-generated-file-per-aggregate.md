@@ -159,7 +159,7 @@ holds.
   header) and prints `removed <path>`. `--check` names such a file stale.
   A file without the header, or a stub, is never touched.
   
-## Amendment 2026-11-19 — registry_gen.go is split
+## Amendment 2026-11-19 — registry_gen.go is no longer written; scaffolding moved to per-service and per-owner files
 
 The Decision describes `loomgen/registry_gen.go` as the shared file holding
 scaffolding and the registry. As of v0.95.0, this file is no longer written.
