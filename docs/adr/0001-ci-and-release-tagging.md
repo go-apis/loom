@@ -13,8 +13,7 @@ loom has ten consumers (runsheet, wardroom, latchkey, grapevine, optrader,
 ten99 on v0.49.0; tripline, purser, foghorn on v0.46.0). Until now nothing ran
 the test suite on a PR, and releases were tagged by hand, so every Mesh goal
 that needs a releasable loom was waiting on a person. This decision unblocks
-those goals, per `specs/proposal-loom-for-adr-001.md` §3 (G0) in
-runsheet/runsheet. It is loom's first release-process decision and its first
+those goals. It is loom's first release-process decision and its first
 ADR.
 
 ## Decision
